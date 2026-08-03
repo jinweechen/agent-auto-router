@@ -2,6 +2,8 @@
 param(
     [Parameter(Mandatory)]
     [string]$Task,
+    [ValidateSet('auto', 'sol', 'terra', 'luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')]
+    [string]$Model = 'auto',
     [ValidateSet('intelligence', 'balance', 'cost')]
     [string]$Strategy = 'balance',
     [ValidateSet('', 'none', 'low', 'medium', 'high', 'xhigh', 'max')]
@@ -36,7 +38,14 @@ try {
 if ($routeExitCode -ne 0) { throw 'Auto model selection failed.' }
 
 $route = $routeRaw | ConvertFrom-Json
-$model = [string]$route.decision.model
+$selectorModel = [string]$route.decision.model
+$model = switch ($Model) {
+    'auto' { $selectorModel }
+    'sol' { 'gpt-5.6-sol' }
+    'terra' { 'gpt-5.6-terra' }
+    'luna' { 'gpt-5.6-luna' }
+    default { $Model }
+}
 if ($model -notin @('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')) {
     throw "Selector chose a model outside the allowlist: $model"
 }
@@ -52,7 +61,8 @@ $explanation = [pscustomobject]@{
     strategy = $Strategy
     model = $model
     effort = $resolvedEffort
-    reason = $route.decision.reason
+    reason = if ($Model -eq 'auto') { $route.decision.reason } else { 'explicit_model' }
+    selectorModel = $selectorModel
     features = [pscustomobject]@{
         promptChars = $route.decision.prompt_chars
         highRiskHits = $route.decision.high_risk_hits

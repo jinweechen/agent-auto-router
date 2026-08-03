@@ -1,0 +1,11 @@
+.env
+.env.*
+eval-results*/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.codex-auto-*
+*.out.txt
+*.err.txt

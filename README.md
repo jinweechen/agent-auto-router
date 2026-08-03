@@ -39,12 +39,18 @@ Auto 是一次任务开始前的路由决策，不是第四个模型，也不会
 | --- | --- |
 | `intelligence` | 质量优先，复杂任务使用 Sol，其余主要使用 Terra |
 | `balance` | 推荐默认值；简单任务用 Luna，常规任务用 Terra，复杂或高风险任务用 Sol |
-| `cost` | 成本优先；默认使用 Luna，复杂任务使用 Terra，高风险任务才使用 Sol |
+| `cost` | 模型层级成本代理；默认使用 Luna，复杂任务使用 Terra，高风险任务才使用 Sol |
+
+## 路由权衡与限制
+
+确定性路由不产生额外模型调用，行为可解释且延迟低，但无法准确理解所有任务语义：普通文本中偶然出现风险词可能导致误升级，缺少触发词的复杂任务也可能误降级。用户显式指定的模型或 reasoning effort 始终优先，代表性误判应加入测试样例后再调整规则。
+
+`cost` 只根据模型层级选择相对经济的模型。Codex CLI 不提供逐调用账单，因此当前评测不能证明实际节省金额，结果中的未知成本使用 `null`，不能按 `0` 美元解释。
 
 ## 环境要求
 
 - Windows PowerShell 5.1 或 PowerShell 7
-- Python 3
+- Python 3.10 或更高版本
 - 已安装 Codex CLI
 - 已通过 ChatGPT、API Key 或企业 Access Token 登录 Codex CLI
 
@@ -62,10 +68,10 @@ cd codex-auto-router
 安装到个人 Codex Skills 目录：
 
 ```powershell
-$target = Join-Path $HOME ".codex/skills/codex-auto-router"
-New-Item -ItemType Directory -Path (Split-Path $target) -Force | Out-Null
-Copy-Item -LiteralPath "./skills/codex-auto-router" -Destination $target -Recurse -Force
+& "./skills/codex-auto-router/scripts/install.ps1"
 ```
+
+重复运行安装脚本会通过暂存目录安全替换旧版本，不会生成嵌套的 `codex-auto-router/codex-auto-router`。需要保留旧版本时添加 `-Backup`。
 
 安装后重新启动 Codex，让 Skill 元数据重新加载。
 
@@ -108,6 +114,7 @@ Luna 负责执行边界清晰的子任务，
 ```powershell
 & "$HOME/.codex/skills/codex-auto-router/scripts/invoke_auto_task.ps1" `
   -Task "审查并优化当前项目" `
+  -Model auto `
   -Strategy balance `
   -Workdir "D:/path/to/project" `
   -Explain
@@ -136,6 +143,18 @@ Luna 负责执行边界清晰的子任务，
 
 支持 `none`、`low`、`medium`、`high`、`xhigh` 和 `max`。显式指定 effort 时，路由器会保留用户选择。
 
+### 显式覆盖模型
+
+```powershell
+& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_auto_task.ps1" `
+  -Task "审查认证模块" `
+  -Model sol `
+  -Effort xhigh `
+  -Workdir "D:/path/to/project"
+```
+
+`-Model` 支持 `auto`、`sol`、`terra`、`luna` 及完整模型 ID。显式模型只覆盖当前任务，不修改 Codex 全局配置。
+
 ## 离线路由评估
 
 离线评估不会调用任何模型：
@@ -152,6 +171,14 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/evaluate_auto_router.py" `
 - `xhigh` 升级行为
 - 中文约束型任务识别
 - 零路由模型调用保证
+
+## 单元测试
+
+项目使用 Python 标准库 `unittest`，没有第三方运行时依赖：
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py"
+```
 
 ## 多模型编排评测
 
@@ -208,21 +235,32 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/codex_cli_orchestration_ev
 ## 项目结构
 
 ```text
-skills/codex-auto-router/
-├── SKILL.md
-├── agents/
-│   └── openai.yaml
-├── references/
-│   ├── entrypoints.md
-│   └── router-contract.md
-└── scripts/
-    ├── select_auto_model.py
-    ├── invoke_auto_task.ps1
-    ├── evaluate_auto_router.py
-    ├── auto_router.py
-    ├── codex_cli_orchestration_eval.py
-    └── eval_cases.json
+.
+├── LICENSE
+├── pyproject.toml
+├── .github/workflows/test.yml
+├── tests/
+│   ├── test_routing_policy.py
+│   └── test_orchestration_engine.py
+└── skills/codex-auto-router/
+    ├── SKILL.md
+    ├── agents/openai.yaml
+    ├── references/
+    │   ├── entrypoints.md
+    │   └── router-contract.md
+    └── scripts/
+        ├── routing_policy.py
+        ├── select_auto_model.py
+        ├── auto_router.py
+        ├── invoke_auto_task.ps1
+        ├── install.ps1
+        ├── evaluate_auto_router.py
+        ├── orchestration_engine.py
+        ├── codex_cli_orchestration_eval.py
+        └── eval_cases.json
 ```
+
+远程仓库只发布 `codex-auto-router`；本地遗留的其他未跟踪 Skill 不属于发布内容。
 
 ## 卸载
 
@@ -236,4 +274,4 @@ Remove-Item -LiteralPath "$HOME/.codex/skills/codex-auto-router" -Recurse -Force
 
 ## License
 
-请根据使用场景补充合适的开源许可证。
+本项目采用 MIT License，详见 [LICENSE](LICENSE)。

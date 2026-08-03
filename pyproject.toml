@@ -1,0 +1,7 @@
+[project]
+name = "codex-auto-router"
+version = "0.1.0"
+description = "Deterministic Sol, Terra, and Luna routing for signed-in Codex CLI tasks"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = []

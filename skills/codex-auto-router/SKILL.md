@@ -21,6 +21,7 @@ This skill deliberately does not add an `Auto` Desktop model, replace `model_pro
 ```powershell
 & "<skill-dir>/scripts/invoke_auto_task.ps1" `
   -Task "Implement the requested change" `
+  -Model auto `
   -Strategy balance `
   -Workdir "C:/path/to/workspace" `
   -Explain
@@ -30,9 +31,9 @@ Strategies:
 
 - `intelligence`: Sol for complex work, Terra otherwise.
 - `balance`: Luna for constrained work, Terra by default, Sol for risk or complexity.
-- `cost`: Luna by default, Terra for complexity, Sol only for explicit high-risk signals.
+- `cost`: a model-tier cost proxy; use Luna by default, Terra for complexity, and Sol only for explicit high-risk signals.
 
-The selector makes zero model calls and reuses the active Codex login. Do not claim which authentication method is active unless checked in the current environment.
+The selector makes zero model calls and reuses the active Codex login. It is heuristic and can produce false upgrades or false downgrades; `-Model sol|terra|luna` and explicit effort choices remain authoritative. Do not claim which authentication method is active unless checked in the current environment.
 
 Default to `workspace-write`. Use `read-only` for analysis or review. Never select `danger-full-access` without explicit approval. Preserve explicit effort; otherwise use `high` for Sol/Terra and `medium` for Luna.
 

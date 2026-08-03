@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Zero-model-call evaluation for the isolated Auto selector."""
+"""Zero-model-call evaluation for the shared Auto routing policy."""
 
 from __future__ import annotations
 
@@ -10,11 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from select_auto_model import MODELS, select_model  # noqa: E402
+from auto_router import route_case  # noqa: E402
+from routing_policy import MODELS, select_model  # noqa: E402
 
 CASES = [
     ("constrained", "Reply with exactly OK", {"intelligence": "gpt-5.6-terra", "balance": "gpt-5.6-luna", "cost": "gpt-5.6-luna"}),
-    ("routine", "Implement a routine API endpoint and unit tests", {"intelligence": "gpt-5.6-terra", "balance": "gpt-5.6-terra", "cost": "gpt-5.6-luna"}),
+    ("routine", "Implement a routine API endpoint", {"intelligence": "gpt-5.6-terra", "balance": "gpt-5.6-terra", "cost": "gpt-5.6-luna"}),
     ("complex", "Redesign the distributed architecture and resolve concurrency tradeoffs", {"intelligence": "gpt-5.6-sol", "balance": "gpt-5.6-sol", "cost": "gpt-5.6-terra"}),
     ("high-risk", "Review a production authentication migration for security vulnerabilities", {"intelligence": "gpt-5.6-sol", "balance": "gpt-5.6-sol", "cost": "gpt-5.6-sol"}),
 ]
@@ -30,12 +31,20 @@ def evaluate() -> dict[str, object]:
             decision = select_model(prompt, strategy, "medium")
             checks.append(check(f"route:{strategy}:{case_id}", decision.model, expected[strategy]))
             routes.append({"strategy": strategy, "case": case_id, "model": decision.model, "reason": decision.reason})
+
+    parallel_case = {
+        "prompt": "Implement API and tests for several independent components",
+        "acceptance_criteria": ["API", "tests", "docs", "rollback"],
+    }
+    checks.append(check("variant:d-reachable", route_case(parallel_case, "balance")["variant"], "D"))
+    checks.append(check("incidental-security", select_model("Rename the security label", "balance").model, "gpt-5.6-luna"))
     checks.append(check("closed-allowlist", sorted(MODELS), ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]))
     checks.append(check("xhigh-escalation", select_model("Implement this change", "balance", "xhigh").model, "gpt-5.6-sol"))
-    checks.append(check("chinese-constrained", select_model("请格式化这段文本", "balance", "medium").model, "gpt-5.6-luna"))
+    checks.append(check("chinese-constrained", select_model("请格式化这段文本", "balance").model, "gpt-5.6-luna"))
+
     passed = sum(1 for item in checks if item["passed"])
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "modelCalls": 0,
         "summary": {"passed": passed, "failed": len(checks) - passed, "total": len(checks)},

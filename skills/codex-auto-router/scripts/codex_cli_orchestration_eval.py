@@ -12,7 +12,7 @@ import time
 from typing import Any
 
 from auto_router import route_case
-from live_orchestration_eval import (
+from orchestration_engine import (
     CallRecord,
     DEFAULT_CASES,
     RunContext,
@@ -21,6 +21,13 @@ from live_orchestration_eval import (
 
 
 ROOT = pathlib.Path(__file__).resolve().parent
+
+
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("value must be at least 1")
+    return parsed
 
 
 def extract_usage(events: list[dict[str, Any]]) -> tuple[int, int]:
@@ -180,7 +187,7 @@ class CodexCliClient:
                     latency_seconds=latency,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
-                    estimated_cost_usd=0.0,
+                    estimated_cost_usd=None,
                     response_id=thread_id,
                 )
             )
@@ -194,7 +201,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cases", type=pathlib.Path, default=DEFAULT_CASES)
     parser.add_argument("--variants", default="B,C")
     parser.add_argument("--limit", type=int, default=1)
-    parser.add_argument("--max-workers", type=int, default=2)
+    parser.add_argument("--max-workers", type=positive_int, default=2)
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--workdir", type=pathlib.Path, default=pathlib.Path.cwd())
     parser.add_argument("--results-dir", type=pathlib.Path, default=None)
@@ -241,13 +248,14 @@ def main() -> int:
     if not isinstance(cases, list) or not cases:
         raise ValueError("Cases file must contain a non-empty JSON array")
     variants = [item.strip().upper() for item in args.variants.split(",") if item.strip()]
+    routing_effort = args.effort_override or args.planner_effort or "medium"
 
     if args.route_only:
         route_mode = "balance" if args.routing_mode == "off" else args.routing_mode
         timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         route_results = []
         for case in cases[: args.limit]:
-            decision = route_case(case, route_mode)
+            decision = route_case(case, route_mode, routing_effort)
             route_results.append({"case_id": case["id"], "routing": decision})
             if args.explain_route:
                 print(
@@ -274,7 +282,7 @@ def main() -> int:
             encoding="utf-8",
         )
         print(f"Route report: {output_path}", flush=True)
-        return
+        return 0
 
     role_efforts = {
         role: value
@@ -300,7 +308,7 @@ def main() -> int:
                     "created_at": checkpoint_timestamp,
                     "backend": "signed-in-codex-cli",
                     "status": "partial",
-                    "cost_note": "Codex CLI does not expose per-call API billing in this harness.",
+                    "cost_note": "Codex CLI does not expose per-call billing; cost fields are null and cost mode is a model-tier proxy.",
                     "effort_override": args.effort_override,
                     "role_efforts": role_efforts,
                     "results": results,
@@ -317,7 +325,7 @@ def main() -> int:
             "balance" if args.shadow_auto and args.routing_mode == "off" else args.routing_mode
         )
         route_decision = (
-            route_case(case, route_mode) if route_mode != "off" else None
+            route_case(case, route_mode, routing_effort) if route_mode != "off" else None
         )
         case_variants = variants
         if route_decision and not args.shadow_auto:
@@ -352,7 +360,7 @@ def main() -> int:
                     "final_output": "",
                     "wall_seconds": getattr(exc, "orchestration_wall_seconds", time.perf_counter() - variant_started),
                     "summed_call_latency_seconds": 0.0,
-                    "estimated_cost_usd": 0.0,
+                    "estimated_cost_usd": None,
                     "calls": getattr(exc, "orchestration_records", []),
                     "error": {
                         "type": getattr(exc, "orchestration_error_type", type(exc).__name__),
@@ -389,7 +397,7 @@ def main() -> int:
             {
                 "created_at": timestamp,
                 "backend": "signed-in-codex-cli",
-                "cost_note": "Codex CLI does not expose per-call API billing in this harness.",
+                "cost_note": "Codex CLI does not expose per-call billing; cost fields are null and cost mode is a model-tier proxy.",
                 "effort_override": args.effort_override,
                 "role_efforts": role_efforts,
                 "results": results,
