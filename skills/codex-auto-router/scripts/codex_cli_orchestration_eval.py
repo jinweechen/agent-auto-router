@@ -3,15 +3,12 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-import os
 import pathlib
-import shutil
-import subprocess
-import tempfile
 import time
 from typing import Any
 
 from auto_router import route_case
+from codex_cli_client import CodexCliClient
 from orchestration_engine import (
     CallRecord,
     DEFAULT_CASES,
@@ -28,170 +25,6 @@ def positive_int(value: str) -> int:
     if parsed < 1:
         raise argparse.ArgumentTypeError("value must be at least 1")
     return parsed
-
-
-def extract_usage(events: list[dict[str, Any]]) -> tuple[int, int]:
-    input_tokens = 0
-    output_tokens = 0
-    for event in events:
-        usage = event.get("usage")
-        if not isinstance(usage, dict):
-            continue
-        input_tokens = max(input_tokens, int(usage.get("input_tokens", 0)))
-        output_tokens = max(output_tokens, int(usage.get("output_tokens", 0)))
-    return input_tokens, output_tokens
-
-
-def extract_thread_id(events: list[dict[str, Any]]) -> str:
-    for event in events:
-        if event.get("type") == "thread.started":
-            return str(event.get("thread_id", ""))
-    return ""
-
-
-class CodexCliClient:
-    def __init__(
-        self,
-        timeout_seconds: int = 600,
-        effort_override: str | None = None,
-        role_efforts: dict[str, str] | None = None,
-        workdir: pathlib.Path = ROOT,
-    ) -> None:
-        self.timeout_seconds = timeout_seconds
-        self.effort_override = effort_override
-        self.role_efforts = role_efforts or {}
-        self.workdir = workdir.resolve()
-        self.codex_command = self._resolve_codex_command()
-
-    @staticmethod
-    def _resolve_codex_command() -> list[str]:
-        checked: set[str] = set()
-        for name in ("codex", "codex.exe", "codex.cmd", "codex.bat", "codex.ps1"):
-            executable = shutil.which(name)
-            if not executable or executable.lower() in checked:
-                continue
-            checked.add(executable.lower())
-            suffix = pathlib.Path(executable).suffix.lower()
-            if suffix == ".ps1":
-                powershell = shutil.which("pwsh") or shutil.which("pwsh.exe")
-                powershell = powershell or shutil.which("powershell.exe")
-                if not powershell:
-                    continue
-                return [
-                    powershell,
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-File",
-                    executable,
-                ]
-            if suffix in {".cmd", ".bat"}:
-                command_shell = shutil.which("cmd.exe") or os.environ.get("COMSPEC")
-                if not command_shell:
-                    continue
-                return [command_shell, "/d", "/c", executable]
-            return [executable]
-        raise RuntimeError("Codex CLI executable or wrapper was not found on PATH")
-    def create(
-        self,
-        *,
-        context: RunContext,
-        role: str,
-        model: str,
-        effort: str,
-        instructions: str,
-        input_text: str,
-        max_output_tokens: int = 4000,
-    ) -> tuple[str, dict[str, Any]]:
-        role_key = "worker" if role.startswith("worker:") else role
-        effective_effort = (
-            self.effort_override
-            or self.role_efforts.get(role_key)
-            or ("high" if effort == "max" else effort)
-        )
-        prompt = (
-            "You are a bounded evaluation worker. Do not call tools, inspect files, or modify "
-            "anything. Respond directly using only the supplied task.\n\n"
-            f"Keep the response within {max_output_tokens} tokens.\n\n"
-            f"INSTRUCTIONS:\n{instructions}\n\nINPUT:\n{input_text}"
-        )
-
-        with tempfile.TemporaryDirectory(prefix="codex-cli-eval-") as temp_dir:
-            output_path = pathlib.Path(temp_dir) / "last-message.txt"
-            command = [
-                *self.codex_command,
-                "exec",
-                "--ephemeral",
-                "--ignore-user-config",
-                "--ignore-rules",
-                "--skip-git-repo-check",
-                "--sandbox",
-                "read-only",
-                "--color",
-                "never",
-                "--model",
-                model,
-                "--config",
-                f'model_reasoning_effort="{effective_effort}"',
-                "--json",
-                "--output-last-message",
-                str(output_path),
-                "--cd",
-                str(self.workdir),
-                "-",
-            ]
-
-            started = time.perf_counter()
-            completed = subprocess.run(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                input=prompt,
-                timeout=self.timeout_seconds,
-                check=False,
-            )
-            latency = time.perf_counter() - started
-
-            events: list[dict[str, Any]] = []
-            for line in completed.stdout.splitlines():
-                try:
-                    value = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(value, dict):
-                    events.append(value)
-
-            if completed.returncode != 0:
-                stderr_tail = completed.stderr[-2000:].strip()
-                stdout_tail = completed.stdout[-2000:].strip()
-                raise RuntimeError(
-                    f"Codex CLI failed for role={role}, model={model}, "
-                    f"exit={completed.returncode}\nSTDERR:\n{stderr_tail}\nSTDOUT:\n{stdout_tail}"
-                )
-            if not output_path.exists():
-                raise RuntimeError(f"Codex CLI produced no final message for role={role}")
-
-            output_text = output_path.read_text(encoding="utf-8").strip()
-            if not output_text:
-                raise RuntimeError(f"Codex CLI returned an empty message for role={role}")
-
-            input_tokens, output_tokens = extract_usage(events)
-            thread_id = extract_thread_id(events)
-            context.records.append(
-                CallRecord(
-                    role=role,
-                    model=model,
-                    effort=effective_effort,
-                    latency_seconds=latency,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    estimated_cost_usd=None,
-                    response_id=thread_id,
-                )
-            )
-            return output_text, {"events": events, "thread_id": thread_id}
 
 
 def parse_args() -> argparse.Namespace:
@@ -413,3 +246,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

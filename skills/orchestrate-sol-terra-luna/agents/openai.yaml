@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sol Terra Luna Orchestrator"
+  short_description: "Route tasks across Sol, Terra, and Luna roles"
+  default_prompt: "Use $orchestrate-sol-terra-luna to plan, dispatch, execute, and review this task with role-specific models."

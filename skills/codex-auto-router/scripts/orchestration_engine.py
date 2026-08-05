@@ -24,6 +24,8 @@ class CallRecord:
     output_tokens: int
     estimated_cost_usd: float | None
     response_id: str
+    cached_input_tokens: int = 0
+    reasoning_output_tokens: int = 0
 
 
 @dataclass
@@ -40,6 +42,30 @@ class RunContext:
     @property
     def total_latency(self) -> float:
         return sum(record.latency_seconds for record in self.records)
+
+    @property
+    def total_input_tokens(self) -> int:
+        return sum(record.input_tokens for record in self.records)
+
+    @property
+    def total_output_tokens(self) -> int:
+        return sum(record.output_tokens for record in self.records)
+
+    @property
+    def total_tokens(self) -> int:
+        return self.total_input_tokens + self.total_output_tokens
+
+    @property
+    def total_cached_input_tokens(self) -> int:
+        return sum(record.cached_input_tokens for record in self.records)
+
+    @property
+    def total_uncached_input_tokens(self) -> int:
+        return max(0, self.total_input_tokens - self.total_cached_input_tokens)
+
+    @property
+    def total_reasoning_output_tokens(self) -> int:
+        return sum(record.reasoning_output_tokens for record in self.records)
 
 
 class OrchestrationClient(Protocol):
@@ -78,6 +104,7 @@ def make_plan(
     case: dict[str, Any],
     model: str,
     effort: str,
+    max_tasks: int = 3,
 ) -> dict[str, Any]:
     output, _ = client.create(
         context=context,
@@ -87,16 +114,19 @@ def make_plan(
         instructions=(
             "Decompose the request into independent bounded tasks. Return only JSON with summary "
             "and tasks. Each task requires id, description, dependencies, and acceptance_criteria. "
-            "Return no more than three tasks."
+            f"Return no more than {max_tasks} tasks. Keep descriptions and criteria concise."
         ),
         input_text=json.dumps(
             {"request": case["prompt"], "acceptance_criteria": case["acceptance_criteria"]},
             ensure_ascii=False,
         ),
+        max_output_tokens=1200,
     )
     plan = parse_json_object(output)
     if not isinstance(plan.get("tasks"), list) or not plan["tasks"]:
         raise ValueError("Planner returned no tasks")
+    if len(plan["tasks"]) > max_tasks:
+        raise ValueError(f"Planner returned more than {max_tasks} tasks")
     return plan
 
 
@@ -105,6 +135,7 @@ def terra_dispatch(
     context: RunContext,
     case: dict[str, Any],
     plan: dict[str, Any],
+    max_tasks: int,
 ) -> dict[str, Any]:
     output, _ = client.create(
         context=context,
@@ -123,10 +154,13 @@ def terra_dispatch(
             },
             ensure_ascii=False,
         ),
+        max_output_tokens=1000,
     )
     normalized = parse_json_object(output)
     if not isinstance(normalized.get("tasks"), list) or not normalized["tasks"]:
         raise ValueError("Dispatcher returned no tasks")
+    if len(normalized["tasks"]) > max_tasks:
+        raise ValueError(f"Dispatcher returned more than {max_tasks} tasks")
     return normalized
 
 
@@ -171,8 +205,10 @@ def run_workers(
             effort="high",
             instructions=(
                 "Complete exactly the assigned bounded task. Do not redesign the architecture or "
-                "expand scope. Provide the concrete deliverable and satisfy its acceptance criteria."
+                "expand scope. Return concise implementation findings, file-level guidance, and "
+                "acceptance evidence without repeating the original request."
             ),
+            max_output_tokens=1800,
             input_text=json.dumps(
                 {
                     "original_request": case["prompt"],
@@ -226,26 +262,41 @@ def synthesize(
     worker_results: list[dict[str, Any]],
     model: str,
     effort: str,
+    execution_mode: bool = False,
 ) -> str:
+    instructions = (
+        "Inspect the workspace, reconcile worker findings, implement the requested changes, "
+        "run appropriate validation, and report changed files and remaining risks. Do not only "
+        "return a proposed patch."
+        if execution_mode
+        else "Reconcile worker outputs, correct inconsistencies, reject unsupported claims, and "
+        "return one complete deliverable satisfying every acceptance criterion."
+    )
+    compact_results = [
+        {
+            "task_id": result["task"].get("id"),
+            "description": result["task"].get("description"),
+            "acceptance_criteria": result["task"].get("acceptance_criteria", []),
+            "output": result["output"][:6000],
+        }
+        for result in worker_results
+    ]
     output, _ = client.create(
         context=context,
         role="reviewer",
         model=model,
         effort=effort,
-        instructions=(
-            "Reconcile worker outputs, correct inconsistencies, reject unsupported claims, and "
-            "return one complete deliverable satisfying every acceptance criterion."
-        ),
+        instructions=instructions,
         input_text=json.dumps(
             {
                 "request": case["prompt"],
                 "acceptance_criteria": case["acceptance_criteria"],
                 "plan": plan,
-                "worker_results": worker_results,
+                "worker_results": compact_results,
             },
             ensure_ascii=False,
         ),
-        max_output_tokens=6000,
+        max_output_tokens=4000,
     )
     return output
 
@@ -256,15 +307,21 @@ def direct(
     case: dict[str, Any],
     model: str,
     effort: str,
+    execution_mode: bool = False,
 ) -> str:
     output, _ = client.create(
         context=context,
         role="direct",
         model=model,
         effort=effort,
-        instructions="Produce a complete implementation-ready answer satisfying every criterion.",
+        instructions=(
+            "Inspect the workspace, implement the task, run appropriate validation, and report "
+            "changed files and remaining risks."
+            if execution_mode
+            else "Produce a complete implementation-ready answer satisfying every criterion."
+        ),
         input_text=json.dumps(case, ensure_ascii=False),
-        max_output_tokens=6000,
+        max_output_tokens=5000,
     )
     return output
 
@@ -275,6 +332,7 @@ def grade(
     case: dict[str, Any],
     final_output: str,
     model: str,
+    execution_mode: bool = False,
 ) -> dict[str, Any]:
     output, _ = client.create(
         context=context,
@@ -282,17 +340,22 @@ def grade(
         model=model,
         effort="high",
         instructions=(
-            "Return only JSON with score, passed, unmet_criteria, critical_errors, and rationale. "
-            "Passing requires every acceptance criterion and no critical error."
+            "Inspect the resulting workspace and candidate report. Return only JSON with score, "
+            "passed, unmet_criteria, critical_errors, and rationale. Passing requires every "
+            "acceptance criterion and no critical error. Do not modify files."
+            if execution_mode
+            else "Return only JSON with score, passed, unmet_criteria, critical_errors, and "
+            "rationale. Passing requires every acceptance criterion and no critical error."
         ),
         input_text=json.dumps(
             {
                 "request": case["prompt"],
                 "acceptance_criteria": case["acceptance_criteria"],
-                "candidate": final_output,
+                "candidate": final_output[-4000:] if execution_mode else final_output,
             },
             ensure_ascii=False,
         ),
+        max_output_tokens=800,
     )
     return parse_json_object(output)
 
@@ -302,6 +365,9 @@ def run_variant(
     case: dict[str, Any],
     variant: str,
     max_workers: int,
+    execution_mode: bool = False,
+    grade_enabled: bool = True,
+    worker_task_limit: int | None = None,
 ) -> dict[str, Any]:
     if max_workers < 1:
         raise ValueError("max_workers must be at least 1")
@@ -309,37 +375,76 @@ def run_variant(
     started = time.perf_counter()
 
     if variant == "A":
-        final_output = direct(client, context, case, SOL_MODEL, "max")
+        final_output = direct(client, context, case, SOL_MODEL, "max", execution_mode)
     elif variant in {"B", "C"}:
-        plan = make_plan(client, context, case, SOL_MODEL, "max")
+        plan = make_plan(
+            client, context, case, SOL_MODEL, "max", worker_task_limit or 3
+        )
         if variant == "C":
-            plan = terra_dispatch(client, context, case, plan)
+            plan = terra_dispatch(
+                client, context, case, plan, worker_task_limit or 3
+            )
         worker_results = run_workers(client, context, case, plan, max_workers)
         final_output = synthesize(
-            client, context, case, plan, worker_results, SOL_MODEL, "max"
+            client, context, case, plan, worker_results, SOL_MODEL, "max", execution_mode
         )
     elif variant == "D":
-        plan = make_plan(client, context, case, TERRA_MODEL, "high")
+        plan = make_plan(
+            client, context, case, TERRA_MODEL, "medium", worker_task_limit or 3
+        )
         worker_results = run_workers(client, context, case, plan, max_workers)
         final_output = synthesize(
-            client, context, case, plan, worker_results, TERRA_MODEL, "high"
+            client, context, case, plan, worker_results, TERRA_MODEL, "high", execution_mode
         )
     elif variant == "E":
-        final_output = direct(client, context, case, TERRA_MODEL, "high")
+        final_output = direct(client, context, case, TERRA_MODEL, "medium", execution_mode)
     elif variant == "F":
-        final_output = direct(client, context, case, LUNA_MODEL, "medium")
+        final_output = direct(client, context, case, LUNA_MODEL, "medium", execution_mode)
     else:
         raise ValueError(f"Unknown variant: {variant}")
 
     grader_model = TERRA_MODEL if variant in {"A", "B", "C"} else SOL_MODEL
-    grade_result = grade(client, context, case, final_output, grader_model)
+    if grade_enabled:
+        grading_status = "completed"
+        try:
+            grade_result = grade(
+                client, context, case, final_output, grader_model, execution_mode
+            )
+        except Exception as exc:
+            grading_status = "failed"
+            grade_result = {
+                "score": None,
+                "passed": False,
+                "unmet_criteria": [],
+                "critical_errors": [f"grader_failed: {type(exc).__name__}: {exc}"],
+                "rationale": "Implementation completed, but the grader did not return a valid result.",
+            }
+    else:
+        grading_status = "skipped"
+        grade_result = {
+            "score": None,
+            "passed": None,
+            "unmet_criteria": [],
+            "critical_errors": [],
+            "rationale": "Independent grading skipped by the token-saving execution policy.",
+        }
     return {
         "case_id": case["id"],
         "variant": variant,
         "grade": grade_result,
+        "implementation_status": "completed",
+        "grading_status": grading_status,
         "final_output": final_output,
         "wall_seconds": time.perf_counter() - started,
         "summed_call_latency_seconds": context.total_latency,
         "estimated_cost_usd": context.total_cost,
+        "tokens": {
+            "input": context.total_input_tokens,
+            "cached_input": context.total_cached_input_tokens,
+            "uncached_input": context.total_uncached_input_tokens,
+            "output": context.total_output_tokens,
+            "reasoning_output": context.total_reasoning_output_tokens,
+            "total": context.total_tokens,
+        },
         "calls": [record.__dict__ for record in context.records],
     }

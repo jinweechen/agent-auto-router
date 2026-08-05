@@ -180,6 +180,60 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/evaluate_auto_router.py" `
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
+## 多模型编排执行
+
+正式执行入口会自动选择 A-F 编排变体。规划、调度、Luna workers 和 grader 均为只读；只有直接执行模型或最终 reviewer 可以修改工作区：
+
+```powershell
+& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_orchestrated_task.ps1" `
+  -Task "实现认证模块重构并补充测试" `
+  -Strategy balance `
+  -Workdir "D:/path/to/project" `
+  -MaxWorkers 2 `
+  -Explain
+```
+
+显式指定 C 变体：
+
+```powershell
+& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_orchestrated_task.ps1" `
+  -Task "实现认证模块重构并补充测试" `
+  -Variant C `
+  -Workdir "D:/path/to/project"
+```
+
+使用 `-DryRun` 只查看路由，模型调用数为零。使用 `-Sandbox read-only` 可执行完整编排但禁止最终角色写入。
+
+正式执行默认要求 Git 工作区干净，避免编排修改与已有改动混在一起。只有明确接受该风险时才使用 `-AllowDirty`。普通短任务即使出现“API 和测试”等并行词，也不会自动进入 B/C/D；可以通过 `-Variant C` 显式覆盖。
+
+长任务默认输出逐角色 JSON 进度事件，并受总时限和调用预算约束：
+
+```powershell
+& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_orchestrated_task.ps1" `
+  -Task "实现模块并补充测试" `
+  -Variant D `
+  -Workdir "D:/path/to/project" `
+  -TotalTimeout 1800 `
+  -MaxModelCalls 7 `
+  -PlannerEffort high `
+  -WorkerEffort medium `
+  -ReviewerEffort high `
+  -GraderEffort high `
+  -ResultsDir "./orchestration-results"
+```
+
+正式子进程会设置 `PYTHONDONTWRITEBYTECODE=1`，减少测试过程中产生 `__pycache__`。`-Quiet` 可以关闭 stderr 进度事件。
+
+为了减少成功任务的总 Token，正式执行默认采用风险感知验收：低风险 A/E/F 和 D 不再额外调用 grader，B/C 与高风险任务仍保留独立验收。可以使用 `-GraderPolicy always` 强制验收，或使用 `-GraderPolicy never` 明确关闭。D 最多规划两个 workers。
+
+使用 `-MaxTotalTokens` 设置 Codex CLI 已暴露 Token 的软预算。达到预算后停止新的非写入角色，但仍允许最终 direct/reviewer 完成交付，避免已经消耗的规划 Token 失去结果。报告中的 Token 是 CLI 可观察值，不代表完整账单。
+
+默认 `-ContextMode lean` 只对 planner、dispatcher、worker、grader 等只读角色忽略个人 Codex 配置，并始终保留仓库规则；direct/reviewer 保留用户配置，确保写入权限正常。只读角色也依赖自定义 provider 或个人配置时使用 `-ContextMode full`。低风险 Terra 默认使用 `medium` effort，并要求批量读取、单次编辑和合并验证，减少 agent 工具循环造成的累计输入 Token。
+
+Token 报告进一步区分 `cached_input`、`uncached_input` 和 `reasoning_output`。CLI 的 input 计数可能累计一次 agent 运行中的多轮工具交互，不能解释为单个任务提示词长度。
+
+`workspace-write` 返回成功但 Git 状态没有变化时，执行结果会标记为 `failed_no_workspace_changes` 并返回非零。只有任务允许“无需修改”时才使用 `-AllowNoChanges`。
+
 ## 多模型编排评测
 
 准备测试用例：
@@ -241,7 +295,8 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/codex_cli_orchestration_ev
 ├── .github/workflows/test.yml
 ├── tests/
 │   ├── test_routing_policy.py
-│   └── test_orchestration_engine.py
+│   ├── test_orchestration_engine.py
+│   └── test_orchestrated_execution.py
 └── skills/codex-auto-router/
     ├── SKILL.md
     ├── agents/openai.yaml
@@ -253,6 +308,10 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/codex_cli_orchestration_ev
         ├── select_auto_model.py
         ├── auto_router.py
         ├── invoke_auto_task.ps1
+        ├── invoke_orchestrated_task.ps1
+        ├── invoke_orchestrated_task.py
+        ├── codex_cli_client.py
+        ├── execution_policy.py
         ├── install.ps1
         ├── evaluate_auto_router.py
         ├── orchestration_engine.py

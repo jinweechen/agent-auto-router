@@ -9,3 +9,6 @@ htmlcov/
 .codex-auto-*
 *.out.txt
 *.err.txt
+.orchestration-live-test-*/
+.token-benchmark-*/
+.skill-staging-codex-auto-router/

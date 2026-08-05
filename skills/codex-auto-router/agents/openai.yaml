@@ -1,4 +1,4 @@
 interface:
   display_name: "Codex Auto Router"
-  short_description: "Select Sol, Terra, or Luna without changing Codex config"
-  default_prompt: "Use $codex-auto-router to select the appropriate GPT-5.6 model locally and run this task without modifying my Codex or CC Switch configuration."
+  short_description: "Route and safely orchestrate Sol, Terra, and Luna tasks"
+  default_prompt: "Use $codex-auto-router to route this task and apply safe multi-model orchestration when it improves execution."

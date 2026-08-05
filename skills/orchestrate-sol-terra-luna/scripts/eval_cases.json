@@ -1,0 +1,39 @@
+[
+  {
+    "id": "idempotent_webhook_design",
+    "prompt": "Design an implementation-ready TypeScript payment webhook handler. It must safely handle duplicate delivery, out-of-order events, concurrent processing, transient database failures, and retries. Include the storage model, transaction boundaries, pseudocode, observability, and a focused test plan.",
+    "acceptance_criteria": [
+      "Defines a durable idempotency key and uniqueness constraint",
+      "Explains transaction boundaries and concurrency control",
+      "Handles duplicate and out-of-order events explicitly",
+      "Separates retryable failures from permanent failures",
+      "Includes pseudocode detailed enough to implement",
+      "Includes unit, integration, concurrency, and retry test cases",
+      "Includes actionable logging and metrics"
+    ]
+  },
+  {
+    "id": "review_retry_bug",
+    "prompt": "Review the following TypeScript retry helper and provide corrected implementation-ready code plus tests:\n\nasync function retry<T>(fn: () => Promise<T>, attempts = 3) {\n  for (let i = 0; i <= attempts; i++) {\n    try { return await fn(); } catch (error) {\n      await new Promise(r => setTimeout(r, 100 * 2 ** i));\n    }\n  }\n}\n\nThe corrected design must preserve the final error, avoid an extra attempt, support cancellation, and avoid sleeping after the final failure.",
+    "acceptance_criteria": [
+      "Runs no more than the configured number of attempts",
+      "Rethrows the final original error",
+      "Does not sleep after the final failed attempt",
+      "Supports AbortSignal cancellation",
+      "Provides valid TypeScript with an explicit Promise<T> return path",
+      "Tests success, eventual success, exhaustion, timing behavior, and cancellation"
+    ]
+  },
+  {
+    "id": "migration_plan",
+    "prompt": "Create an implementation plan for migrating a production REST endpoint from offset pagination to cursor pagination without breaking existing clients. The service is TypeScript, PostgreSQL, and has mobile clients that may remain on old versions for six months.",
+    "acceptance_criteria": [
+      "Provides a backward-compatible API transition",
+      "Defines cursor contents and stable ordering",
+      "Addresses inserts and deletes between page requests",
+      "Includes rollout, telemetry, rollback, and deprecation phases",
+      "Includes database index implications",
+      "Includes contract and integration testing"
+    ]
+  }
+]

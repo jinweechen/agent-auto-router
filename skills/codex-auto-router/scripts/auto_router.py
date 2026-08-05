@@ -29,12 +29,12 @@ def route_case(
     decision = select_model(prompt, mode, effort, acceptance_criteria)
 
     if decision.model == SOL_MODEL:
-        if decision.parallelizable:
+        if decision.orchestration_eligible:
             variant = "C" if decision.dependency_ambiguity else "B"
         else:
             variant = "A"
     elif decision.model == TERRA_MODEL:
-        variant = "D" if decision.parallelizable else "E"
+        variant = "D" if decision.orchestration_eligible else "E"
     else:
         variant = "F"
 
@@ -44,6 +44,7 @@ def route_case(
         f"risk={decision.risk_score}/10",
         f"clarity={decision.clarity_score}/10",
         f"parallelizable={str(decision.parallelizable).lower()}",
+        f"orchestration_eligible={str(decision.orchestration_eligible).lower()}",
         f"dependency_ambiguity={str(decision.dependency_ambiguity).lower()}",
         f"model_reason={decision.reason}",
     ]

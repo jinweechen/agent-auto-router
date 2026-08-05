@@ -40,6 +40,27 @@ class FakeClient:
         return f"output from {role}", {}
 
 
+class FailingGraderClient(FakeClient):
+    def create(self, **kwargs: Any) -> tuple[str, dict[str, Any]]:
+        if kwargs["role"] == "grader":
+            raise ValueError("invalid grader output")
+        return super().create(**kwargs)
+
+
+class ExpandingDispatcherClient(FakeClient):
+    def create(self, **kwargs: Any) -> tuple[str, dict[str, Any]]:
+        if kwargs["role"] == "dispatcher":
+            plan = json.loads(kwargs["input_text"])["plan"]
+            plan["tasks"].append({
+                "id": "three",
+                "description": "unexpected expansion",
+                "dependencies": [],
+                "acceptance_criteria": [],
+            })
+            return json.dumps(plan), {}
+        return super().create(**kwargs)
+
+
 class OrchestrationEngineTests(unittest.TestCase):
     case = {"id": "case", "prompt": "Do the work", "acceptance_criteria": ["done"]}
 
@@ -54,6 +75,38 @@ class OrchestrationEngineTests(unittest.TestCase):
     def test_max_workers_must_be_positive(self) -> None:
         with self.assertRaisesRegex(ValueError, "max_workers"):
             run_variant(FakeClient(), self.case, "A", 0)
+
+    def test_grader_failure_preserves_implementation_status(self) -> None:
+        result = run_variant(FailingGraderClient(), self.case, "A", 1)
+        self.assertEqual(result["implementation_status"], "completed")
+        self.assertEqual(result["grading_status"], "failed")
+        self.assertFalse(result["grade"]["passed"])
+
+    def test_grader_can_be_skipped_for_token_saving(self) -> None:
+        result = run_variant(FakeClient(), self.case, "E", 1, grade_enabled=False)
+        self.assertEqual(result["implementation_status"], "completed")
+        self.assertEqual(result["grading_status"], "skipped")
+        self.assertIsNone(result["grade"]["passed"])
+        self.assertEqual([call["role"] for call in result["calls"]], ["direct"])
+
+    def test_dispatcher_cannot_expand_beyond_worker_task_limit(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Dispatcher returned more than 2 tasks"):
+            run_variant(
+                ExpandingDispatcherClient(),
+                self.case,
+                "C",
+                2,
+                grade_enabled=False,
+                worker_task_limit=2,
+            )
+
+    def test_token_report_separates_cached_input(self) -> None:
+        context = RunContext(records=[CallRecord(
+            "direct", "model", "medium", 0.0, 100, 20, None, "id", 60, 5
+        )])
+        self.assertEqual(context.total_cached_input_tokens, 60)
+        self.assertEqual(context.total_uncached_input_tokens, 40)
+        self.assertEqual(context.total_reasoning_output_tokens, 5)
 
     def test_unknown_dependency_is_rejected(self) -> None:
         plan = {"tasks": [{"id": "one", "dependencies": ["missing"]}]}

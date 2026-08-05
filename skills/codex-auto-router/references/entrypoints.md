@@ -19,6 +19,23 @@ Use `-Model sol`, `-Model terra`, or `-Model luna` to override Auto for one task
 
 The script uses the existing Codex authentication and provider. It does not edit `config.toml`, install a provider, start a proxy, or change CC Switch state.
 
+## Orchestrated execution
+
+Use `scripts/invoke_orchestrated_task.ps1` for a real multi-model task:
+
+```powershell
+& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_orchestrated_task.ps1" `
+  -Task "Implement the requested change and tests" `
+  -Strategy balance `
+  -Workdir "C:/path/to/repo" `
+  -MaxWorkers 2 `
+  -Explain
+```
+
+Auto selects A-F. Use `-Variant C` to force Sol planning, Terra dispatch, Luna analysis workers, and Sol implementation/review. Non-final roles always use `read-only`; only `direct` or `reviewer` can receive `workspace-write`. Use `-DryRun` to route without launching models.
+
+Use `-TotalTimeout`, `-MaxModelCalls`, and role-specific effort parameters to bound long runs. Use `-ResultsDir` to persist the route, calls, workspace states, and grade. Progress events are JSON lines on stderr; `-Quiet` suppresses them.
+
 ## Offline calibration
 
 ```powershell

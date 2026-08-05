@@ -80,6 +80,7 @@ class RoutingFeatures:
     constrained: bool
     parallelizable: bool
     dependency_ambiguity: bool
+    orchestration_eligible: bool
 
 
 @dataclass(frozen=True)
@@ -101,6 +102,7 @@ class ModelDecision:
     constrained: bool
     parallelizable: bool
     dependency_ambiguity: bool
+    orchestration_eligible: bool
 
 
 def _count_hits(text: str, terms: Sequence[str]) -> int:
@@ -144,6 +146,9 @@ def analyze_task(
     dependency_ambiguity = ambiguity_hits > 0 or (
         ("dependency" in text or "依赖" in text) and criteria_count < 3
     )
+    orchestration_eligible = parallelizable and (
+        complexity_score >= 2 or criteria_count >= 3 or len(prompt) >= 900
+    )
 
     return RoutingFeatures(
         prompt_chars=len(prompt),
@@ -161,6 +166,7 @@ def analyze_task(
         constrained=constrained,
         parallelizable=parallelizable,
         dependency_ambiguity=dependency_ambiguity,
+        orchestration_eligible=orchestration_eligible,
     )
 
 
@@ -213,4 +219,5 @@ def select_model(
         constrained=features.constrained,
         parallelizable=features.parallelizable,
         dependency_ambiguity=features.dependency_ambiguity,
+        orchestration_eligible=features.orchestration_eligible,
     )

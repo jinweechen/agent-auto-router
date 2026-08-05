@@ -26,6 +26,16 @@ class RoutingPolicyTests(unittest.TestCase):
         self.assertEqual(result["selected_model"], "gpt-5.6-terra")
         self.assertEqual(result["variant"], "D")
 
+    def test_small_parallel_task_does_not_trigger_orchestration(self) -> None:
+        case = {
+            "prompt": "Implement API and tests for independent modules",
+            "acceptance_criteria": ["implementation", "tests"],
+        }
+        result = route_case(case, "balance")
+        self.assertTrue(result["features"]["parallelizable"])
+        self.assertFalse(result["features"]["orchestration_eligible"])
+        self.assertEqual(result["variant"], "E")
+
     def test_acceptance_criteria_alone_do_not_imply_parallel_work(self) -> None:
         case = {
             "prompt": "Implement a routine sequential change",

@@ -3,13 +3,16 @@ param(
     [Parameter(Mandatory)]
     [string]$Task,
     [ValidateSet('auto', 'sol', 'terra', 'luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')]
-    [string]$Model = 'auto',
+    [Alias('Model')]
+    [string]$ModelChoice = 'auto',
     [ValidateSet('intelligence', 'balance', 'cost')]
     [string]$Strategy = 'balance',
     [ValidateSet('', 'none', 'low', 'medium', 'high', 'xhigh', 'max')]
     [string]$Effort = '',
     [ValidateSet('read-only', 'workspace-write', 'danger-full-access')]
     [string]$Sandbox = 'workspace-write',
+    [ValidateSet('lean', 'full')]
+    [string]$ContextMode = 'lean',
     [string]$Workdir = (Get-Location).Path,
     [switch]$DryRun,
     [switch]$Explain,
@@ -39,12 +42,12 @@ if ($routeExitCode -ne 0) { throw 'Auto model selection failed.' }
 
 $route = $routeRaw | ConvertFrom-Json
 $selectorModel = [string]$route.decision.model
-$model = switch ($Model) {
+$model = switch ($ModelChoice) {
     'auto' { $selectorModel }
     'sol' { 'gpt-5.6-sol' }
     'terra' { 'gpt-5.6-terra' }
     'luna' { 'gpt-5.6-luna' }
-    default { $Model }
+    default { $ModelChoice }
 }
 if ($model -notin @('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')) {
     throw "Selector chose a model outside the allowlist: $model"
@@ -53,7 +56,7 @@ $resolvedEffort = $Effort
 if (-not $resolvedEffort) {
     $resolvedEffort = switch ($model) {
         'gpt-5.6-sol' { 'high' }
-        'gpt-5.6-terra' { 'high' }
+        'gpt-5.6-terra' { 'medium' }
         default { 'medium' }
     }
 }
@@ -61,7 +64,7 @@ $explanation = [pscustomobject]@{
     strategy = $Strategy
     model = $model
     effort = $resolvedEffort
-    reason = if ($Model -eq 'auto') { $route.decision.reason } else { 'explicit_model' }
+    reason = if ($ModelChoice -eq 'auto') { $route.decision.reason } else { 'explicit_model' }
     selectorModel = $selectorModel
     features = [pscustomobject]@{
         promptChars = $route.decision.prompt_chars
@@ -73,7 +76,7 @@ $explanation = [pscustomobject]@{
     localProxyReceivesCredential = $false
     routeModelCalls = 0
 }
-if ($DryRun) { $explanation; exit 0 }
+if ($DryRun) { $explanation; return }
 if ($Explain) { $explanation | ConvertTo-Json -Depth 6 | Write-Host }
 
 $arguments = @(
@@ -81,6 +84,9 @@ $arguments = @(
     '-C', (Resolve-Path -LiteralPath $Workdir).Path,
     '-m', $model, '-c', "model_reasoning_effort='$resolvedEffort'"
 )
+if ($ContextMode -eq 'lean' -and $Sandbox -eq 'read-only') {
+    $arguments = @('exec', '--ignore-user-config') + $arguments[1..($arguments.Count - 1)]
+}
 if ($Json) { $arguments += '--json' }
 $arguments += '-'
 
