@@ -1,4 +1,4 @@
 interface:
   display_name: "Codex Auto Router"
-  short_description: "Route and safely orchestrate Sol, Terra, and Luna tasks"
-  default_prompt: "Use $codex-auto-router to route this task and apply safe multi-model orchestration when it improves execution."
+  short_description: "Plan token-efficient routes across trusted Codex models"
+  default_prompt: "Use $codex-auto-router to select a trusted model, effort, topology, and bounded repository context; measure privacy-safe efficiency and use approval-gated calibration or validation escalation only when requested."

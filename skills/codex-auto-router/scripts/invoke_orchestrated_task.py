@@ -10,12 +10,17 @@ import pathlib
 import subprocess
 import sys
 import threading
+import time
 from typing import Any
 
 from auto_router import VARIANT_LABELS, route_case
 from codex_cli_orchestration_eval import CodexCliClient, positive_int
+from model_registry import load_model_registry
 from orchestration_engine import run_variant
-from routing_policy import EFFORTS, STRATEGIES
+from orchestration_profiles import load_orchestration_profiles
+from policy_learning import append_route_event, default_feedback_path
+from repository_context import build_repository_context, inspect_repository
+from routing_policy import DEFAULT_STATE_DIR, EFFORTS, STRATEGIES, load_active_policy
 
 
 def should_run_grader(routing: dict[str, Any], variant: str, policy: str) -> bool:
@@ -116,6 +121,90 @@ def results_dir_is_inside_workdir(
     )
 
 
+def feedback_execution_identity(
+    routing: dict[str, Any],
+    execution_result: dict[str, Any] | None = None,
+) -> tuple[str, str]:
+    selected_model = str(routing["selected_model"])
+    selected_effort = str(routing["effort"])
+    if not execution_result:
+        return selected_model, selected_effort
+    variant = str(execution_result.get("variant", routing.get("selected_variant", "")))
+    final_role = "direct" if variant in {"A", "E", "F"} else "reviewer"
+    resolved_role = execution_result.get("resolved_roles", {}).get(final_role, {})
+    if isinstance(resolved_role, dict) and resolved_role.get("model"):
+        selected_model = str(resolved_role["model"])
+        selected_effort = str(resolved_role.get("effort") or selected_effort)
+    for call in reversed(execution_result.get("calls", [])):
+        if isinstance(call, dict) and call.get("role") == final_role:
+            selected_model = str(call.get("model") or selected_model)
+            selected_effort = str(call.get("effort") or selected_effort)
+            break
+    return selected_model, selected_effort
+
+
+def record_route_feedback(
+    args: argparse.Namespace,
+    routing: dict[str, Any],
+    route_id: str,
+    started_at: float,
+    exit_code: int,
+    observed_tokens: dict[str, int] | None = None,
+    execution_result: dict[str, Any] | None = None,
+) -> None:
+    if args.no_feedback:
+        return
+    feedback_path = args.feedback_file or default_feedback_path(args.state_dir)
+    features = dict(routing["features"])
+    repository_features = routing.get("repository_features")
+    if isinstance(repository_features, dict):
+        features.update(repository_features)
+    selected_model, selected_effort = feedback_execution_identity(
+        routing, execution_result
+    )
+    payload = {
+        "route_id": route_id,
+        "strategy": args.strategy,
+        "effort": selected_effort,
+        "selector_model": routing["selected_model"],
+        "selected_model": selected_model,
+        "target_tier": routing["target_tier"],
+        "reason": routing["model_reason"],
+        "features": {
+            key: features[key]
+            for key in (
+                "prompt_chars", "criteria_count", "complexity_score", "risk_score",
+                "clarity_score", "high_risk", "constrained", "parallelizable",
+                "dependency_ambiguity", "orchestration_eligible", "scope_hits",
+                "algorithm_hits", "repo_files", "source_files", "test_files",
+                "language_count", "manifest_count", "large_repo", "monorepo",
+                "dirty_worktree", "is_git_repo", "task_has_path_hint",
+            )
+            if key in features
+        },
+        "policy_version": routing["router_version"],
+        "policy_digest": routing["policy_digest"],
+        "registry_digest": routing["registry_digest"],
+        "explicit_override": args.variant != "auto",
+        "exit_code": exit_code,
+        "duration_ms": int((time.monotonic() - started_at) * 1000),
+        "observed_tokens": {
+            "input": int(observed_tokens.get("input_tokens", 0)),
+            "cached_input": int(observed_tokens.get("cached_input_tokens", 0)),
+            "output": int(observed_tokens.get("output_tokens", 0)),
+            "reasoning_output": int(observed_tokens.get("reasoning_output_tokens", 0)),
+            "total": int(observed_tokens.get("total_tokens", 0)),
+        } if observed_tokens is not None else None,
+    }
+    try:
+        append_route_event(payload, feedback_path)
+    except Exception as exc:
+        print(
+            f"warning: route feedback was not recorded for {route_id}: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     task_input = parser.add_mutually_exclusive_group(required=True)
@@ -132,6 +221,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-total-tokens", type=positive_int, default=None)
     parser.add_argument("--workdir", type=pathlib.Path, default=pathlib.Path.cwd())
     parser.add_argument("--results-dir", type=pathlib.Path, default=None)
+    parser.add_argument("--state-dir", type=pathlib.Path, default=DEFAULT_STATE_DIR)
+    parser.add_argument("--feedback-file", type=pathlib.Path, default=None)
+    parser.add_argument("--no-feedback", action="store_true")
     parser.add_argument(
         "--sandbox",
         choices=("read-only", "workspace-write"),
@@ -154,6 +246,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    started_at = time.monotonic()
     if (
         args.results_dir is not None
         and results_dir_is_inside_workdir(args.results_dir, args.workdir)
@@ -192,8 +285,27 @@ def main() -> int:
         "prompt": prompt.strip(),
         "acceptance_criteria": criteria,
     }
+    repository_features = inspect_repository(args.workdir, prompt)
+    repository_features.pop("files", None)
+    case["repository_features"] = repository_features
     routing_effort = args.effort or args.planner_effort or "medium"
-    routing = route_case(case, args.strategy, routing_effort)
+    active_policy, policy_source = load_active_policy(args.state_dir)
+    registry = load_model_registry()
+    profiles = load_orchestration_profiles()
+    routing = route_case(case, args.strategy, routing_effort, active_policy, registry)
+    context_budget = routing["execution_plan"]["context"]
+    repository_context, repository_context_metadata = build_repository_context(
+        args.workdir,
+        prompt,
+        max_candidate_files=int(context_budget["maxCandidateFiles"]),
+        repo_map_tokens=int(context_budget["repoMapTokens"]),
+    )
+    if repository_context_metadata["context_useful"]:
+        case["repository_context"] = repository_context
+    routing["policy_source"] = policy_source
+    routing["registry_source"] = registry.source
+    routing["profile_source"] = profiles.source
+    routing["route_id"] = run_id
     variant = routing["variant"] if args.variant == "auto" else args.variant
     routing["selected_variant"] = variant
     routing["selected_route"] = VARIANT_LABELS[variant]
@@ -288,6 +400,9 @@ def main() -> int:
             execution_mode=True,
             grade_enabled=grader_enabled,
             worker_task_limit=worker_task_limit,
+            registry=registry,
+            profiles=profiles,
+            required_capabilities=tuple(routing["required_capabilities"]),
         )
     except Exception as exc:
         after_status = workspace_status(args.workdir)
@@ -303,6 +418,9 @@ def main() -> int:
         }
         write_report(args.results_dir, run_id, failure)
         print(json.dumps(failure, ensure_ascii=False, indent=2), file=sys.stderr)
+        record_route_feedback(
+            args, routing, run_id, started_at, 1, client.observed_usage()
+        )
         return 1
     after_status = workspace_status(args.workdir)
     workspace_modified = workspace_was_modified(before_status, after_status)
@@ -338,7 +456,17 @@ def main() -> int:
             f"grade_passed={result['grade'].get('passed')} report={payload.get('report_path')}",
             file=sys.stderr,
         )
-    return 1 if no_change_failure else 0
+    exit_code = 1 if no_change_failure else 0
+    record_route_feedback(
+        args,
+        routing,
+        run_id,
+        started_at,
+        exit_code,
+        client.observed_usage(),
+        result,
+    )
+    return exit_code
 
 
 if __name__ == "__main__":

@@ -27,6 +27,8 @@ param(
     [string]$Sandbox = 'workspace-write',
     [string]$Workdir = (Get-Location).Path,
     [string]$ResultsDir = '',
+    [string]$StateDir = $(if ($env:CODEX_AUTO_ROUTER_STATE_DIR) { $env:CODEX_AUTO_ROUTER_STATE_DIR } else { Join-Path $HOME '.codex\auto-router' }),
+    [string]$FeedbackFile = '',
     [ValidateSet('', 'none', 'low', 'medium', 'high', 'xhigh', 'max')]
     [string]$PlannerEffort = '',
     [ValidateSet('', 'none', 'low', 'medium', 'high', 'xhigh', 'max')]
@@ -41,8 +43,9 @@ param(
     [switch]$AllowDirty,
     [switch]$AllowNoChanges,
     [switch]$Explain,
-    [switch]$Json
-    ,[switch]$Quiet
+    [switch]$Json,
+    [switch]$Quiet,
+    [switch]$NoFeedback
 )
 
 $ErrorActionPreference = 'Stop'
@@ -63,11 +66,13 @@ $arguments = @(
     '--total-timeout', $TotalTimeout, '--max-model-calls', $MaxModelCalls,
     '--grader-policy', $GraderPolicy,
     '--context-mode', $ContextMode,
+    '--state-dir', $StateDir,
     '--sandbox', $Sandbox, '--workdir', (Resolve-Path -LiteralPath $Workdir).Path
 )
 if ($Effort) { $arguments += @('--effort', $Effort) }
 if ($MaxTotalTokens -gt 0) { $arguments += @('--max-total-tokens', $MaxTotalTokens) }
 if ($ResultsDir) { $arguments += @('--results-dir', $ResultsDir) }
+if ($FeedbackFile) { $arguments += @('--feedback-file', $FeedbackFile) }
 foreach ($roleEffort in @(
     @('planner', $PlannerEffort), @('dispatcher', $DispatcherEffort),
     @('worker', $WorkerEffort), @('reviewer', $ReviewerEffort),
@@ -84,6 +89,7 @@ if ($AllowNoChanges) { $arguments += '--allow-no-changes' }
 if ($Explain) { $arguments += '--explain' }
 if ($Json) { $arguments += '--json' }
 if ($Quiet) { $arguments += '--no-progress' }
+if ($NoFeedback) { $arguments += '--no-feedback' }
 
 $previousOutputEncoding = $OutputEncoding
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)

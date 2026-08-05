@@ -9,6 +9,7 @@ $ErrorActionPreference = 'Stop'
 $sourcePath = (Resolve-Path -LiteralPath $Source).Path
 $targetRoot = Join-Path $CodexHome 'skills'
 $targetPath = Join-Path $targetRoot 'codex-auto-router'
+$backupRoot = Join-Path $CodexHome 'skill-backups\codex-auto-router'
 $stagingPath = Join-Path $targetRoot ".codex-auto-router-install-$PID"
 $previousPath = Join-Path $targetRoot ".codex-auto-router-previous-$PID"
 
@@ -27,12 +28,17 @@ try {
     New-Item -ItemType Directory -Path $stagingPath -Force | Out-Null
     $sourceItems = Get-ChildItem -LiteralPath $sourcePath -Force
     Copy-Item -LiteralPath $sourceItems.FullName -Destination $stagingPath -Recurse -Force
+    Get-ChildItem -LiteralPath $stagingPath -Directory -Filter '__pycache__' -Recurse |
+        Remove-Item -Recurse -Force
+    Get-ChildItem -LiteralPath $stagingPath -File -Filter '*.pyc' -Recurse |
+        Remove-Item -Force
     if (-not (Test-Path -LiteralPath (Join-Path $stagingPath 'SKILL.md') -PathType Leaf)) {
         throw 'Staged skill is incomplete: SKILL.md is missing.'
     }
 
     if ($Backup -and (Test-Path -LiteralPath $targetPath)) {
-        $backupPath = "$targetPath.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+        New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
+        $backupPath = Join-Path $backupRoot (Get-Date -Format 'yyyyMMdd-HHmmss')
         Copy-Item -LiteralPath $targetPath -Destination $backupPath -Recurse -Force
     }
 

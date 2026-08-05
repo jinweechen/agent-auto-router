@@ -1,6 +1,6 @@
 # Codex Auto Router
 
-为 Codex 自动选择 GPT-5.6 Sol、Terra 或 Luna 的隔离式路由 Skill。
+为 Codex 从受信模型注册表中自动选择模型的隔离式路由 Skill；默认注册 Sol、Terra 和 Luna。
 
 它在任务执行前使用本地确定性规则完成选模，然后直接调用用户已经登录的官方 `codex exec`。路由过程不调用额外模型，不修改 Codex 全局配置，也不接管 CC Switch 的账号和会话管理。
 
@@ -12,14 +12,22 @@
 - 不启动本地 Responses 代理，不接触或转发登录凭据。
 - 与 CC Switch 的账号切换和历史会话同步保持隔离。
 - 支持 Sol 规划、Terra 调度、Luna 执行、Sol 验收的高级编排评测。
+- 支持隐私最小化反馈、候选策略离线验证、人工审批生效和版本回滚。
+- 支持通过版本化注册表扩展模型，并把“允许显式试用”和“允许 Auto 选择”分开。
+- 联合选择模型、reasoning effort、直接/编排拓扑和仓库上下文预算。
+- 单模型与编排路径统一采集 CLI 可观察 Token，并按验收通过结果衡量效率。
+- 可选的一次性验证失败升级；必须由用户显式开启并提供确定性验证命令。
 
 ## 工作方式
 
 ```text
 用户任务
   -> 本地确定性分类
-  -> 选择 Sol / Terra / Luna
+  -> 读取已审批的活动策略
+  -> 选择能力层、effort、拓扑和上下文预算
+  -> 从受信注册表解析具体模型
   -> 通过 UTF-8 stdin 调用 codex exec
+  -> 记录不含任务正文的路由结果
   -> 返回执行结果
 ```
 
@@ -27,19 +35,46 @@ Auto 是一次任务开始前的路由决策，不是第四个模型，也不会
 
 ## 模型策略
 
-| 模型 | 主要用途 |
-| --- | --- |
-| `gpt-5.6-sol` | 高风险、架构设计、复杂重构、歧义或深度推理任务 |
-| `gpt-5.6-terra` | 日常开发、常规调试和均衡型任务 |
-| `gpt-5.6-luna` | 格式化、提取、翻译、重复性和成本敏感任务 |
+默认注册表映射如下：
+
+| 能力层 | 默认模型 | 主要用途 |
+| --- | --- | --- |
+| `frontier` | `gpt-5.6-sol` | 高风险、架构设计、复杂重构、歧义或深度推理任务 |
+| `balanced` | `gpt-5.6-terra` | 日常开发、常规调试和均衡型任务 |
+| `fast` | `gpt-5.6-luna` | 格式化、提取、翻译、重复性和成本敏感任务 |
 
 支持三种路由策略：
 
 | 策略 | 行为 |
 | --- | --- |
-| `intelligence` | 质量优先，复杂任务使用 Sol，其余主要使用 Terra |
-| `balance` | 推荐默认值；简单任务用 Luna，常规任务用 Terra，复杂或高风险任务用 Sol |
-| `cost` | 模型层级成本代理；默认使用 Luna，复杂任务使用 Terra，高风险任务才使用 Sol |
+| `intelligence` | 质量优先，复杂任务使用 `frontier`，其余主要使用 `balanced` |
+| `balance` | 推荐默认值；简单任务用 `fast`，常规任务用 `balanced`，复杂或高风险任务用 `frontier` |
+| `cost` | 模型层级成本代理；默认使用 `fast`，复杂任务使用 `balanced`，高风险任务才使用 `frontier` |
+
+## 扩展其它模型
+
+模型统一登记在 `scripts/model_registry.json`。每个模型需要声明 ID、别名、能力层、选择优先级、质量/成本/延迟等级、默认 effort、能力、允许角色以及两个独立开关：
+
+- `enabled: true`：允许用户通过 `-Model` 显式试用。
+- `autoEligible: true`：允许能力层解析器自动选择；新模型初次加入时应保持 `false`。
+
+同一能力层和角色存在多个可自动选择模型时，数值更小的 `priority` 优先。编排角色位于 `scripts/orchestration_profiles.json`，默认 A-F 行为保持不变，但角色绑定的是能力层，不再硬编码模型 ID。profile 中显式填写的模型同样属于 Auto 路由，必须保持 `autoEligible: true` 并满足任务要求的能力层和能力；校验器会额外确认高风险 A/B/C 的最终写入角色仍满足 `frontier + high-risk-primary`。
+
+修改注册表后先执行零模型调用校验：
+
+```powershell
+python "./skills/codex-auto-router/scripts/validate_model_registry.py"
+```
+
+安全上线顺序：
+
+1. 登记新模型，设置 `enabled: true`、`autoEligible: false`。
+2. 使用 `-Model <alias> -Sandbox read-only` 做受控真实调用，确认当前 Codex provider 确实支持该模型。
+3. 在相同用例上进行匹配评测，记录质量、Token、耗时和失败率。
+4. 评测达标后设置 `autoEligible: true`，确定能力层、角色和 `priority`。
+5. 再次运行注册表校验、完整测试和 Dry Run，人工审核后安装。
+
+注册表不会安装模型、切换 provider 或修改 Codex 配置。当前 provider 不支持的模型会明确失败，不会静默回退。
 
 ## 路由权衡与限制
 
@@ -71,7 +106,7 @@ cd codex-auto-router
 & "./skills/codex-auto-router/scripts/install.ps1"
 ```
 
-重复运行安装脚本会通过暂存目录安全替换旧版本，不会生成嵌套的 `codex-auto-router/codex-auto-router`。需要保留旧版本时添加 `-Backup`。
+重复运行安装脚本会通过暂存目录安全替换旧版本，不会生成嵌套的 `codex-auto-router/codex-auto-router`。需要保留旧版本时添加 `-Backup`；备份保存在 `~/.codex/skill-backups/codex-auto-router`，避免被 Codex 重复识别为另一个同名 Skill。
 
 安装后重新启动 Codex，让 Skill 元数据重新加载。
 
@@ -153,7 +188,26 @@ Luna 负责执行边界清晰的子任务，
   -Workdir "D:/path/to/project"
 ```
 
-`-Model` 支持 `auto`、`sol`、`terra`、`luna` 及完整模型 ID。显式模型只覆盖当前任务，不修改 Codex 全局配置。
+`-Model` 支持 `auto`，以及受信注册表内所有已启用模型的别名和完整 ID。显式模型只覆盖当前任务，不修改 Codex 全局配置；`autoEligible: false` 的模型仍可显式试用。
+
+每次非 Dry Run 的单模型或编排执行默认记录一个隐私最小化结果：路由 ID、数值/布尔特征、选择的模型、退出码、耗时，以及 CLI JSON 事件实际暴露的 input、cached input、output、reasoning output Token。无法观测时记录为 `null`，不会猜测或按零处理。日志不会保存任务正文、模型回复、工具输出或凭据。使用 `-Explain` 查看路由 ID，使用 `-NoFeedback` 关闭本次记录；`-StateDir` 和 `-FeedbackFile` 可隔离状态位置。
+
+Auto 同时给出 effort、直接/编排拓扑和分层上下文预算。路由前只读检查仓库结构，确定性排序候选路径；微型仓库没有相关候选时不注入仓库摘要，避免无效 Token。显式模型和 effort 始终优先。
+
+### 显式验证失败升级
+
+只有用户明确允许、且首次模型执行成功但确定性验证失败时，才会升级到下一个受信能力层，最多一次：
+
+```powershell
+& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_auto_task.ps1" `
+  -Task "实现修改并通过测试" `
+  -Model auto `
+  -Workdir "D:/path/to/project" `
+  -ValidationCommand @('python', '-m', 'unittest', 'discover', '-s', 'tests') `
+  -EscalateOnValidationFailure
+```
+
+验证命令按 argv 数组执行，不解释为任意 Shell 字符串。升级前会明确警告，升级后重新验证；显式模型不允许自动升级。认证、网络、provider、模型不可用、沙箱等 CLI 失败直接返回，不触发升级。升级后的成功不会被用于训练初始能力层阈值。
 
 ## 离线路由评估
 
@@ -167,10 +221,76 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/evaluate_auto_router.py" `
 评估内容包括：
 
 - 三种策略的代表性路由结果
-- 模型 allowlist
+- 受信模型注册表及高风险能力门槛
 - `xhigh` 升级行为
 - 中文约束型任务识别
 - 零路由模型调用保证
+
+## 审批式自我优化
+
+路由器可以根据人工标注过的真实结果自动生成候选阈值，但不会自行改写 Python 代码，也不会自动发布候选策略。完整闭环为：
+
+```text
+自动记录路由结果
+  -> 人工标注更合适的模型
+  -> 确定性优化器生成候选阈值
+  -> 独立验证集和安全门检查
+  -> 人工显式批准
+  -> 活动策略生效并保留回滚快照
+```
+
+查看状态：
+
+```powershell
+python "$HOME/.codex/skills/codex-auto-router/scripts/policy_learning.py" status
+```
+
+`status.efficiency` 会显示 Token 覆盖率、人工验收结果、按最终模型汇总的通过率和平均可观察 Token。只有全部已标注任务都有 Token 数据时才计算 `observedTokensPerPass`。
+
+根据执行时显示的 `routeId` 标注结果：
+
+```powershell
+python "$HOME/.codex/skills/codex-auto-router/scripts/policy_learning.py" label `
+  --route-id "<route-id>" `
+  --preferred-model gpt-5.6-terra `
+  --outcome pass
+```
+
+默认至少需要 20 条带人工标签的自动路由。达到门槛后，`label` 会自动在 `~/.codex/auto-router/candidates` 下生成候选；可以添加 `--no-auto-propose` 禁用。也可以手动指定候选输出位置。生成候选不会改变当前策略，也不会调用模型：
+
+```powershell
+python "$HOME/.codex/skills/codex-auto-router/scripts/policy_learning.py" propose `
+  --output "./candidate-policy.json"
+```
+
+显式模型或编排变体覆盖仍会被记录，但不会进入学习样本，避免把一次人工覆盖直接当作通用策略。检查候选文件中的 `eligibleForApproval`、验证集准确率、加权损失、误降级数和 `safetyChecks`。只有满足门禁的候选才能显式批准；批准时会用当前反馈日志重新计算指标，不能只靠修改候选文件绕过门禁：
+
+```powershell
+python "$HOME/.codex/skills/codex-auto-router/scripts/policy_learning.py" approve `
+  --candidate "./candidate-policy.json" `
+  --approved-by "reviewer-name"
+```
+
+回滚到最近一个不同的历史版本：
+
+```powershell
+python "$HOME/.codex/skills/codex-auto-router/scripts/policy_learning.py" rollback `
+  --approved-by "reviewer-name"
+```
+
+学习状态默认保存在 `~/.codex/auto-router`，与 Skill 安装目录分离，因此重新安装 Skill 不会丢失活动策略、审计日志和回滚历史。策略 schema v2 学习的是 `fast / balanced / frontier` 复杂度边界，不学习任意模型 ID。高风险任务始终要求 `frontier + high-risk-primary`；注册表、风险词表和用户显式覆盖不会被优化器修改。显式试用但尚未进入 Auto 的模型标签也不会参与阈值学习。
+
+## 匹配开发效率评测
+
+要判断某个模型、effort 或拓扑是否真正节省 Token，必须对同一批 `caseId` 使用同一外部验收标准。结果文件只能包含 `caseId`、`configuration`、可选的 `model`/`effort`、`accepted`、可选 `tokens`、`durationMs` 和可选 `retries`，不能包含任务正文或回复：
+
+```powershell
+python "$HOME/.codex/skills/codex-auto-router/scripts/evaluate_development_routes.py" `
+  --results "./matched-results.json" `
+  --output "./matched-summary.json"
+```
+
+工具先比较验收通过率，只在双方都通过的匹配用例上计算 Token 差异；Token 覆盖不完整时不计算每个通过任务的 Token。CLI 计数不是账单金额，因此不会输出虚构成本。
 
 ## 单元测试
 
@@ -226,7 +346,7 @@ python -m unittest discover -s tests -p "test_*.py"
 
 为了减少成功任务的总 Token，正式执行默认采用风险感知验收：低风险 A/E/F 和 D 不再额外调用 grader，B/C 与高风险任务仍保留独立验收。可以使用 `-GraderPolicy always` 强制验收，或使用 `-GraderPolicy never` 明确关闭。D 最多规划两个 workers。
 
-使用 `-MaxTotalTokens` 设置 Codex CLI 已暴露 Token 的软预算。达到预算后停止新的非写入角色，但仍允许最终 direct/reviewer 完成交付，避免已经消耗的规划 Token 失去结果。报告中的 Token 是 CLI 可观察值，不代表完整账单。
+使用 `-MaxTotalTokens` 设置 Codex CLI 已暴露 Token 的软预算，并把并发执行中尚未完成调用的预计 Token 预留计入判断。达到预算后停止新的非写入角色，但仍允许最终 direct/reviewer 完成交付，避免已经消耗的规划 Token 失去结果。报告中的 Token 是 CLI 可观察值，不代表完整账单。
 
 默认 `-ContextMode lean` 只对 planner、dispatcher、worker、grader 等只读角色忽略个人 Codex 配置，并始终保留仓库规则；direct/reviewer 保留用户配置，确保写入权限正常。只读角色也依赖自定义 provider 或个人配置时使用 `-ContextMode full`。低风险 Terra 默认使用 `medium` effort，并要求批量读取、单次编辑和合并验证，减少 agent 工具循环造成的累计输入 Token。
 
@@ -280,6 +400,10 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/codex_cli_orchestration_ev
 - 替换全局模型 provider
 - 启动 credential-forwarding 代理
 - 读取、记录或转发登录凭据
+- 在反馈日志中记录任务正文、模型回复或工具输出
+- 未经人工审批激活候选路由策略
+- 通过学习降低高风险任务的 `frontier + high-risk-primary` 安全边界
+- 从任务文本、环境内容或模型输出动态注入模型 ID
 - 修改当前 Desktop 对话的模型
 - 在模型不可用时静默切换到其他层级
 - 未经允许使用 `danger-full-access`
@@ -295,6 +419,8 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/codex_cli_orchestration_ev
 ├── .github/workflows/test.yml
 ├── tests/
 │   ├── test_routing_policy.py
+│   ├── test_model_registry.py
+│   ├── test_policy_learning.py
 │   ├── test_orchestration_engine.py
 │   └── test_orchestrated_execution.py
 └── skills/codex-auto-router/
@@ -304,7 +430,18 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/codex_cli_orchestration_ev
     │   ├── entrypoints.md
     │   └── router-contract.md
     └── scripts/
+        ├── model_registry.json
+        ├── model_registry.py
+        ├── orchestration_profiles.json
+        ├── orchestration_profiles.py
+        ├── validate_model_registry.py
         ├── routing_policy.py
+        ├── policy_learning.py
+        ├── efficiency_metrics.py
+        ├── evaluate_development_routes.py
+        ├── execution_plan.py
+        ├── repository_context.py
+        ├── single_task_runner.py
         ├── select_auto_model.py
         ├── auto_router.py
         ├── invoke_auto_task.ps1

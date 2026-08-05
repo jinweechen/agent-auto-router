@@ -11,36 +11,51 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from auto_router import route_case  # noqa: E402
-from routing_policy import MODELS, select_model  # noqa: E402
+from model_registry import load_model_registry  # noqa: E402
+from routing_policy import RoutingPolicy, load_policy_file, select_model  # noqa: E402
 
 CASES = [
-    ("constrained", "Reply with exactly OK", {"intelligence": "gpt-5.6-terra", "balance": "gpt-5.6-luna", "cost": "gpt-5.6-luna"}),
-    ("routine", "Implement a routine API endpoint", {"intelligence": "gpt-5.6-terra", "balance": "gpt-5.6-terra", "cost": "gpt-5.6-luna"}),
-    ("complex", "Redesign the distributed architecture and resolve concurrency tradeoffs", {"intelligence": "gpt-5.6-sol", "balance": "gpt-5.6-sol", "cost": "gpt-5.6-terra"}),
-    ("high-risk", "Review a production authentication migration for security vulnerabilities", {"intelligence": "gpt-5.6-sol", "balance": "gpt-5.6-sol", "cost": "gpt-5.6-sol"}),
+    ("constrained", "Reply with exactly OK", {"intelligence": "balanced", "balance": "fast", "cost": "fast"}),
+    ("routine", "Implement a routine API endpoint", {"intelligence": "balanced", "balance": "balanced", "cost": "fast"}),
+    ("complex", "Redesign the distributed architecture and resolve concurrency tradeoffs", {"intelligence": "frontier", "balance": "frontier", "cost": "balanced"}),
+    ("high-risk", "Review a production authentication migration for security vulnerabilities", {"intelligence": "frontier", "balance": "frontier", "cost": "frontier"}),
 ]
 
 def check(name: str, actual: object, expected: object) -> dict[str, object]:
     return {"name": name, "passed": actual == expected, "actual": actual, "expected": expected}
 
-def evaluate() -> dict[str, object]:
+def evaluate(policy: RoutingPolicy | None = None) -> dict[str, object]:
+    registry = load_model_registry()
     checks = []
     routes = []
     for strategy in ("intelligence", "balance", "cost"):
         for case_id, prompt, expected in CASES:
-            decision = select_model(prompt, strategy, "medium")
-            checks.append(check(f"route:{strategy}:{case_id}", decision.model, expected[strategy]))
-            routes.append({"strategy": strategy, "case": case_id, "model": decision.model, "reason": decision.reason})
+            decision = select_model(
+                prompt, strategy, "medium", policy=policy, registry=registry
+            )
+            checks.append(check(f"route:{strategy}:{case_id}", decision.target_tier, expected[strategy]))
+            routes.append({"strategy": strategy, "case": case_id, "tier": decision.target_tier, "model": decision.model, "reason": decision.reason})
 
     parallel_case = {
         "prompt": "Implement API and tests for several independent components",
         "acceptance_criteria": ["API", "tests", "docs", "rollback"],
     }
-    checks.append(check("variant:d-reachable", route_case(parallel_case, "balance")["variant"], "D"))
-    checks.append(check("incidental-security", select_model("Rename the security label", "balance").model, "gpt-5.6-luna"))
-    checks.append(check("closed-allowlist", sorted(MODELS), ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]))
-    checks.append(check("xhigh-escalation", select_model("Implement this change", "balance", "xhigh").model, "gpt-5.6-sol"))
-    checks.append(check("chinese-constrained", select_model("请格式化这段文本", "balance").model, "gpt-5.6-luna"))
+    checks.append(check("variant:d-reachable", route_case(parallel_case, "balance", policy=policy)["variant"], "D"))
+    checks.append(check("incidental-security", select_model("Rename the security label", "balance", policy=policy).target_tier, "fast"))
+    checks.append(check(
+        "registry-route-models-enabled",
+        all(route["model"] in registry.enabled_model_ids for route in routes),
+        True,
+    ))
+    checks.append(check(
+        "registry-high-risk-primary",
+        registry.resolve_tier(
+            "frontier", role="direct", required_capabilities=("high-risk-primary",)
+        ).tier,
+        "frontier",
+    ))
+    checks.append(check("xhigh-escalation", select_model("Implement this change", "balance", "xhigh", policy=policy).target_tier, "frontier"))
+    checks.append(check("chinese-constrained", select_model("请格式化这段文本", "balance", policy=policy).target_tier, "fast"))
 
     passed = sum(1 for item in checks if item["passed"])
     return {
@@ -55,8 +70,10 @@ def evaluate() -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--policy-file", type=Path)
     args = parser.parse_args()
-    report = evaluate()
+    policy = load_policy_file(args.policy_file) if args.policy_file else None
+    report = evaluate(policy)
     payload = json.dumps(report, ensure_ascii=True, indent=2)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

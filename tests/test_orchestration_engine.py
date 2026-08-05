@@ -10,6 +10,7 @@ SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "skills" / "codex-auto-r
 sys.path.insert(0, str(SCRIPTS))
 
 from orchestration_engine import CallRecord, RunContext, run_variant, run_workers  # noqa: E402
+from model_registry import DEFAULT_REGISTRY_PATH, registry_from_dict  # noqa: E402
 
 
 class FakeClient:
@@ -71,6 +72,50 @@ class OrchestrationEngineTests(unittest.TestCase):
                 self.assertEqual(result["variant"], variant)
                 self.assertTrue(result["grade"]["passed"])
                 self.assertIsNone(result["estimated_cost_usd"])
+
+    def test_default_profiles_preserve_existing_role_models(self) -> None:
+        expected = {
+            "A": {"direct": "gpt-5.6-sol", "grader": "gpt-5.6-terra"},
+            "B": {"planner": "gpt-5.6-sol", "worker": "gpt-5.6-luna", "reviewer": "gpt-5.6-sol", "grader": "gpt-5.6-terra"},
+            "C": {"planner": "gpt-5.6-sol", "dispatcher": "gpt-5.6-terra", "worker": "gpt-5.6-luna", "reviewer": "gpt-5.6-sol", "grader": "gpt-5.6-terra"},
+            "D": {"planner": "gpt-5.6-terra", "worker": "gpt-5.6-luna", "reviewer": "gpt-5.6-terra", "grader": "gpt-5.6-sol"},
+            "E": {"direct": "gpt-5.6-terra", "grader": "gpt-5.6-sol"},
+            "F": {"direct": "gpt-5.6-luna", "grader": "gpt-5.6-sol"},
+        }
+        for variant, roles in expected.items():
+            with self.subTest(variant=variant):
+                result = run_variant(FakeClient(), self.case, variant, 2)
+                self.assertEqual(
+                    {role: value["model"] for role, value in result["resolved_roles"].items()},
+                    roles,
+                )
+
+    def test_high_risk_final_role_cannot_be_replaced_by_unqualified_model(self) -> None:
+        payload = json.loads(DEFAULT_REGISTRY_PATH.read_text(encoding="utf-8"))
+        payload["models"].append({
+            "id": "gpt-frontier-lite",
+            "aliases": ["frontier-lite"],
+            "tier": "frontier",
+            "priority": 1,
+            "qualityRank": 2,
+            "costRank": 2,
+            "latencyRank": 1,
+            "defaultEffort": "medium",
+            "capabilities": ["coding"],
+            "allowedRoles": ["direct", "reviewer"],
+            "enabled": True,
+            "autoEligible": True,
+        })
+        result = run_variant(
+            FakeClient(),
+            self.case,
+            "A",
+            1,
+            grade_enabled=False,
+            registry=registry_from_dict(payload, "unit-test"),
+            required_capabilities=("high-risk-primary",),
+        )
+        self.assertEqual(result["resolved_roles"]["direct"]["model"], "gpt-5.6-sol")
 
     def test_max_workers_must_be_positive(self) -> None:
         with self.assertRaisesRegex(ValueError, "max_workers"):

@@ -8,7 +8,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from routing_policy import LUNA_MODEL, SOL_MODEL, TERRA_MODEL
+from model_registry import ModelRegistry, load_model_registry
+from orchestration_profiles import OrchestrationProfiles, load_orchestration_profiles
 
 ROOT = pathlib.Path(__file__).resolve().parent
 DEFAULT_CASES = ROOT / "eval_cases.json"
@@ -117,7 +118,11 @@ def make_plan(
             f"Return no more than {max_tasks} tasks. Keep descriptions and criteria concise."
         ),
         input_text=json.dumps(
-            {"request": case["prompt"], "acceptance_criteria": case["acceptance_criteria"]},
+            {
+                "request": case["prompt"],
+                "acceptance_criteria": case["acceptance_criteria"],
+                "repository_context": case.get("repository_context"),
+            },
             ensure_ascii=False,
         ),
         max_output_tokens=1200,
@@ -130,18 +135,20 @@ def make_plan(
     return plan
 
 
-def terra_dispatch(
+def dispatch_plan(
     client: OrchestrationClient,
     context: RunContext,
     case: dict[str, Any],
     plan: dict[str, Any],
     max_tasks: int,
+    model: str,
+    effort: str,
 ) -> dict[str, Any]:
     output, _ = client.create(
         context=context,
         role="dispatcher",
-        model=TERRA_MODEL,
-        effort="medium",
+        model=model,
+        effort=effort,
         instructions=(
             "Normalize the task plan for bounded workers. Preserve intent, remove overlap, make "
             "dependencies explicit, and return only JSON with summary and tasks."
@@ -170,9 +177,13 @@ def run_workers(
     case: dict[str, Any],
     plan: dict[str, Any],
     max_workers: int,
+    model: str | None = None,
+    effort: str = "high",
 ) -> list[dict[str, Any]]:
     if max_workers < 1:
         raise ValueError("max_workers must be at least 1")
+    if model is None:
+        model = load_model_registry().resolve_tier("fast", role="worker").model_id
     tasks = plan["tasks"]
     task_by_id: dict[str, dict[str, Any]] = {}
     order: list[str] = []
@@ -201,8 +212,8 @@ def run_workers(
         output, _ = client.create(
             context=local_context,
             role=f"worker:{task['id']}",
-            model=LUNA_MODEL,
-            effort="high",
+            model=model,
+            effort=effort,
             instructions=(
                 "Complete exactly the assigned bounded task. Do not redesign the architecture or "
                 "expand scope. Return concise implementation findings, file-level guidance, and "
@@ -332,13 +343,14 @@ def grade(
     case: dict[str, Any],
     final_output: str,
     model: str,
+    effort: str = "high",
     execution_mode: bool = False,
 ) -> dict[str, Any]:
     output, _ = client.create(
         context=context,
         role="grader",
         model=model,
-        effort="high",
+        effort=effort,
         instructions=(
             "Inspect the resulting workspace and candidate report. Return only JSON with score, "
             "passed, unmet_criteria, critical_errors, and rationale. Passing requires every "
@@ -368,47 +380,88 @@ def run_variant(
     execution_mode: bool = False,
     grade_enabled: bool = True,
     worker_task_limit: int | None = None,
+    registry: ModelRegistry | None = None,
+    profiles: OrchestrationProfiles | None = None,
+    required_capabilities: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     if max_workers < 1:
         raise ValueError("max_workers must be at least 1")
     context = RunContext()
     started = time.perf_counter()
+    active_registry = registry or load_model_registry()
+    active_profiles = profiles or load_orchestration_profiles()
+    resolved_roles: dict[str, dict[str, str]] = {}
+
+    final_role = "direct" if variant in {"A", "E", "F"} else "reviewer"
+
+    def resolve(role: str) -> tuple[str, str]:
+        assignment = active_profiles.assignment(variant, role)
+        final_requirements = required_capabilities if role == final_role else ()
+        model_spec = assignment.resolve(
+            active_registry,
+            role,
+            required_capabilities=final_requirements,
+            required_tier="frontier" if final_requirements else None,
+        )
+        resolved_roles[role] = {
+            "model": model_spec.model_id,
+            "tier": model_spec.tier,
+            "effort": assignment.effort,
+        }
+        return model_spec.model_id, assignment.effort
 
     if variant == "A":
-        final_output = direct(client, context, case, SOL_MODEL, "max", execution_mode)
+        direct_model, direct_effort = resolve("direct")
+        final_output = direct(client, context, case, direct_model, direct_effort, execution_mode)
     elif variant in {"B", "C"}:
+        planner_model, planner_effort = resolve("planner")
         plan = make_plan(
-            client, context, case, SOL_MODEL, "max", worker_task_limit or 3
+            client, context, case, planner_model, planner_effort, worker_task_limit or 3
         )
         if variant == "C":
-            plan = terra_dispatch(
-                client, context, case, plan, worker_task_limit or 3
+            dispatcher_model, dispatcher_effort = resolve("dispatcher")
+            plan = dispatch_plan(
+                client, context, case, plan, worker_task_limit or 3,
+                dispatcher_model, dispatcher_effort,
             )
-        worker_results = run_workers(client, context, case, plan, max_workers)
+        worker_model, worker_effort = resolve("worker")
+        worker_results = run_workers(
+            client, context, case, plan, max_workers, worker_model, worker_effort
+        )
+        reviewer_model, reviewer_effort = resolve("reviewer")
         final_output = synthesize(
-            client, context, case, plan, worker_results, SOL_MODEL, "max", execution_mode
+            client, context, case, plan, worker_results,
+            reviewer_model, reviewer_effort, execution_mode,
         )
     elif variant == "D":
+        planner_model, planner_effort = resolve("planner")
         plan = make_plan(
-            client, context, case, TERRA_MODEL, "medium", worker_task_limit or 3
+            client, context, case, planner_model, planner_effort, worker_task_limit or 3
         )
-        worker_results = run_workers(client, context, case, plan, max_workers)
+        worker_model, worker_effort = resolve("worker")
+        worker_results = run_workers(
+            client, context, case, plan, max_workers, worker_model, worker_effort
+        )
+        reviewer_model, reviewer_effort = resolve("reviewer")
         final_output = synthesize(
-            client, context, case, plan, worker_results, TERRA_MODEL, "high", execution_mode
+            client, context, case, plan, worker_results,
+            reviewer_model, reviewer_effort, execution_mode,
         )
     elif variant == "E":
-        final_output = direct(client, context, case, TERRA_MODEL, "medium", execution_mode)
+        direct_model, direct_effort = resolve("direct")
+        final_output = direct(client, context, case, direct_model, direct_effort, execution_mode)
     elif variant == "F":
-        final_output = direct(client, context, case, LUNA_MODEL, "medium", execution_mode)
+        direct_model, direct_effort = resolve("direct")
+        final_output = direct(client, context, case, direct_model, direct_effort, execution_mode)
     else:
         raise ValueError(f"Unknown variant: {variant}")
 
-    grader_model = TERRA_MODEL if variant in {"A", "B", "C"} else SOL_MODEL
     if grade_enabled:
+        grader_model, grader_effort = resolve("grader")
         grading_status = "completed"
         try:
             grade_result = grade(
-                client, context, case, final_output, grader_model, execution_mode
+                client, context, case, final_output, grader_model, grader_effort, execution_mode
             )
         except Exception as exc:
             grading_status = "failed"
@@ -431,6 +484,9 @@ def run_variant(
     return {
         "case_id": case["id"],
         "variant": variant,
+        "registry_source": active_registry.source,
+        "profile_source": active_profiles.source,
+        "resolved_roles": resolved_roles,
         "grade": grade_result,
         "implementation_status": "completed",
         "grading_status": grading_status,

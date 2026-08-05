@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "profiles": {
+    "A": {
+      "direct": {"tier": "frontier", "effort": "max"},
+      "grader": {"tier": "balanced", "effort": "high"}
+    },
+    "B": {
+      "planner": {"tier": "frontier", "effort": "max"},
+      "worker": {"tier": "fast", "effort": "high"},
+      "reviewer": {"tier": "frontier", "effort": "max"},
+      "grader": {"tier": "balanced", "effort": "high"}
+    },
+    "C": {
+      "planner": {"tier": "frontier", "effort": "max"},
+      "dispatcher": {"tier": "balanced", "effort": "medium"},
+      "worker": {"tier": "fast", "effort": "high"},
+      "reviewer": {"tier": "frontier", "effort": "max"},
+      "grader": {"tier": "balanced", "effort": "high"}
+    },
+    "D": {
+      "planner": {"tier": "balanced", "effort": "medium"},
+      "worker": {"tier": "fast", "effort": "high"},
+      "reviewer": {"tier": "balanced", "effort": "high"},
+      "grader": {"tier": "frontier", "effort": "high"}
+    },
+    "E": {
+      "direct": {"tier": "balanced", "effort": "medium"},
+      "grader": {"tier": "frontier", "effort": "high"}
+    },
+    "F": {
+      "direct": {"tier": "fast", "effort": "medium"},
+      "grader": {"tier": "frontier", "effort": "high"}
+    }
+  }
+}

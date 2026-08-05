@@ -83,18 +83,28 @@ class CodexCliClient:
         self.started_at = time.monotonic()
         self.calls_started = 0
         self._call_lock = threading.Lock()
+        self._call_reservations: dict[int, int] = {}
         self._token_lock = threading.Lock()
+        self.usage_events_observed = 0
         self.observed_input_tokens = 0
+        self.observed_cached_input_tokens = 0
         self.observed_output_tokens = 0
+        self.observed_reasoning_output_tokens = 0
         self.codex_command = self._resolve_codex_command()
 
-    def observed_usage(self) -> dict[str, int]:
+    def observed_usage(self) -> dict[str, int] | None:
         with self._token_lock:
+            if self.usage_events_observed == 0:
+                return None
             input_tokens = self.observed_input_tokens
+            cached_input_tokens = self.observed_cached_input_tokens
             output_tokens = self.observed_output_tokens
+            reasoning_output_tokens = self.observed_reasoning_output_tokens
         return {
             "input_tokens": input_tokens,
+            "cached_input_tokens": cached_input_tokens,
             "output_tokens": output_tokens,
+            "reasoning_output_tokens": reasoning_output_tokens,
             "total_tokens": input_tokens + output_tokens,
         }
 
@@ -135,9 +145,11 @@ class CodexCliClient:
             or ("high" if requested == "max" else requested)
         )
 
-    def reserve_call(self, role: str) -> int:
+    def reserve_call(self, role: str, projected_tokens: int = 0) -> int:
         with self._call_lock:
-            observed_total = self.observed_input_tokens + self.observed_output_tokens
+            with self._token_lock:
+                observed_total = self.observed_input_tokens + self.observed_output_tokens
+            reserved_total = sum(self._call_reservations.values())
             if (
                 self.max_total_tokens is not None
                 and observed_total >= self.max_total_tokens
@@ -147,13 +159,31 @@ class CodexCliClient:
                     f"Observed token budget exhausted before role={role}: "
                     f"observed={observed_total}, max_total_tokens={self.max_total_tokens}"
                 )
+            if (
+                self.max_total_tokens is not None
+                and observed_total + reserved_total + max(0, projected_tokens)
+                > self.max_total_tokens
+                and role not in WRITE_ROLES
+            ):
+                raise RuntimeError(
+                    f"Projected token budget would be exceeded before role={role}: "
+                    f"observed={observed_total}, reserved={reserved_total}, "
+                    f"projected={projected_tokens}, "
+                    f"max_total_tokens={self.max_total_tokens}"
+                )
             if self.max_model_calls is not None and self.calls_started >= self.max_model_calls:
                 raise RuntimeError(
                     f"Model call budget exhausted before role={role}: "
                     f"max_model_calls={self.max_model_calls}"
                 )
             self.calls_started += 1
-            return self.calls_started
+            call_index = self.calls_started
+            self._call_reservations[call_index] = max(0, projected_tokens)
+            return call_index
+
+    def release_call_reservation(self, call_index: int) -> None:
+        with self._call_lock:
+            self._call_reservations.pop(call_index, None)
 
     def remaining_timeout(self) -> float:
         if self.total_timeout_seconds is None:
@@ -189,7 +219,13 @@ class CodexCliClient:
         max_output_tokens: int = 4000,
     ) -> tuple[str, dict[str, Any]]:
         effective_effort = self.effective_effort(role, effort)
-        call_index = self.reserve_call(role)
+        prompt = (
+            f"{self.preamble_for_role(role)}\n\nWorkspace: {self.workdir}\n\n"
+            f"Keep the response within {max_output_tokens} tokens.\n\n"
+            f"INSTRUCTIONS:\n{instructions}\n\nINPUT:\n{input_text}"
+        )
+        projected_tokens = max_output_tokens + max(1, len(prompt) // 4)
+        call_index = self.reserve_call(role, projected_tokens)
         self.emit_progress({
             "event": "role_started",
             "call": call_index,
@@ -198,12 +234,6 @@ class CodexCliClient:
             "effort": effective_effort,
             "sandbox": self.sandbox_for_role(role),
         })
-        prompt = (
-            f"{self.preamble_for_role(role)}\n\nWorkspace: {self.workdir}\n\n"
-            f"Keep the response within {max_output_tokens} tokens.\n\n"
-            f"INSTRUCTIONS:\n{instructions}\n\nINPUT:\n{input_text}"
-        )
-
         with tempfile.TemporaryDirectory(prefix="codex-cli-orchestration-") as temp_dir:
             output_path = pathlib.Path(temp_dir) / "last-message.txt"
             command = [*self.codex_command, "exec", "--ephemeral"]
@@ -232,39 +262,48 @@ class CodexCliClient:
                     if isinstance(value, dict):
                         parsed_events.append(value)
                 parsed_usage = extract_usage_details(parsed_events)
+                usage_events = sum(
+                    isinstance(event.get("usage"), dict) for event in parsed_events
+                )
                 with self._token_lock:
+                    self.usage_events_observed += usage_events
                     self.observed_input_tokens += parsed_usage["input_tokens"]
+                    self.observed_cached_input_tokens += parsed_usage["cached_input_tokens"]
                     self.observed_output_tokens += parsed_usage["output_tokens"]
+                    self.observed_reasoning_output_tokens += parsed_usage["reasoning_output_tokens"]
                     total = self.observed_input_tokens + self.observed_output_tokens
                 return parsed_events, parsed_usage, total
 
             try:
-                completed = subprocess.run(
-                    command,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    input=prompt,
-                    timeout=self.remaining_timeout(),
-                    check=False,
-                    env=environment,
-                )
-            except subprocess.TimeoutExpired as exc:
-                _, usage, observed_total = observe_output(exc.stdout)
-                self.emit_progress({
-                    "event": "role_failed",
-                    "call": call_index,
-                    "role": role,
-                    "error": "timeout",
-                    "input_tokens": usage["input_tokens"],
-                    "output_tokens": usage["output_tokens"],
-                    "observed_total_tokens": observed_total,
-                })
-                raise
-            latency = time.perf_counter() - started
-            events, usage, observed_total = observe_output(completed.stdout)
+                try:
+                    completed = subprocess.run(
+                        command,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        input=prompt,
+                        timeout=self.remaining_timeout(),
+                        check=False,
+                        env=environment,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    _, usage, observed_total = observe_output(exc.stdout)
+                    self.emit_progress({
+                        "event": "role_failed",
+                        "call": call_index,
+                        "role": role,
+                        "error": "timeout",
+                        "input_tokens": usage["input_tokens"],
+                        "output_tokens": usage["output_tokens"],
+                        "observed_total_tokens": observed_total,
+                    })
+                    raise
+                latency = time.perf_counter() - started
+                events, usage, observed_total = observe_output(completed.stdout)
+            finally:
+                self.release_call_reservation(call_index)
             thread_id = extract_thread_id(events)
             if completed.returncode != 0:
                 self.emit_progress({
