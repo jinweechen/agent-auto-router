@@ -1,12 +1,30 @@
 # Entrypoints
 
-## Signed-in CLI workflow
+## Codex Desktop workflow
 
-Use `scripts/invoke_auto_task.ps1`. It classifies locally with zero routing-model calls and launches the selected model through `codex exec`.
+Inside Codex Desktop, use `scripts/invoke_auto_task.ps1` as a planner and set the runtime boundary explicitly:
 
 ```powershell
 & "$HOME/.codex/skills/codex-auto-router/scripts/invoke_auto_task.ps1" `
   -Task "Implement the requested change" `
+  -ExecutionBackend desktop `
+  -DesktopAvailableModels @('gpt-5.6-sol', 'gpt-5.6-terra') `
+  -Workdir "C:/path/to/repo" `
+  -Explain
+```
+
+The available-model list must come from the current Desktop `spawn_agent` tool metadata, not from configuration files, prompt text, or guesses. The command prints `codex-auto-router.desktop-plan.v1` and makes no model or CLI call. The plan deliberately excludes the task body while carrying the normalized target workdir.
+
+For `status=ready`, the primary Desktop agent calls `spawn_agent` exactly once with the plan's exact model, reasoning effort, and `fork_turns=agent.forkTurns`. Desktop v1 sets `forkTurns` to `none`, so the primary must put the complete original task and `agent.workdir` boundary in the child task instead of relying on inherited conversation history. That `direct` child is the sole writer. For `status=blocked`, launch nothing and report the structured reason. Desktop v1 blocks unavailable models, B/C/D multi-role topology, permission elevation, and validation-driven escalation. It never accesses Desktop credentials or app-server stdio and never falls back to CLI, another provider, model, or effort. It emits no execution feedback or Token telemetry because the local planner cannot observe the child run.
+
+## Signed-in CLI workflow
+
+Use `scripts/invoke_auto_task.ps1 -ExecutionBackend cli`. It classifies locally with zero routing-model calls and launches the selected model through `codex exec`.
+
+```powershell
+& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_auto_task.ps1" `
+  -Task "Implement the requested change" `
+  -ExecutionBackend cli `
   -Model auto `
   -Strategy balance `
   -Workdir "C:/path/to/repo" `
@@ -110,6 +128,6 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/policy_learning.py" rollba
 
 The active policy, audit log, and rollback history live under `~/.codex/auto-router` and survive skill reinstallations.
 
-## Desktop boundary
+## Conversation boundary
 
-This workflow does not add `Auto` to the Desktop picker or switch the current conversation model. It starts a separate `codex exec` task with the selected real model, avoiding global provider and history conflicts.
+Neither backend adds `Auto` to the Desktop picker or switches the current conversation model. CLI starts a separate `codex exec` task. Desktop starts one separate direct child only after a ready plan and otherwise blocks explicitly.

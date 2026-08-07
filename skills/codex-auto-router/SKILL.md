@@ -1,15 +1,15 @@
 ---
 name: codex-auto-router
-description: Automatically select and invoke trusted registered Codex models with deterministic local routing, safely execute role-based multi-model orchestration, validate model-registry extensions, or calibrate routing through the signed-in Codex CLI. Use when the user asks for Auto model selection, no-API-key routing, route explanations, model extension, calibration, or multi-model orchestration.
+description: Automatically select trusted registered Codex models with deterministic local routing, execute through Codex Desktop child agents or the signed-in Codex CLI, safely evaluate role-based orchestration, validate model-registry extensions, or calibrate routing. Use when the user asks for Auto model selection, no-API-key routing, route explanations, model extension, calibration, or multi-model orchestration.
 ---
 
 # Route Codex Tasks Automatically
 
-Use one local routing decision followed by one signed-in `codex exec` run. Use the multi-role evaluator only for explicit orchestration or comparative evaluation requests.
+Use one local routing decision followed by either one Desktop-native direct child agent or one signed-in `codex exec` run. Use the multi-role CLI evaluator only for explicit orchestration or comparative evaluation requests.
 
 ## Choose the workflow
 
-- Run a task: `scripts/invoke_auto_task.ps1`.
+- Run a task: `scripts/invoke_auto_task.ps1`, with `-ExecutionBackend desktop` inside Codex Desktop or `-ExecutionBackend cli` for the existing CLI path.
 - Explain without model calls: add `-DryRun` and `-Explain`.
 - Execute a multi-model task: `scripts/invoke_orchestrated_task.ps1`.
 - Calibrate routing: use `scripts/evaluate_auto_router.py`.
@@ -20,11 +20,33 @@ Use one local routing decision followed by one signed-in `codex exec` run. Use t
 
 This skill deliberately does not add an `Auto` Desktop model, replace `model_provider`, write `model_catalog_json`, or run a credential-forwarding proxy. Keep CC Switch and the user's Codex configuration authoritative.
 
-## Run an Auto task
+## Run through Codex Desktop
+
+Desktop execution is a host protocol, not a hidden CLI login. The primary Desktop agent must:
+
+1. Read the models supported by its current `spawn_agent` runtime metadata; never infer availability from the registry or silently substitute another model.
+2. Run `scripts/invoke_auto_task.ps1 -ExecutionBackend desktop -DesktopAvailableModels <exact-model-ids>` to obtain `codex-auto-router.desktop-plan.v1`. The router makes zero model calls and the plan omits task text.
+3. If `status` is `blocked`, report its code and stop. Desktop v1 blocks unavailable selected models and every orchestrated B/C/D topology.
+4. If `status` is `ready`, call `spawn_agent` exactly once using `agent.model`, `agent.reasoningEffort`, and `fork_turns=agent.forkTurns` (`none` in v1). Because this deliberately prevents a full-history fork, give the direct child the complete original current user task and require it to work only in `agent.workdir`. Do not put credentials, hidden instructions, or unrelated conversation content in its task.
+5. Treat that direct child as the only writer. The primary agent may coordinate and verify read-only, but must not edit concurrently. Wait for the child and report its concrete changes and validation.
+
+Do not read, copy, or forward Desktop credentials. Do not attach to an existing Desktop app-server or its stdio. Do not call `codex exec` anywhere in the Desktop branch. Desktop permissions are inherited from the current task; the plan cannot elevate them. Validation-driven escalation and multi-role orchestration remain CLI-only in v1.
 
 ```powershell
 & "<skill-dir>/scripts/invoke_auto_task.ps1" `
   -Task "Implement the requested change" `
+  -ExecutionBackend desktop `
+  -DesktopAvailableModels @('gpt-5.6-sol', 'gpt-5.6-terra') `
+  -Workdir "C:/path/to/workspace" `
+  -Explain
+```
+
+## Run through the signed-in CLI
+
+```powershell
+& "<skill-dir>/scripts/invoke_auto_task.ps1" `
+  -Task "Implement the requested change" `
+  -ExecutionBackend cli `
   -Model auto `
   -Strategy balance `
   -Workdir "C:/path/to/workspace" `
@@ -37,11 +59,11 @@ Strategies:
 - `balance`: `fast` for constrained work, `balanced` by default, `frontier` for risk or complexity.
 - `cost`: a model-tier cost proxy; use `fast` by default, `balanced` for complexity, and `frontier` only for explicit high-risk signals.
 
-The selector makes zero model calls and reuses the active Codex login. It is heuristic and can produce false upgrades or false downgrades; `-Model sol|terra|luna` and explicit effort choices remain authoritative. Do not claim which authentication method is active unless checked in the current environment.
+The selector makes zero model calls. The CLI backend reuses the active Codex CLI login; Desktop authentication is separate and is never inspected by this skill. Routing is heuristic and can produce false upgrades or false downgrades; `-Model sol|terra|luna` and explicit effort choices remain authoritative. Do not claim which authentication method is active unless checked in the current environment.
 
 The selector jointly recommends a model tier, reasoning effort, direct/orchestrated topology, and a bounded repository-context profile. It inspects only repository structure and paths before execution, ranks task-relevant candidates deterministically, and skips context injection when a tiny repository has no useful candidate. Explicit model and effort choices remain authoritative.
 
-Completed single-model and orchestrated runs record a privacy-minimized route outcome under `~/.codex/auto-router` by default. Both paths request Codex JSON events and record observable input, cached-input, output, and reasoning-output tokens when available, but never task text or model/tool output. Unknown token usage stays null. Use `-NoFeedback` to opt out, and show the `routeId` with `-Explain` so the user can add a preferred-model label later.
+Completed CLI single-model and CLI-orchestrated runs record a privacy-minimized route outcome under `~/.codex/auto-router` by default. Both CLI paths request Codex JSON events and record observable input, cached-input, output, and reasoning-output tokens when available, but never task text or model/tool output. Unknown token usage stays null. Use `-NoFeedback` to opt out, and show the `routeId` with `-Explain` so the user can add a preferred-model label later. Desktop v1 only emits a plan and does not record execution feedback or Token usage that it cannot observe.
 
 Default to `workspace-write`. Use `read-only` for analysis or review. Never select `danger-full-access` without explicit approval. Preserve explicit effort. With Auto, use `low`, `medium`, or `high` according to the selected tier and risk; for an explicit model without an explicit effort, use its trusted registry default.
 
@@ -118,8 +140,10 @@ Keep model identities in `scripts/model_registry.json` and orchestration role ma
 - Route only the current task string, never credentials, tool output, or hidden instructions.
 - Allow only enabled models from the packaged trusted registry; Auto may use only `autoEligible` models.
 - Never modify Codex config, profiles, CC Switch state, account selection, provider settings, or Desktop history.
+- Never read, copy, forward, or proxy Desktop credentials, and never attach to an existing Desktop app-server stdio.
 - Pass tasks over UTF-8 stdin rather than process arguments.
 - Do not silently change model tiers after selection.
+- For Desktop v1, launch exactly one direct child with the exact selected model, effort, `fork_turns=none`, and resolved workdir; block unavailable models and orchestrated topologies.
 - Do not validation-escalate unless the user explicitly opts in and provides the validation argv.
 - Never store task text, model output, tool output, credentials, or secrets in feedback.
 - Never let calibration alter the trusted registry or the `frontier + high-risk-primary` invariant.

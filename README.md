@@ -2,14 +2,15 @@
 
 为 Codex 从受信模型注册表中自动选择模型的隔离式路由 Skill；默认注册 Sol、Terra 和 Luna。
 
-它在任务执行前使用本地确定性规则完成选模，然后直接调用用户已经登录的官方 `codex exec`。路由过程不调用额外模型，不修改 Codex 全局配置，也不接管 CC Switch 的账号和会话管理。
+它在任务执行前使用本地确定性规则完成选模，然后通过 Codex Desktop 原生子代理协议或用户已经登录的官方 `codex exec` 执行。路由过程不调用额外模型，不修改 Codex 全局配置，也不接管 CC Switch 的账号和会话管理。
 
 ## 设计目标
 
 - 根据任务复杂度、风险、约束程度和 reasoning effort 自动选择模型。
-- 复用 Codex CLI 当前登录状态，无需单独提供 API Key。
+- Desktop 后端复用当前主代理已有的 `spawn_agent` 能力；CLI 后端保留原有独立登录执行方式。
 - 不修改 `~/.codex/config.toml`、`model_provider` 或 `model_catalog_json`。
 - 不启动本地 Responses 代理，不接触或转发登录凭据。
+- 不读取、复制或转发 Desktop 凭证，不附着现有 Desktop app-server stdio。
 - 与 CC Switch 的账号切换和历史会话同步保持隔离。
 - 支持 Sol 规划、Terra 调度、Luna 执行、Sol 验收的高级编排评测。
 - 支持隐私最小化反馈、候选策略离线验证、人工审批生效和版本回滚。
@@ -26,12 +27,13 @@
   -> 读取已审批的活动策略
   -> 选择能力层、effort、拓扑和上下文预算
   -> 从受信注册表解析具体模型
-  -> 通过 UTF-8 stdin 调用 codex exec
-  -> 记录不含任务正文的路由结果
+  -> Desktop: 输出 desktop-plan.v1，由主代理启动唯一 direct 子代理
+     或 CLI: 通过 UTF-8 stdin 调用 codex exec
+  -> CLI 可记录不含任务正文的路由结果；Desktop v1 仅返回计划
   -> 返回执行结果
 ```
 
-Auto 是一次任务开始前的路由决策，不是第四个模型，也不会出现在 Codex Desktop 的原生模型下拉框中。每次执行会启动一个独立的 Codex CLI 任务，不会改变当前 Desktop 对话所使用的模型。
+Auto 是一次任务开始前的路由决策，不是第四个模型，也不会出现在 Codex Desktop 的原生模型下拉框中。Desktop v1 只允许一个 direct 子代理作为唯一写入者；模型不可用或路由要求 B/C/D 多角色拓扑时会显式阻断。两种后端都不会改变当前 Desktop 对话所使用的模型，也不会静默切换模型、effort、provider 或后端。
 
 ## 模型策略
 
@@ -86,10 +88,10 @@ python "./skills/codex-auto-router/scripts/validate_model_registry.py"
 
 - Windows PowerShell 5.1 或 PowerShell 7
 - Python 3.10 或更高版本
-- 已安装 Codex CLI
-- 已通过 ChatGPT、API Key 或企业 Access Token 登录 Codex CLI
+- Desktop 后端：当前 Codex Desktop runtime 提供受支持模型的 `spawn_agent` 能力
+- CLI 后端：已安装并独立登录 Codex CLI
 
-Skill 不要求也不会读取用户的 API Key。实际计费和额度取决于当前 Codex 登录方式。
+Skill 不要求也不会读取用户的 API Key 或 Desktop 凭证。实际计费和额度取决于当前执行后端的登录方式。
 
 ## 安装
 
@@ -117,6 +119,8 @@ cd codex-auto-router
 ```text
 $codex-auto-router 使用 balance 策略，自动选择合适模型完成当前任务。
 ```
+
+主代理会把当前 Desktop runtime 明确支持的模型 ID 交给本地路由器。路由器输出不含任务正文、但包含规范化工作目录的 `codex-auto-router.desktop-plan.v1`；若计划可执行，主代理必须按计划中的精确模型、effort、`forkTurns=none` 和 workdir 启动一次 `spawn_agent`，并让该 direct 子代理成为唯一写入者。若模型不可用或要求多角色拓扑，则停止并报告阻断原因，不回退到 CLI。Desktop v1 不记录本地规划器无法观察的子代理执行反馈或 Token。
 
 指定项目目录和任务：
 
@@ -146,9 +150,25 @@ Luna 负责执行边界清晰的子任务，
 
 ### 自动选模并执行
 
+Desktop-native 计划：
+
 ```powershell
 & "$HOME/.codex/skills/codex-auto-router/scripts/invoke_auto_task.ps1" `
   -Task "审查并优化当前项目" `
+  -ExecutionBackend desktop `
+  -DesktopAvailableModels @('gpt-5.6-sol', 'gpt-5.6-terra') `
+  -Model auto `
+  -Strategy balance `
+  -Workdir "D:/path/to/project" `
+  -Explain
+```
+
+现有 CLI 执行：
+
+```powershell
+& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_auto_task.ps1" `
+  -Task "审查并优化当前项目" `
+  -ExecutionBackend cli `
   -Model auto `
   -Strategy balance `
   -Workdir "D:/path/to/project" `
@@ -190,7 +210,7 @@ Luna 负责执行边界清晰的子任务，
 
 `-Model` 支持 `auto`，以及受信注册表内所有已启用模型的别名和完整 ID。显式模型只覆盖当前任务，不修改 Codex 全局配置；`autoEligible: false` 的模型仍可显式试用。
 
-每次非 Dry Run 的单模型或编排执行默认记录一个隐私最小化结果：路由 ID、数值/布尔特征、选择的模型、退出码、耗时，以及 CLI JSON 事件实际暴露的 input、cached input、output、reasoning output Token。无法观测时记录为 `null`，不会猜测或按零处理。日志不会保存任务正文、模型回复、工具输出或凭据。使用 `-Explain` 查看路由 ID，使用 `-NoFeedback` 关闭本次记录；`-StateDir` 和 `-FeedbackFile` 可隔离状态位置。
+每次非 Dry Run 的 CLI 单模型或 CLI 编排执行默认记录一个隐私最小化结果：路由 ID、数值/布尔特征、选择的模型、退出码、耗时，以及 CLI JSON 事件实际暴露的 input、cached input、output、reasoning output Token。无法观测时记录为 `null`，不会猜测或按零处理。日志不会保存任务正文、模型回复、工具输出或凭据。使用 `-Explain` 查看路由 ID，使用 `-NoFeedback` 关闭本次记录；`-StateDir` 和 `-FeedbackFile` 可隔离状态位置。Desktop v1 只输出计划，不伪造执行结果。
 
 Auto 同时给出 effort、直接/编排拓扑和分层上下文预算。路由前只读检查仓库结构，确定性排序候选路径；微型仓库没有相关候选时不注入仓库摘要，避免无效 Token。显式模型和 effort 始终优先。
 
@@ -408,7 +428,7 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/codex_cli_orchestration_ev
 - 在模型不可用时静默切换到其他层级
 - 未经允许使用 `danger-full-access`
 
-任务内容通过 UTF-8 标准输入传给子进程，避免暴露在命令行参数中。
+路由输入通过 UTF-8 标准输入传给本地规划脚本，避免暴露在命令行参数中；Desktop 计划不包含任务正文，主代理只把当前原始任务交给新建的 direct 子代理。
 
 ## 项目结构
 
@@ -422,6 +442,7 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/codex_cli_orchestration_ev
 │   ├── test_model_registry.py
 │   ├── test_policy_learning.py
 │   ├── test_orchestration_engine.py
+│   ├── test_desktop_execution.py
 │   └── test_orchestrated_execution.py
 └── skills/codex-auto-router/
     ├── SKILL.md
@@ -439,6 +460,7 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/codex_cli_orchestration_ev
         ├── policy_learning.py
         ├── efficiency_metrics.py
         ├── evaluate_development_routes.py
+        ├── desktop_execution.py
         ├── execution_plan.py
         ├── repository_context.py
         ├── single_task_runner.py

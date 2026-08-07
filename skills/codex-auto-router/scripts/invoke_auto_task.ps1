@@ -12,6 +12,9 @@ param(
     [string]$Sandbox = 'workspace-write',
     [ValidateSet('lean', 'full')]
     [string]$ContextMode = 'lean',
+    [ValidateSet('cli', 'desktop')]
+    [string]$ExecutionBackend = 'cli',
+    [string[]]$DesktopAvailableModels = @(),
     [string]$Workdir = (Get-Location).Path,
     [string]$StateDir = $(if ($env:CODEX_AUTO_ROUTER_STATE_DIR) { $env:CODEX_AUTO_ROUTER_STATE_DIR } else { Join-Path $HOME '.codex\auto-router' }),
     [string]$FeedbackFile = '',
@@ -27,15 +30,24 @@ $ErrorActionPreference = 'Stop'
 $selectorPath = Join-Path $PSScriptRoot 'select_auto_model.py'
 $learningPath = Join-Path $PSScriptRoot 'policy_learning.py'
 $runnerPath = Join-Path $PSScriptRoot 'single_task_runner.py'
+$desktopPath = Join-Path $PSScriptRoot 'desktop_execution.py'
 if (-not (Test-Path -LiteralPath $selectorPath -PathType Leaf)) { throw "Auto model selector not found: $selectorPath" }
 if (-not (Test-Path -LiteralPath $learningPath -PathType Leaf)) { throw "Policy learning helper not found: $learningPath" }
-if (-not (Test-Path -LiteralPath $runnerPath -PathType Leaf)) { throw "Single task runner not found: $runnerPath" }
+if ($ExecutionBackend -eq 'cli' -and -not (Test-Path -LiteralPath $runnerPath -PathType Leaf)) { throw "Single task runner not found: $runnerPath" }
+if ($ExecutionBackend -eq 'desktop' -and -not (Test-Path -LiteralPath $desktopPath -PathType Leaf)) { throw "Desktop execution planner not found: $desktopPath" }
 if (-not (Test-Path -LiteralPath $Workdir -PathType Container)) { throw "Workdir not found: $Workdir" }
 $python = Get-Command python -ErrorAction SilentlyContinue
 if (-not $python) { $python = Get-Command py -ErrorAction SilentlyContinue }
 if (-not $python) { throw 'Python 3 is required for deterministic Auto routing.' }
-$codex = Get-Command codex -ErrorAction SilentlyContinue
-if (-not $codex -and -not $DryRun) { throw 'Codex CLI is required to execute an Auto task.' }
+$codex = if ($ExecutionBackend -eq 'cli') { Get-Command codex -ErrorAction SilentlyContinue } else { $null }
+if ($ExecutionBackend -eq 'cli' -and -not $codex -and -not $DryRun) { throw 'Codex CLI is required for ExecutionBackend=cli.' }
+if ($ExecutionBackend -eq 'desktop' -and $DesktopAvailableModels.Count -eq 0 -and -not $DryRun) {
+    throw 'ExecutionBackend=desktop requires -DesktopAvailableModels from the current Desktop runtime.'
+}
+if ($ExecutionBackend -eq 'desktop' -and ($EscalateOnValidationFailure -or $ValidationCommand.Count -gt 0)) {
+    throw 'Desktop v1 emits one direct-agent plan and does not support validation-driven escalation.'
+}
+$resolvedWorkdir = (Resolve-Path -LiteralPath $Workdir).Path
 if ($EscalateOnValidationFailure -and $ModelChoice -ne 'auto') {
     throw 'Validation-driven escalation requires -Model auto so the trusted route determines the next tier.'
 }
@@ -47,7 +59,7 @@ $routeEffort = if ($Effort) { $Effort } else { 'auto' }
 $previousOutputEncoding = $OutputEncoding
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 try {
-    $routeRaw = $Task | & $python.Source $selectorPath --strategy $Strategy --stdin --effort $routeEffort --state-dir $StateDir --model-choice $ModelChoice --workdir (Resolve-Path -LiteralPath $Workdir).Path
+    $routeRaw = $Task | & $python.Source $selectorPath --strategy $Strategy --stdin --effort $routeEffort --state-dir $StateDir --model-choice $ModelChoice --workdir $resolvedWorkdir
     $routeExitCode = $LASTEXITCODE
 } finally {
     $OutputEncoding = $previousOutputEncoding
@@ -67,6 +79,7 @@ if (-not $resolvedEffort) {
     }
 }
 $explanation = [pscustomobject]@{
+    executionBackend = $ExecutionBackend
     strategy = $Strategy
     model = $model
     effort = $resolvedEffort
@@ -93,11 +106,29 @@ $explanation = [pscustomobject]@{
 if ($DryRun) { $explanation; return }
 if ($Explain) { $explanation | ConvertTo-Json -Depth 6 | Write-Host }
 
+if ($ExecutionBackend -eq 'desktop') {
+    $desktopArguments = @($desktopPath, '--sandbox', $Sandbox, '--workdir', $resolvedWorkdir)
+    foreach ($availableModel in $DesktopAvailableModels) {
+        $desktopArguments += @('--available-model', $availableModel)
+    }
+    $previousOutputEncoding = $OutputEncoding
+    $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    try {
+        $desktopPlanRaw = $routeRaw | & $python.Source @desktopArguments
+        $desktopExitCode = $LASTEXITCODE
+    } finally {
+        $OutputEncoding = $previousOutputEncoding
+    }
+    if (-not $desktopPlanRaw) { throw 'Desktop execution planning failed without a plan.' }
+    $desktopPlanRaw | Write-Output
+    exit $desktopExitCode
+}
+
 $runnerResultPath = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-auto-run-{0}.json" -f [guid]::NewGuid().ToString('N'))
 $runnerArguments = @(
     $runnerPath, '--model', $model, '--effort', $resolvedEffort,
     '--sandbox', $Sandbox, '--context-mode', $ContextMode,
-    '--workdir', (Resolve-Path -LiteralPath $Workdir).Path,
+    '--workdir', $resolvedWorkdir,
     '--result-file', $runnerResultPath,
     '--repo-map-tokens', [int]$route.executionPlan.context.repoMapTokens,
     '--max-candidate-files', [int]$route.executionPlan.context.maxCandidateFiles
