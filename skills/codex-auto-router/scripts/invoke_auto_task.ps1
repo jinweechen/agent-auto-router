@@ -41,11 +41,17 @@ if (-not $python) { $python = Get-Command py -ErrorAction SilentlyContinue }
 if (-not $python) { throw 'Python 3 is required for deterministic Auto routing.' }
 $codex = if ($ExecutionBackend -eq 'cli') { Get-Command codex -ErrorAction SilentlyContinue } else { $null }
 if ($ExecutionBackend -eq 'cli' -and -not $codex -and -not $DryRun) { throw 'Codex CLI is required for ExecutionBackend=cli.' }
-if ($ExecutionBackend -eq 'desktop' -and $DesktopAvailableModels.Count -eq 0 -and -not $DryRun) {
+if ($ExecutionBackend -eq 'desktop' -and $DesktopAvailableModels.Count -eq 0) {
     throw 'ExecutionBackend=desktop requires -DesktopAvailableModels from the current Desktop runtime.'
 }
 if ($ExecutionBackend -eq 'desktop' -and ($EscalateOnValidationFailure -or $ValidationCommand.Count -gt 0)) {
     throw 'Desktop v1 emits one direct-agent plan and does not support validation-driven escalation.'
+}
+if ($ExecutionBackend -eq 'desktop' -and $ContextMode -ne 'lean') {
+    throw 'Desktop v1 does not consume CLI ContextMode; use the default lean value.'
+}
+if ($ExecutionBackend -eq 'desktop' -and $FeedbackFile) {
+    throw 'Desktop v1 cannot write execution feedback; -FeedbackFile is CLI-only.'
 }
 $resolvedWorkdir = (Resolve-Path -LiteralPath $Workdir).Path
 if ($EscalateOnValidationFailure -and $ModelChoice -ne 'auto') {
@@ -103,14 +109,15 @@ $explanation = [pscustomobject]@{
     localProxyReceivesCredential = $false
     routeModelCalls = 0
 }
-if ($DryRun) { $explanation; return }
-if ($Explain) { $explanation | ConvertTo-Json -Depth 6 | Write-Host }
+if ($DryRun -and $ExecutionBackend -eq 'cli') { $explanation; return }
+if ($Explain -and $ExecutionBackend -eq 'cli') { $explanation | ConvertTo-Json -Depth 6 | Write-Host }
 
 if ($ExecutionBackend -eq 'desktop') {
     $desktopArguments = @($desktopPath, '--sandbox', $Sandbox, '--workdir', $resolvedWorkdir)
     foreach ($availableModel in $DesktopAvailableModels) {
         $desktopArguments += @('--available-model', $availableModel)
     }
+    if ($DryRun) { $desktopArguments += '--dry-run' }
     $previousOutputEncoding = $OutputEncoding
     $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
     try {

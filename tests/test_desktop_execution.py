@@ -40,6 +40,13 @@ class DesktopExecutionTests(unittest.TestCase):
         self.assertEqual(plan["hostContract"]["action"], "spawn_agent")
         self.assertEqual(plan["hostContract"]["maxAgents"], 1)
         self.assertEqual(plan["hostContract"]["onlyWriter"], "direct")
+        self.assertEqual(plan["modelCalls"], 0)
+        self.assertEqual(plan["modelCallsScope"], "routing")
+        self.assertEqual(plan["routingModelCalls"], 0)
+        self.assertTrue(plan["executionRequested"])
+        self.assertEqual(plan["plannedAgentCalls"], 1)
+        self.assertEqual(plan["privacy"]["semantics"], "planner-guarantees")
+        self.assertEqual(plan["context"]["profile"], "standard")
         self.assertEqual(plan["agent"]["model"], route["selectedModel"])
         self.assertEqual(plan["agent"]["forkTurns"], "none")
         self.assertEqual(
@@ -57,6 +64,7 @@ class DesktopExecutionTests(unittest.TestCase):
         )
         self.assertEqual(plan["status"], "blocked")
         self.assertEqual(plan["blocked"]["code"], "desktop_model_unavailable")
+        self.assertEqual(plan["plannedAgentCalls"], 0)
         self.assertIsNone(plan["agent"])
 
     def test_multi_role_route_is_explicitly_blocked(self) -> None:
@@ -72,6 +80,18 @@ class DesktopExecutionTests(unittest.TestCase):
         self.assertEqual(
             plan["blocked"]["code"], "desktop_multi_role_topology_unsupported"
         )
+        self.assertEqual(plan["plannedAgentCalls"], 0)
+
+    def test_danger_full_access_is_blocked_without_a_planned_call(self) -> None:
+        route = route_for("Implement a routine change")
+        plan = build_desktop_plan(
+            route,
+            [route["selectedModel"]],
+            workdir=SCRIPTS.parents[2],
+            requested_sandbox="danger-full-access",
+        )
+        self.assertEqual(plan["blocked"]["code"], "desktop_sandbox_unsupported")
+        self.assertEqual(plan["plannedAgentCalls"], 0)
 
     def test_desktop_planner_has_no_cli_or_process_execution_path(self) -> None:
         source = inspect.getsource(desktop_execution).lower()
@@ -136,6 +156,63 @@ class DesktopExecutionTests(unittest.TestCase):
             self.assertEqual(plan["agent"]["forkTurns"], "none")
             self.assertEqual(pathlib.Path(plan["agent"]["workdir"]), repository)
             self.assertFalse(marker.exists(), "Desktop backend invoked the Codex CLI shim")
+
+    def test_desktop_dry_run_explain_and_json_emit_one_plan(self) -> None:
+        powershell = shutil.which("pwsh") or shutil.which("powershell")
+        self.assertIsNotNone(powershell)
+        script = SCRIPTS / "invoke_auto_task.ps1"
+        repository = SCRIPTS.parents[2].resolve()
+        command = (
+            f"& '{script}' -Task 'Implement a routine change' "
+            "-ExecutionBackend desktop -DryRun -Explain -Json -NoFeedback "
+            "-DesktopAvailableModels @('gpt-5.6-sol','gpt-5.6-terra') "
+            f"-Workdir '{repository}'"
+        )
+        completed = subprocess.run(
+            [powershell, "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        plan = json.loads(completed.stdout.strip())
+        self.assertEqual(plan["schema"], "codex-auto-router.desktop-plan.v1")
+        self.assertEqual(plan["status"], "ready")
+        self.assertFalse(plan["executionRequested"])
+        self.assertEqual(plan["plannedAgentCalls"], 0)
+        self.assertFalse(plan["agent"]["writer"])
+        self.assertTrue(plan["agent"]["wouldWrite"])
+        self.assertEqual(plan["hostContract"]["action"], "report_plan")
+        self.assertEqual(plan["hostContract"]["maxAgents"], 0)
+
+    def test_desktop_rejects_cli_only_parameter_values(self) -> None:
+        powershell = shutil.which("pwsh") or shutil.which("powershell")
+        self.assertIsNotNone(powershell)
+        script = SCRIPTS / "invoke_auto_task.ps1"
+        repository = SCRIPTS.parents[2].resolve()
+        for extra, expected in (
+            ("-ContextMode full", "does not consume CLI ContextMode"),
+            ("-FeedbackFile feedback.jsonl", "FeedbackFile is CLI-only"),
+        ):
+            with self.subTest(extra=extra):
+                command = (
+                    f"& '{script}' -Task 'Implement a routine change' "
+                    "-ExecutionBackend desktop "
+                    "-DesktopAvailableModels @('gpt-5.6-sol','gpt-5.6-terra') "
+                    f"-Workdir '{repository}' {extra}"
+                )
+                completed = subprocess.run(
+                    [powershell, "-NoProfile", "-NonInteractive", "-Command", command],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    check=False,
+                )
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIn(expected, completed.stderr)
 
     def test_cli_backend_remains_available(self) -> None:
         script = (SCRIPTS / "invoke_auto_task.ps1").read_text(encoding="utf-8")

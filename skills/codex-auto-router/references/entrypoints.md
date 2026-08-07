@@ -1,5 +1,16 @@
 # Entrypoints
 
+## Contents
+
+- [Codex Desktop workflow](#codex-desktop-workflow)
+- [Signed-in CLI workflow](#signed-in-cli-workflow)
+- [Orchestrated execution](#orchestrated-execution)
+- [Offline calibration](#offline-calibration)
+- [Matched efficiency evaluation](#matched-efficiency-evaluation)
+- [Model registry validation](#model-registry-validation)
+- [Approval-gated learning](#approval-gated-learning)
+- [Conversation boundary](#conversation-boundary)
+
 ## Codex Desktop workflow
 
 Inside Codex Desktop, use `scripts/invoke_auto_task.ps1` as a planner and set the runtime boundary explicitly:
@@ -13,9 +24,11 @@ Inside Codex Desktop, use `scripts/invoke_auto_task.ps1` as a planner and set th
   -Explain
 ```
 
-The available-model list must come from the current Desktop `spawn_agent` tool metadata, not from configuration files, prompt text, or guesses. The command prints `codex-auto-router.desktop-plan.v1` and makes no model or CLI call. The plan deliberately excludes the task body while carrying the normalized target workdir.
+The available-model list must come from the current Desktop `spawn_agent` tool metadata, not from configuration files, prompt text, or guesses. The command prints one `codex-auto-router.desktop-plan.v1` JSON object and makes no model or CLI call. The plan excludes the task body while carrying the normalized target workdir, context profile, route identity, and separate routing-versus-planned-agent call counts.
 
-For `status=ready`, the primary Desktop agent calls `spawn_agent` exactly once with the plan's exact model, reasoning effort, and `fork_turns=agent.forkTurns`. Desktop v1 sets `forkTurns` to `none`, so the primary must put the complete original task and `agent.workdir` boundary in the child task instead of relying on inherited conversation history. That `direct` child is the sole writer. For `status=blocked`, launch nothing and report the structured reason. Desktop v1 blocks unavailable models, B/C/D multi-role topology, permission elevation, and validation-driven escalation. It never accesses Desktop credentials or app-server stdio and never falls back to CLI, another provider, model, or effort. It emits no execution feedback or Token telemetry because the local planner cannot observe the child run.
+For `executionRequested=false`, report the plan and launch nothing. Otherwise, for `status=ready`, the primary Desktop agent calls `spawn_agent` exactly once with the plan's exact model, reasoning effort, and `fork_turns=agent.forkTurns`. Desktop v1 sets `forkTurns` to `none`, so the primary must put the complete original task and `agent.workdir` boundary in the child task instead of relying on inherited conversation history. That `direct` child is the sole writer. For `status=blocked`, launch nothing and report the structured reason.
+
+Desktop `-DryRun` still requires `-DesktopAvailableModels` and emits the same plan schema with `executionRequested=false`, `plannedAgentCalls=0`, and `hostContract.action=report_plan`. `-Json` and `-NoFeedback` are idempotent: Desktop output is already JSON and Desktop v1 never records child execution feedback. `-FeedbackFile`, validation commands/escalation, and `-ContextMode full` are rejected as CLI-only or unsupported. Desktop never accesses credentials or app-server stdio and never falls back to CLI, another provider, model, or effort.
 
 ## Signed-in CLI workflow
 
