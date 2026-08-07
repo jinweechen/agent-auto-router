@@ -18,12 +18,21 @@ def _normalized_models(values: Iterable[str]) -> frozenset[str]:
     return frozenset(value.strip() for value in values if value.strip())
 
 
+def _blocked(plan: dict[str, Any], code: str, message: str) -> dict[str, Any]:
+    plan["status"] = "blocked"
+    plan["plannedAgentCalls"] = 0
+    plan["agent"] = None
+    plan["blocked"] = {"code": code, "message": message}
+    return plan
+
+
 def build_desktop_plan(
     route: dict[str, Any],
     available_models: Iterable[str],
     *,
     workdir: pathlib.Path | str,
     requested_sandbox: str = "workspace-write",
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Return a host-consumable plan; never executes a process or handles credentials."""
     execution_plan = route.get("executionPlan")
@@ -34,6 +43,10 @@ def build_desktop_plan(
     effort = execution_plan.get("effort")
     topology = execution_plan.get("topology")
     variant = execution_plan.get("variant")
+    context = execution_plan.get("context")
+    decision = route.get("decision") if isinstance(route.get("decision"), dict) else {}
+    policy = route.get("policy") if isinstance(route.get("policy"), dict) else {}
+    registry = route.get("registry") if isinstance(route.get("registry"), dict) else {}
     if not isinstance(selected_model, str) or not selected_model:
         raise ValueError("route.selectedModel must be a non-empty string")
     if not isinstance(effort, str) or not effort:
@@ -51,26 +64,43 @@ def build_desktop_plan(
         "effort": effort,
         "topology": topology,
         "variant": variant,
+        "context": context if isinstance(context, dict) else None,
         "modelCalls": 0,
+        "modelCallsScope": "routing",
+        "routingModelCalls": 0,
+        "executionRequested": not dry_run,
+        "plannedAgentCalls": 0 if dry_run else 1,
+        "routing": {
+            "strategy": decision.get("strategy"),
+            "reason": decision.get("reason"),
+            "targetTier": decision.get("target_tier"),
+            "policyVersion": policy.get("version"),
+            "policyDigest": policy.get("digest"),
+            "registryDigest": registry.get("digest"),
+        },
         "agent": {
             "role": "direct",
             "model": selected_model,
             "reasoningEffort": effort,
             "forkTurns": "none",
             "workdir": str(resolved_workdir),
-            "writer": requested_sandbox == "workspace-write",
+            "writer": requested_sandbox == "workspace-write" and not dry_run,
+            "wouldWrite": requested_sandbox == "workspace-write",
             "taskSource": "desktop-current-user-task",
         },
         "hostContract": {
-            "action": "spawn_agent",
-            "maxAgents": 1,
+            "action": "report_plan" if dry_run else "spawn_agent",
+            "maxAgents": 0 if dry_run else 1,
             "onlyRole": "direct",
-            "onlyWriter": "direct" if requested_sandbox == "workspace-write" else None,
+            "onlyWriter": (
+                "direct" if requested_sandbox == "workspace-write" and not dry_run else None
+            ),
             "permissions": "inherit-current-desktop-task",
             "fullHistoryForkAllowed": False,
             "silentModelOrProviderFallback": False,
         },
         "privacy": {
+            "semantics": "planner-guarantees",
             "taskIncludedInPlan": False,
             "credentialsRead": False,
             "credentialsForwarded": False,
@@ -80,30 +110,25 @@ def build_desktop_plan(
     }
 
     if topology != "direct" or variant not in DIRECT_VARIANTS:
-        plan["status"] = "blocked"
-        plan["agent"] = None
-        plan["blocked"] = {
-            "code": "desktop_multi_role_topology_unsupported",
-            "message": "Desktop v1 supports exactly one direct child agent; the selected route requires multi-role orchestration.",
-        }
-        return plan
+        return _blocked(
+            plan,
+            "desktop_multi_role_topology_unsupported",
+            "Desktop v1 supports exactly one direct child agent; the selected route requires multi-role orchestration.",
+        )
 
     if selected_model not in _normalized_models(available_models):
-        plan["status"] = "blocked"
-        plan["agent"] = None
-        plan["blocked"] = {
-            "code": "desktop_model_unavailable",
-            "message": f"Selected model is not declared available by the Desktop runtime: {selected_model}",
-        }
-        return plan
+        return _blocked(
+            plan,
+            "desktop_model_unavailable",
+            f"Selected model is not declared available by the Desktop runtime: {selected_model}",
+        )
 
     if requested_sandbox == "danger-full-access":
-        plan["status"] = "blocked"
-        plan["agent"] = None
-        plan["blocked"] = {
-            "code": "desktop_sandbox_unsupported",
-            "message": "Desktop v1 cannot request danger-full-access; it inherits the current Desktop task permissions.",
-        }
+        return _blocked(
+            plan,
+            "desktop_sandbox_unsupported",
+            "Desktop v1 cannot request danger-full-access; it inherits the current Desktop task permissions.",
+        )
     return plan
 
 
@@ -111,6 +136,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--available-model", action="append", default=[])
     parser.add_argument("--workdir", type=pathlib.Path, required=True)
+    parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--sandbox",
         choices=("read-only", "workspace-write", "danger-full-access"),
@@ -126,6 +152,7 @@ def main() -> int:
             args.available_model,
             workdir=args.workdir,
             requested_sandbox=args.sandbox,
+            dry_run=args.dry_run,
         )
     except (json.JSONDecodeError, OSError, ValueError) as exc:
         parser.error(str(exc))

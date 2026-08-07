@@ -120,7 +120,7 @@ cd codex-auto-router
 $codex-auto-router 使用 balance 策略，自动选择合适模型完成当前任务。
 ```
 
-主代理会把当前 Desktop runtime 明确支持的模型 ID 交给本地路由器。路由器输出不含任务正文、但包含规范化工作目录的 `codex-auto-router.desktop-plan.v1`；若计划可执行，主代理必须按计划中的精确模型、effort、`forkTurns=none` 和 workdir 启动一次 `spawn_agent`，并让该 direct 子代理成为唯一写入者。若模型不可用或要求多角色拓扑，则停止并报告阻断原因，不回退到 CLI。Desktop v1 不记录本地规划器无法观察的子代理执行反馈或 Token。
+主代理会把当前 Desktop runtime 明确支持的模型 ID 交给本地路由器。路由器输出不含任务正文、但包含规范化工作目录和上下文 profile 的 `codex-auto-router.desktop-plan.v1`；只有 `executionRequested=true` 且 `status=ready` 时，主代理才按精确模型、effort、`forkTurns=none` 和 workdir 启动一个 direct 子代理。Desktop DryRun 返回同一 schema，但计划调用数为零。若模型不可用或要求多角色拓扑，则停止并报告阻断原因，不回退到 CLI。Desktop v1 不记录本地规划器无法观察的子代理执行反馈或 Token。
 
 指定项目目录和任务：
 
@@ -132,7 +132,7 @@ $codex-auto-router 在 D:\AgentProject\my-project 中，
 只解释路由、不调用模型：
 
 ```text
-$codex-auto-router 对以下任务执行 DryRun，只返回模型选择和原因：
+$codex-auto-router 对以下任务执行 DryRun，只返回路由计划和原因，不启动执行：
 重命名配置字段并更新相关文档。
 ```
 
@@ -478,7 +478,7 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/codex_cli_orchestration_ev
         └── eval_cases.json
 ```
 
-远程仓库只发布 `codex-auto-router`；本地遗留的其他未跟踪 Skill 不属于发布内容。
+仓库只保留并发布 `codex-auto-router`，避免旧编排 Skill 与当前注册表、执行策略和安全边界漂移。
 
 ## 卸载
 
