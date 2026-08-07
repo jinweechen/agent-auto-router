@@ -2,7 +2,7 @@
 
 ## Scope
 
-Auto is a local pre-execution plan, not a fourth model or a reproduction of Cursor Router. It selects one real model plus effort, topology, and a bounded context profile, then invokes the official signed-in Codex CLI directly.
+Auto is a local pre-execution plan, not a fourth model or a reproduction of Cursor Router. It selects one real model plus effort, topology, and a bounded context profile. Execution then uses either the official signed-in Codex CLI or the current Codex Desktop host's supported `spawn_agent` capability.
 
 ## Model policy
 
@@ -21,12 +21,19 @@ Model identities, aliases, capabilities, roles, efforts, and priorities come onl
 - Never write `~/.codex/config.toml` or profile files.
 - Never set `model_provider` or `model_catalog_json`.
 - Never install a local Responses proxy or forward bearer credentials.
+- Never read, copy, or forward Desktop credentials and never attach to the existing Desktop app-server stdio.
 - Never modify CC Switch files, account selection, or session indexes.
-- Let `codex exec` use the user's existing authentication and provider.
+- Let `codex exec` use the user's existing CLI authentication and provider only on the CLI backend. Desktop execution uses the current host capability without exposing its authentication to the router.
 
 ## Execution
 
-Pass the model with `-m`, effort with an inline `-c` override, and task text over UTF-8 stdin. Respect the selected sandbox. The route applies to one new CLI task and does not mutate the current Desktop conversation.
+`ExecutionBackend=cli` preserves the existing behavior: pass the model with `-m`, effort with an inline `-c` override, and task text over UTF-8 stdin. Respect the selected sandbox.
+
+`ExecutionBackend=desktop` emits `codex-auto-router.desktop-plan.v1`; it does not execute a process. The caller must declare the exact model IDs currently supported by its Desktop `spawn_agent` runtime. A ready plan contains the selected model, effort, normalized workdir, and `forkTurns=none`, but omits task text. The Desktop primary agent then calls `spawn_agent` with the exact plan values and supplies the complete original current user task plus the workdir boundary directly to exactly one new `direct` child agent. The child is the only writer; the primary agent and any verification remain read-only with respect to implementation files. Full-history forks are forbidden in v1 because they inherit the primary model and effort rather than honoring overrides.
+
+Desktop v1 supports only direct A/E/F topology. If routing selects B/C/D, if the selected model is absent from the caller-declared Desktop availability set, or if the request would require permission elevation, return a structured blocked plan and launch nothing. Never silently change model, effort, tier, provider, or backend. Desktop v1 does not support validation-driven escalation or feedback derived from an execution that the local planner cannot observe.
+
+The route applies to one new child task and does not mutate the current Desktop conversation's model.
 
 Inspect repository structure read-only before routing. Use tracked/non-ignored paths, aggregate counts, and deterministic candidate ranking only. Inject a compact repository map only when it has a candidate path or the repository is large enough to justify the map. Never persist task text in repository metadata.
 
@@ -58,10 +65,10 @@ Do not equate a successful CLI exit with completed implementation. For Git-backe
 
 ## Failure policy
 
-If registry validation, classification, role resolution, or explicit-model validation fails, stop before launching Codex. If the selected model is unavailable from the active provider, report the failure rather than silently changing models, tiers, or providers.
+If registry validation, classification, role resolution, or explicit-model validation fails, stop before launching Codex. If the selected model is unavailable from the active CLI provider or the declared Desktop runtime availability set, report the failure rather than silently changing models, tiers, providers, or backends.
 
 The only supported post-selection tier change is one user-enabled validation-driven escalation to the next trusted tier after a successful model run fails the supplied validation. It requires an argv-array validation command, emits a warning, runs at most once, reruns validation, and never changes provider. Authentication, provider, model-availability, sandbox, network, and other CLI failures always stop without escalation. Without explicit opt-in, stop on execution or validation failure.
 
 ## Validation gates
 
-Run validation only when requested. Check registry schema and alias collisions, explicit-only versus Auto eligibility, all A-F role resolutions, high-risk-primary availability, deterministic fixtures, Chinese stdin, dry-run behavior, feedback privacy rejection, candidate integrity, registry-digest invalidation, approval gating, rollback, and one controlled signed-in task. Confirm separately that Codex config, CC Switch state, and Desktop history remain unchanged.
+Run validation only when requested. Check registry schema and alias collisions, explicit-only versus Auto eligibility, all A-F role resolutions, high-risk-primary availability, deterministic fixtures, Chinese stdin, dry-run behavior, Desktop backend branching, plan privacy, absence of CLI calls on the Desktop path, unavailable-model blocking, multi-role blocking, feedback privacy rejection, candidate integrity, registry-digest invalidation, approval gating, rollback, and one controlled signed-in CLI task. Confirm separately that Codex config, CC Switch state, Desktop credentials, and Desktop history remain unchanged.

@@ -1,4 +1,4 @@
 interface:
   display_name: "Codex Auto Router"
-  short_description: "Plan token-efficient routes across trusted Codex models"
-  default_prompt: "Use $codex-auto-router to select a trusted model, effort, topology, and bounded repository context; measure privacy-safe efficiency and use approval-gated calibration or validation escalation only when requested."
+  short_description: "Route trusted models through Desktop or CLI"
+  default_prompt: "Use $codex-auto-router to select a trusted model, effort, topology, and bounded repository context. In Codex Desktop, follow the plan's exact model, effort, forkTurns, and workdir when spawning one direct child as the sole writer; block unavailable models or multi-role routes without falling back. Use CLI execution, approval-gated calibration, or validation escalation only when explicitly selected."
