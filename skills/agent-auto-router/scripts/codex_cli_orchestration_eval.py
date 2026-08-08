@@ -8,7 +8,7 @@ import time
 from typing import Any
 
 from auto_router import route_case
-from codex_cli_client import CodexCliClient
+from codex_cli_adapter import CodexCliAdapter
 from orchestration_engine import (
     CallRecord,
     DEFAULT_CASES,
@@ -122,7 +122,7 @@ def main() -> int:
         for role in ("planner", "dispatcher", "worker", "reviewer", "grader")
         if (value := getattr(args, f"{role}_effort"))
     }
-    client = CodexCliClient(
+    client = CodexCliAdapter(
         timeout_seconds=args.timeout,
         effort_override=args.effort_override,
         role_efforts=role_efforts,

@@ -14,7 +14,7 @@ import tempfile
 import time
 from typing import Any
 
-from codex_cli_client import extract_thread_id, extract_usage_details
+from codex_cli_adapter import extract_thread_id, extract_usage_details
 from repository_context import build_repository_context
 
 

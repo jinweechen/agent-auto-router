@@ -47,7 +47,8 @@ def extract_thread_id(events: list[dict[str, Any]]) -> str:
     return ""
 
 
-class CodexCliClient:
+class CodexCliAdapter:
+    """Codex CLI backend implementation of ExecutionAdapter."""
     def __init__(
         self,
         timeout_seconds: int = 600,

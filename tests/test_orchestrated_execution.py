@@ -11,7 +11,7 @@ import unittest
 SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "skills" / "agent-auto-router" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from codex_cli_client import CodexCliClient, extract_usage_details  # noqa: E402
+from codex_cli_adapter import CodexCliAdapter, extract_usage_details  # noqa: E402
 from single_task_runner import parse_json_lines, usage_is_available  # noqa: E402
 from execution_policy import ExecutionPolicy  # noqa: E402
 from execution_plan import build_execution_plan  # noqa: E402
@@ -26,8 +26,8 @@ from invoke_orchestrated_task import (  # noqa: E402
 )
 
 
-def make_client(execution_mode: bool, sandbox: str = "workspace-write") -> CodexCliClient:
-    client = object.__new__(CodexCliClient)
+def make_client(execution_mode: bool, sandbox: str = "workspace-write") -> CodexCliAdapter:
+    client = object.__new__(CodexCliAdapter)
     client.policy = ExecutionPolicy(execution_mode, sandbox)
     client.max_model_calls = None
     client.max_total_tokens = None

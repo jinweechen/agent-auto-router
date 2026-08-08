@@ -469,7 +469,7 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/codex_cli_orchestration_ev
         ├── invoke_auto_task.ps1
         ├── invoke_orchestrated_task.ps1
         ├── invoke_orchestrated_task.py
-        ├── codex_cli_client.py
+        ├── codex_cli_adapter.py
         ├── execution_policy.py
         ├── install.ps1
         ├── evaluate_auto_router.py
