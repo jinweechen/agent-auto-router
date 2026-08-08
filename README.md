@@ -65,7 +65,7 @@ Auto 是一次任务开始前的路由决策，不是第四个模型，也不会
 修改注册表后先执行零模型调用校验：
 
 ```powershell
-python "./skills/codex-auto-router/scripts/validate_model_registry.py"
+python "./skills/agent-auto-router/scripts/validate_model_registry.py"
 ```
 
 安全上线顺序：
@@ -98,17 +98,17 @@ Skill 不要求也不会读取用户的 API Key 或 Desktop 凭证。实际计�
 克隆仓库：
 
 ```powershell
-git clone https://github.com/jinweechen/codex-auto-router.git
-cd codex-auto-router
+git clone https://github.com/jinweechen/agent-auto-router.git
+cd agent-auto-router
 ```
 
 安装到个人 Codex Skills 目录：
 
 ```powershell
-& "./skills/codex-auto-router/scripts/install.ps1"
+& "./skills/agent-auto-router/scripts/install.ps1"
 ```
 
-重复运行安装脚本会通过暂存目录安全替换旧版本，不会生成嵌套的 `codex-auto-router/codex-auto-router`。需要保留旧版本时添加 `-Backup`；备份保存在 `~/.codex/skill-backups/codex-auto-router`，避免被 Codex 重复识别为另一个同名 Skill。
+重复运行安装脚本会通过暂存目录安全替换旧版本，不会生成嵌套的 `agent-auto-router/agent-auto-router`。需要保留旧版本时添加 `-Backup`；备份保存在 `~/.codex/skill-backups/agent-auto-router`，避免被 Codex 重复识别为另一个同名 Skill。
 
 安装后重新启动 Codex，让 Skill 元数据重新加载。
 
@@ -117,29 +117,29 @@ cd codex-auto-router
 直接在对话中引用 Skill：
 
 ```text
-$codex-auto-router 使用 balance 策略，自动选择合适模型完成当前任务。
+$agent-auto-router 使用 balance 策略，自动选择合适模型完成当前任务。
 ```
 
-主代理会把当前 Desktop runtime 明确支持的模型 ID 交给本地路由器。路由器输出不含任务正文、但包含规范化工作目录和上下文 profile 的 `codex-auto-router.desktop-plan.v1`；只有 `executionRequested=true` 且 `status=ready` 时，主代理才按精确模型、effort、`forkTurns=none` 和 workdir 启动一个 direct 子代理。Desktop DryRun 返回同一 schema，但计划调用数为零。若模型不可用或要求多角色拓扑，则停止并报告阻断原因，不回退到 CLI。Desktop v1 不记录本地规划器无法观察的子代理执行反馈或 Token。
+主代理会把当前 Desktop runtime 明确支持的模型 ID 交给本地路由器。路由器输出不含任务正文、但包含规范化工作目录和上下文 profile 的 `agent-auto-router.desktop-plan.v1`；只有 `executionRequested=true` 且 `status=ready` 时，主代理才按精确模型、effort、`forkTurns=none` 和 workdir 启动一个 direct 子代理。Desktop DryRun 返回同一 schema，但计划调用数为零。若模型不可用或要求多角色拓扑，则停止并报告阻断原因，不回退到 CLI。Desktop v1 不记录本地规划器无法观察的子代理执行反馈或 Token。
 
 指定项目目录和任务：
 
 ```text
-$codex-auto-router 在 D:\AgentProject\my-project 中，
+$agent-auto-router 在 D:\AgentProject\my-project 中，
 使用 balance 策略审查并优化认证模块。
 ```
 
 只解释路由、不调用模型：
 
 ```text
-$codex-auto-router 对以下任务执行 DryRun，只返回路由计划和原因，不启动执行：
+$agent-auto-router 对以下任务执行 DryRun，只返回路由计划和原因，不启动执行：
 重命名配置字段并更新相关文档。
 ```
 
 请求多模型编排：
 
 ```text
-$codex-auto-router 使用多模型编排：
+$agent-auto-router 使用多模型编排：
 Sol 负责规划和最终验收，
 Terra 负责依赖调度，
 Luna 负责执行边界清晰的子任务，
@@ -153,7 +153,7 @@ Luna 负责执行边界清晰的子任务，
 Desktop-native 计划：
 
 ```powershell
-& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_auto_task.ps1" `
+& "$HOME/.codex/skills/agent-auto-router/scripts/invoke_auto_task.ps1" `
   -Task "审查并优化当前项目" `
   -ExecutionBackend desktop `
   -DesktopAvailableModels @('gpt-5.6-sol', 'gpt-5.6-terra') `
@@ -166,7 +166,7 @@ Desktop-native 计划：
 现有 CLI 执行：
 
 ```powershell
-& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_auto_task.ps1" `
+& "$HOME/.codex/skills/agent-auto-router/scripts/invoke_auto_task.ps1" `
   -Task "审查并优化当前项目" `
   -ExecutionBackend cli `
   -Model auto `
@@ -178,7 +178,7 @@ Desktop-native 计划：
 ### Dry Run
 
 ```powershell
-& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_auto_task.ps1" `
+& "$HOME/.codex/skills/agent-auto-router/scripts/invoke_auto_task.ps1" `
   -Task "格式化这段文本" `
   -Strategy balance `
   -Workdir "." `
@@ -189,7 +189,7 @@ Desktop-native 计划：
 ### 指定 reasoning effort
 
 ```powershell
-& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_auto_task.ps1" `
+& "$HOME/.codex/skills/agent-auto-router/scripts/invoke_auto_task.ps1" `
   -Task "设计跨服务迁移方案" `
   -Strategy intelligence `
   -Effort xhigh `
@@ -201,7 +201,7 @@ Desktop-native 计划：
 ### 显式覆盖模型
 
 ```powershell
-& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_auto_task.ps1" `
+& "$HOME/.codex/skills/agent-auto-router/scripts/invoke_auto_task.ps1" `
   -Task "审查认证模块" `
   -Model sol `
   -Effort xhigh `
@@ -219,7 +219,7 @@ Auto 同时给出 effort、直接/编排拓扑和分层上下文预算。路由�
 只有用户明确允许、且首次模型执行成功但确定性验证失败时，才会升级到下一个受信能力层，最多一次：
 
 ```powershell
-& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_auto_task.ps1" `
+& "$HOME/.codex/skills/agent-auto-router/scripts/invoke_auto_task.ps1" `
   -Task "实现修改并通过测试" `
   -Model auto `
   -Workdir "D:/path/to/project" `
@@ -234,7 +234,7 @@ Auto 同时给出 effort、直接/编排拓扑和分层上下文预算。路由�
 离线评估不会调用任何模型：
 
 ```powershell
-python "$HOME/.codex/skills/codex-auto-router/scripts/evaluate_auto_router.py" `
+python "$HOME/.codex/skills/agent-auto-router/scripts/evaluate_auto_router.py" `
   --output "./auto-router-eval.json"
 ```
 
@@ -262,7 +262,7 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/evaluate_auto_router.py" `
 查看状态：
 
 ```powershell
-python "$HOME/.codex/skills/codex-auto-router/scripts/policy_learning.py" status
+python "$HOME/.codex/skills/agent-auto-router/scripts/policy_learning.py" status
 ```
 
 `status.efficiency` 会显示 Token 覆盖率、人工验收结果、按最终模型汇总的通过率和平均可观察 Token。只有全部已标注任务都有 Token 数据时才计算 `observedTokensPerPass`。
@@ -270,7 +270,7 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/policy_learning.py" status
 根据执行时显示的 `routeId` 标注结果：
 
 ```powershell
-python "$HOME/.codex/skills/codex-auto-router/scripts/policy_learning.py" label `
+python "$HOME/.codex/skills/agent-auto-router/scripts/policy_learning.py" label `
   --route-id "<route-id>" `
   --preferred-model gpt-5.6-terra `
   --outcome pass
@@ -279,14 +279,14 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/policy_learning.py" label 
 默认至少需要 20 条带人工标签的自动路由。达到门槛后，`label` 会自动在 `~/.codex/auto-router/candidates` 下生成候选；可以添加 `--no-auto-propose` 禁用。也可以手动指定候选输出位置。生成候选不会改变当前策略，也不会调用模型：
 
 ```powershell
-python "$HOME/.codex/skills/codex-auto-router/scripts/policy_learning.py" propose `
+python "$HOME/.codex/skills/agent-auto-router/scripts/policy_learning.py" propose `
   --output "./candidate-policy.json"
 ```
 
 显式模型或编排变体覆盖仍会被记录，但不会进入学习样本，避免把一次人工覆盖直接当作通用策略。检查候选文件中的 `eligibleForApproval`、验证集准确率、加权损失、误降级数和 `safetyChecks`。只有满足门禁的候选才能显式批准；批准时会用当前反馈日志重新计算指标，不能只靠修改候选文件绕过门禁：
 
 ```powershell
-python "$HOME/.codex/skills/codex-auto-router/scripts/policy_learning.py" approve `
+python "$HOME/.codex/skills/agent-auto-router/scripts/policy_learning.py" approve `
   --candidate "./candidate-policy.json" `
   --approved-by "reviewer-name"
 ```
@@ -294,7 +294,7 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/policy_learning.py" approv
 回滚到最近一个不同的历史版本：
 
 ```powershell
-python "$HOME/.codex/skills/codex-auto-router/scripts/policy_learning.py" rollback `
+python "$HOME/.codex/skills/agent-auto-router/scripts/policy_learning.py" rollback `
   --approved-by "reviewer-name"
 ```
 
@@ -305,7 +305,7 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/policy_learning.py" rollba
 要判断某个模型、effort 或拓扑是否真正节省 Token，必须对同一批 `caseId` 使用同一外部验收标准。结果文件只能包含 `caseId`、`configuration`、可选的 `model`/`effort`、`accepted`、可选 `tokens`、`durationMs` 和可选 `retries`，不能包含任务正文或回复：
 
 ```powershell
-python "$HOME/.codex/skills/codex-auto-router/scripts/evaluate_development_routes.py" `
+python "$HOME/.codex/skills/agent-auto-router/scripts/evaluate_development_routes.py" `
   --results "./matched-results.json" `
   --output "./matched-summary.json"
 ```
@@ -325,7 +325,7 @@ python -m unittest discover -s tests -p "test_*.py"
 正式执行入口会自动选择 A-F 编排变体。规划、调度、Luna workers 和 grader 均为只读；只有直接执行模型或最终 reviewer 可以修改工作区：
 
 ```powershell
-& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_orchestrated_task.ps1" `
+& "$HOME/.codex/skills/agent-auto-router/scripts/invoke_orchestrated_task.ps1" `
   -Task "实现认证模块重构并补充测试" `
   -Strategy balance `
   -Workdir "D:/path/to/project" `
@@ -336,7 +336,7 @@ python -m unittest discover -s tests -p "test_*.py"
 显式指定 C 变体：
 
 ```powershell
-& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_orchestrated_task.ps1" `
+& "$HOME/.codex/skills/agent-auto-router/scripts/invoke_orchestrated_task.ps1" `
   -Task "实现认证模块重构并补充测试" `
   -Variant C `
   -Workdir "D:/path/to/project"
@@ -349,7 +349,7 @@ python -m unittest discover -s tests -p "test_*.py"
 长任务默认输出逐角色 JSON 进度事件，并受总时限和调用预算约束：
 
 ```powershell
-& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_orchestrated_task.ps1" `
+& "$HOME/.codex/skills/agent-auto-router/scripts/invoke_orchestrated_task.ps1" `
   -Task "实现模块并补充测试" `
   -Variant D `
   -Workdir "D:/path/to/project" `
@@ -395,7 +395,7 @@ Token 报告进一步区分 `cached_input`、`uncached_input` 和 `reasoning_out
 运行 Sol/Terra/Luna 编排对比：
 
 ```powershell
-python "$HOME/.codex/skills/codex-auto-router/scripts/codex_cli_orchestration_eval.py" `
+python "$HOME/.codex/skills/agent-auto-router/scripts/codex_cli_orchestration_eval.py" `
   --cases "./cases.json" `
   --workdir "D:/path/to/project" `
   --results-dir "./eval-results" `
@@ -444,7 +444,7 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/codex_cli_orchestration_ev
 │   ├── test_orchestration_engine.py
 │   ├── test_desktop_execution.py
 │   └── test_orchestrated_execution.py
-└── skills/codex-auto-router/
+└── skills/agent-auto-router/
     ├── SKILL.md
     ├── agents/openai.yaml
     ├── references/
@@ -478,14 +478,14 @@ python "$HOME/.codex/skills/codex-auto-router/scripts/codex_cli_orchestration_ev
         └── eval_cases.json
 ```
 
-仓库只保留并发布 `codex-auto-router`，避免旧编排 Skill 与当前注册表、执行策略和安全边界漂移。
+仓库只保留并发布 `agent-auto-router`，避免旧编排 Skill 与当前注册表、执行策略和安全边界漂移。
 
 ## 卸载
 
 删除个人 Skill 目录即可：
 
 ```powershell
-Remove-Item -LiteralPath "$HOME/.codex/skills/codex-auto-router" -Recurse -Force
+Remove-Item -LiteralPath "$HOME/.codex/skills/agent-auto-router" -Recurse -Force
 ```
 
 该操作不需要恢复 Codex 配置，因为隔离版从不修改全局配置。

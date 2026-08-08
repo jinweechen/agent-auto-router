@@ -10,7 +10,7 @@ import sys
 from typing import Any, Iterable
 
 
-SCHEMA = "codex-auto-router.desktop-plan.v1"
+SCHEMA = "agent-auto-router.desktop-plan.v1"
 DIRECT_VARIANTS = frozenset({"A", "E", "F"})
 
 

@@ -6,7 +6,7 @@ import sys
 import unittest
 from typing import Any
 
-SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "skills" / "codex-auto-router" / "scripts"
+SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "skills" / "agent-auto-router" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from orchestration_engine import CallRecord, RunContext, run_variant, run_workers  # noqa: E402

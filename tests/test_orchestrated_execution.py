@@ -8,7 +8,7 @@ import sys
 import threading
 import unittest
 
-SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "skills" / "codex-auto-router" / "scripts"
+SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "skills" / "agent-auto-router" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from codex_cli_client import CodexCliClient, extract_usage_details  # noqa: E402
@@ -320,7 +320,7 @@ class OrchestratedExecutionPolicyTests(unittest.TestCase):
 
     def test_installer_keeps_backups_outside_skill_discovery_directory(self) -> None:
         script = (SCRIPTS / "install.ps1").read_text(encoding="utf-8")
-        self.assertIn("skill-backups\\codex-auto-router", script)
+        self.assertIn("skill-backups\\agent-auto-router", script)
         self.assertNotIn('$backupPath = "$targetPath.backup-', script)
         self.assertIn("__pycache__", script)
         self.assertIn("*.pyc", script)

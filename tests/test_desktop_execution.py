@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unittest
 
-SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "skills" / "codex-auto-router" / "scripts"
+SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "skills" / "agent-auto-router" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import desktop_execution  # noqa: E402
@@ -35,7 +35,7 @@ class DesktopExecutionTests(unittest.TestCase):
         plan = build_desktop_plan(
             route, [route["selectedModel"]], workdir=SCRIPTS.parents[2]
         )
-        self.assertEqual(plan["schema"], "codex-auto-router.desktop-plan.v1")
+        self.assertEqual(plan["schema"], "agent-auto-router.desktop-plan.v1")
         self.assertEqual(plan["status"], "ready")
         self.assertEqual(plan["hostContract"]["action"], "spawn_agent")
         self.assertEqual(plan["hostContract"]["maxAgents"], 1)
@@ -178,7 +178,7 @@ class DesktopExecutionTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         plan = json.loads(completed.stdout.strip())
-        self.assertEqual(plan["schema"], "codex-auto-router.desktop-plan.v1")
+        self.assertEqual(plan["schema"], "agent-auto-router.desktop-plan.v1")
         self.assertEqual(plan["status"], "ready")
         self.assertFalse(plan["executionRequested"])
         self.assertEqual(plan["plannedAgentCalls"], 0)
