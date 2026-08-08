@@ -86,11 +86,7 @@ class ClaudeCliAdapter:
         self.execution_mode = execution_mode
         self.max_turns = max_turns
         self.allowed_tools = allowed_tools
-        self.model_map = model_map if model_map is not None else {
-            "gpt-5.6-sol": "sonnet",
-            "gpt-5.6-terra": "sonnet",
-            "gpt-5.6-luna": "haiku",
-        }
+        self.model_map = model_map if model_map is not None else {}
         self.total_timeout_seconds = total_timeout_seconds
         self.max_model_calls = max_model_calls
         self.max_total_tokens = max_total_tokens
@@ -148,7 +144,12 @@ class ClaudeCliAdapter:
         raise RuntimeError("Claude Code CLI executable or wrapper was not found on PATH")
 
     def _resolve_model(self, model: str) -> str:
-        return self.model_map.get(model, model)
+        from model_registry import strip_backend_prefix
+        if ":" in model:
+            name = strip_backend_prefix(model, "claude")
+        else:
+            name = model
+        return self.model_map.get(name, name)
 
     def _finalize_argv(self, argv: list[str]) -> list[str]:
         """Work around Windows cmd.exe wrapper argument re-parsing.

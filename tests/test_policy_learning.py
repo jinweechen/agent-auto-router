@@ -33,8 +33,8 @@ def route_payload(route_id: str) -> dict[str, object]:
         "route_id": route_id,
         "strategy": "balance",
         "effort": "medium",
-        "selector_model": "gpt-5.6-sol",
-        "selected_model": "gpt-5.6-sol",
+        "selector_model": "codex:gpt-5.6-sol",
+        "selected_model": "codex:gpt-5.6-sol",
         "reason": "complexity",
         "features": {
             "prompt_chars": 120,
@@ -62,7 +62,7 @@ def labeled_sample(route_id: str) -> dict[str, object]:
         "strategy": "balance",
         "effort": "medium",
         "features": route_payload(route_id)["features"],
-        "preferredModel": "gpt-5.6-terra",
+        "preferredModel": "codex:gpt-5.6-terra",
     }
     return event
 
@@ -163,7 +163,7 @@ class PolicyLearningTests(unittest.TestCase):
             {
                 "eventType": "route_outcome",
                 "routeId": "route-1",
-                "selectorModel": "gpt-5.6-luna",
+                "selectorModel": "codex:gpt-5.6-luna",
                 "explicitOverride": False,
                 "strategy": "balance",
                 "effort": "medium",
@@ -183,8 +183,8 @@ class PolicyLearningTests(unittest.TestCase):
             {
                 "eventType": "route_outcome",
                 "routeId": "route-escalated",
-                "selectorModel": "gpt-5.6-luna",
-                "selectedModel": "gpt-5.6-terra",
+                "selectorModel": "codex:gpt-5.6-luna",
+                "selectedModel": "codex:gpt-5.6-terra",
                 "explicitOverride": False,
                 "escalated": True,
                 "strategy": "balance",
@@ -194,7 +194,7 @@ class PolicyLearningTests(unittest.TestCase):
             {
                 "eventType": "human_label",
                 "routeId": "route-escalated",
-                "preferredModel": "gpt-5.6-terra",
+                "preferredModel": "codex:gpt-5.6-terra",
                 "outcome": "pass",
             },
         ]
@@ -227,7 +227,7 @@ class PolicyLearningTests(unittest.TestCase):
             for index in range(24):
                 route_id = f"route-{index}"
                 append_route_event(route_payload(route_id), feedback_path)
-                append_label_event(route_id, "gpt-5.6-terra", "pass", feedback_path)
+                append_label_event(route_id, "codex:gpt-5.6-terra", "pass", feedback_path)
             candidate_path = state_dir / "candidate.json"
             candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
 
@@ -268,7 +268,7 @@ class PolicyLearningTests(unittest.TestCase):
             for index in range(24):
                 route_id = f"route-{index}"
                 append_route_event(route_payload(route_id), feedback_path)
-                append_label_event(route_id, "gpt-5.6-terra", "pass", feedback_path)
+                append_label_event(route_id, "codex:gpt-5.6-terra", "pass", feedback_path)
             candidate_path = state_dir / "candidate.json"
             candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "failed live revalidation"):
@@ -315,7 +315,7 @@ class PolicyLearningTests(unittest.TestCase):
                 append_route_event(route_payload(f"route-{index}"), feedback_path)
             for index in range(19):
                 append_label_event(
-                    f"route-{index}", "gpt-5.6-terra", "pass", feedback_path
+                    f"route-{index}", "codex:gpt-5.6-terra", "pass", feedback_path
                 )
             completed = subprocess.run(
                 [
@@ -327,7 +327,7 @@ class PolicyLearningTests(unittest.TestCase):
                     "--route-id",
                     "route-19",
                     "--preferred-model",
-                    "gpt-5.6-terra",
+                    "codex:gpt-5.6-terra",
                     "--outcome",
                     "pass",
                 ],

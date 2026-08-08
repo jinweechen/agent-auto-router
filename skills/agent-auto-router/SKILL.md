@@ -1,6 +1,6 @@
 ---
 name: agent-auto-router
-description: Automatically select trusted registered Codex models with deterministic local routing, execute through Codex Desktop child agents or the signed-in Codex CLI, safely evaluate role-based orchestration, validate model-registry extensions, or calibrate routing. Use when the user asks for Auto model selection, no-API-key routing, route explanations, model extension, calibration, or multi-model orchestration.
+description: Automatically select trusted registered models across Codex/Claude backends with deterministic local routing, execute through Codex Desktop child agents or the signed-in Codex CLI, safely evaluate role-based orchestration, validate model-registry extensions, or calibrate routing. Use when the user asks for Auto model selection, no-API-key routing, route explanations, model extension, calibration, or multi-model orchestration.
 ---
 
 # Route Codex Tasks Automatically

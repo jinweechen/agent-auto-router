@@ -37,13 +37,13 @@ Auto 是一次任务开始前的路由决策，不是第四个模型，也不会
 
 ## 模型策略
 
-默认注册表映射如下：
+默认注册表映射如下。模型 ID 使用 `{backend}:{model}` 格式；`codex:` 为默认后端，`claude:` 后端的 `claude:sonnet` / `claude:haiku` 可自动选择，`claude:opus` 仅允许显式试用。
 
 | 能力层 | 默认模型 | 主要用途 |
 | --- | --- | --- |
-| `frontier` | `gpt-5.6-sol` | 高风险、架构设计、复杂重构、歧义或深度推理任务 |
-| `balanced` | `gpt-5.6-terra` | 日常开发、常规调试和均衡型任务 |
-| `fast` | `gpt-5.6-luna` | 格式化、提取、翻译、重复性和成本敏感任务 |
+| `frontier` | `codex:gpt-5.6-sol` | 高风险、架构设计、复杂重构、歧义或深度推理任务 |
+| `balanced` | `codex:gpt-5.6-terra` | 日常开发、常规调试和均衡型任务 |
+| `fast` | `codex:gpt-5.6-luna` | 格式化、提取、翻译、重复性和成本敏感任务 |
 
 支持三种路由策略：
 
@@ -52,6 +52,10 @@ Auto 是一次任务开始前的路由决策，不是第四个模型，也不会
 | `intelligence` | 质量优先，复杂任务使用 `frontier`，其余主要使用 `balanced` |
 | `balance` | 推荐默认值；简单任务用 `fast`，常规任务用 `balanced`，复杂或高风险任务用 `frontier` |
 | `cost` | 模型层级成本代理；默认使用 `fast`，复杂任务使用 `balanced`，高风险任务才使用 `frontier` |
+
+## 多后端
+
+通过 `--available-backends` 参数选择可用后端（`select_auto_model.py` 自动探测 PATH 中的 CLI；也可显式传入逗号分隔列表如 `codex,claude`）。各执行适配器在构建命令前通过 `strip_backend_prefix` 剥离后端前缀，只向对应 CLI 传递裸模型名。Desktop v1 目前仅支持 Codex 后端；如路由选择了非 Codex 模型，Desktop 计划将返回 `desktop_backend_unsupported` 阻断码而非静默回退。
 
 ## 扩展其它模型
 
@@ -208,7 +212,7 @@ Desktop-native 计划：
   -Workdir "D:/path/to/project"
 ```
 
-`-Model` 支持 `auto`，以及受信注册表内所有已启用模型的别名和完整 ID。显式模型只覆盖当前任务，不修改 Codex 全局配置；`autoEligible: false` 的模型仍可显式试用。
+`-Model` 支持 `auto`，以及受信注册表内所有已启用模型的别名和跨后端完整 ID（如 `codex:gpt-5.6-sol`、`claude:sonnet`、`haiku`）。显式模型只覆盖当前任务，不修改 Codex 全局配置；`autoEligible: false` 的模型仍可显式试用。
 
 每次非 Dry Run 的 CLI 单模型或 CLI 编排执行默认记录一个隐私最小化结果：路由 ID、数值/布尔特征、选择的模型、退出码、耗时，以及 CLI JSON 事件实际暴露的 input、cached input、output、reasoning output Token。无法观测时记录为 `null`，不会猜测或按零处理。日志不会保存任务正文、模型回复、工具输出或凭据。使用 `-Explain` 查看路由 ID，使用 `-NoFeedback` 关闭本次记录；`-StateDir` 和 `-FeedbackFile` 可隔离状态位置。Desktop v1 只输出计划，不伪造执行结果。
 

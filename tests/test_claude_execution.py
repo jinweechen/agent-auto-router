@@ -38,12 +38,55 @@ class ClaudeExecutionTests(unittest.TestCase):
 
     def test_model_map_resolution(self) -> None:
         adapter = ClaudeCliAdapter()
-        self.assertEqual(adapter._resolve_model("gpt-5.6-sol"), "sonnet")
-        self.assertEqual(adapter._resolve_model("gpt-5.6-luna"), "haiku")
-        self.assertEqual(adapter._resolve_model("unknown-model"), "unknown-model")
+        # Default empty map: strip claude: prefix, passthrough
+        self.assertEqual(adapter._resolve_model("claude:sonnet"), "sonnet")
+        self.assertEqual(adapter._resolve_model("claude:opus"), "opus")
+        self.assertEqual(adapter._resolve_model("unknown"), "unknown")
 
-        custom = ClaudeCliAdapter(model_map={"my-frontier": "opus"})
-        self.assertEqual(custom._resolve_model("my-frontier"), "opus")
+        # Custom map overrides after prefix strip
+        custom = ClaudeCliAdapter(model_map={"opus": "sonnet"})
+        self.assertEqual(custom._resolve_model("claude:opus"), "sonnet")
+
+        # Foreign-backend prefix raises ValueError
+        with self.assertRaises(ValueError):
+            adapter._resolve_model("codex:gpt-5.6-sol")
+
+    def test_create_with_foreign_backend_model_raises_valueerror(self) -> None:
+        instance = object.__new__(ClaudeCliAdapter)
+        instance.policy = ExecutionPolicy(False, "workspace-write")
+        instance.model_map = {}
+        instance.effort_override = None
+        instance.role_efforts = {}
+        instance.max_model_calls = None
+        instance.max_total_tokens = None
+        instance.calls_started = 0
+        instance._call_lock = threading.Lock()
+        instance._call_reservations: dict[int, int] = {}
+        instance._token_lock = threading.Lock()
+        instance.usage_events_observed = 0
+        instance.observed_input_tokens = 0
+        instance.observed_cached_input_tokens = 0
+        instance.observed_output_tokens = 0
+        instance.observed_reasoning_output_tokens = 0
+        instance.workdir = pathlib.Path.cwd()
+        instance.claude_command = ["claude"]
+        instance.max_turns = 30
+        instance.allowed_tools = ("Read", "Edit", "Write", "Bash")
+        instance.progress_callback = None
+        instance.timeout_seconds = 600
+        instance.total_timeout_seconds = None
+        instance.started_at = time.monotonic()
+        instance.execution_mode = False
+
+        with self.assertRaises(ValueError):
+            instance.create(
+                context=RunContext(),
+                role="planner",
+                model="codex:gpt-5.6-sol",
+                effort="low",
+                instructions="test",
+                input_text="test",
+            )
 
     def test_effort_normalization(self) -> None:
         adapter = ClaudeCliAdapter()
@@ -164,7 +207,7 @@ class ClaudeExecutionTests(unittest.TestCase):
                 instance.create(
                     context=RunContext(),
                     role="planner",
-                    model="gpt-5.6-sol",
+                    model="claude:sonnet",
                     effort="low",
                     instructions="test",
                     input_text="test",

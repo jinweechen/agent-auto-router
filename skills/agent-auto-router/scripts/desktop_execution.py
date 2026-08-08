@@ -116,7 +116,17 @@ def build_desktop_plan(
             "Desktop v1 supports exactly one direct child agent; the selected route requires multi-role orchestration.",
         )
 
-    if selected_model not in _normalized_models(available_models):
+    from model_registry import strip_backend_prefix
+    try:
+        unqualified = strip_backend_prefix(selected_model, "codex")
+    except ValueError:
+        return _blocked(
+            plan,
+            "desktop_backend_unsupported",
+            f"Desktop v1 supports only the codex backend; selected model: {selected_model}",
+        )
+
+    if unqualified not in _normalized_models(available_models):
         return _blocked(
             plan,
             "desktop_model_unavailable",

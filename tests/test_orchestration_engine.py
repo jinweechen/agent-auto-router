@@ -75,12 +75,12 @@ class OrchestrationEngineTests(unittest.TestCase):
 
     def test_default_profiles_preserve_existing_role_models(self) -> None:
         expected = {
-            "A": {"direct": "gpt-5.6-sol", "grader": "gpt-5.6-terra"},
-            "B": {"planner": "gpt-5.6-sol", "worker": "gpt-5.6-luna", "reviewer": "gpt-5.6-sol", "grader": "gpt-5.6-terra"},
-            "C": {"planner": "gpt-5.6-sol", "dispatcher": "gpt-5.6-terra", "worker": "gpt-5.6-luna", "reviewer": "gpt-5.6-sol", "grader": "gpt-5.6-terra"},
-            "D": {"planner": "gpt-5.6-terra", "worker": "gpt-5.6-luna", "reviewer": "gpt-5.6-terra", "grader": "gpt-5.6-sol"},
-            "E": {"direct": "gpt-5.6-terra", "grader": "gpt-5.6-sol"},
-            "F": {"direct": "gpt-5.6-luna", "grader": "gpt-5.6-sol"},
+            "A": {"direct": "codex:gpt-5.6-sol", "grader": "codex:gpt-5.6-terra"},
+            "B": {"planner": "codex:gpt-5.6-sol", "worker": "codex:gpt-5.6-luna", "reviewer": "codex:gpt-5.6-sol", "grader": "codex:gpt-5.6-terra"},
+            "C": {"planner": "codex:gpt-5.6-sol", "dispatcher": "codex:gpt-5.6-terra", "worker": "codex:gpt-5.6-luna", "reviewer": "codex:gpt-5.6-sol", "grader": "codex:gpt-5.6-terra"},
+            "D": {"planner": "codex:gpt-5.6-terra", "worker": "codex:gpt-5.6-luna", "reviewer": "codex:gpt-5.6-terra", "grader": "codex:gpt-5.6-sol"},
+            "E": {"direct": "codex:gpt-5.6-terra", "grader": "codex:gpt-5.6-sol"},
+            "F": {"direct": "codex:gpt-5.6-luna", "grader": "codex:gpt-5.6-sol"},
         }
         for variant, roles in expected.items():
             with self.subTest(variant=variant):
@@ -115,7 +115,7 @@ class OrchestrationEngineTests(unittest.TestCase):
             registry=registry_from_dict(payload, "unit-test"),
             required_capabilities=("high-risk-primary",),
         )
-        self.assertEqual(result["resolved_roles"]["direct"]["model"], "gpt-5.6-sol")
+        self.assertEqual(result["resolved_roles"]["direct"]["model"], "codex:gpt-5.6-sol")
 
     def test_max_workers_must_be_positive(self) -> None:
         with self.assertRaisesRegex(ValueError, "max_workers"):

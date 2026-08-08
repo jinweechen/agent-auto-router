@@ -28,12 +28,16 @@ def route_for(task: str, *, criteria: list[str] | None = None) -> dict[str, obje
     }
 
 
+def _bare(model: str) -> str:
+    return model.split(":", 1)[1] if ":" in model else model
+
+
 class DesktopExecutionTests(unittest.TestCase):
     def test_direct_plan_is_single_writer_and_privacy_safe(self) -> None:
         route = route_for("Implement a routine change")
         route["task"] = "private task"
         plan = build_desktop_plan(
-            route, [route["selectedModel"]], workdir=SCRIPTS.parents[2]
+            route, [_bare(route["selectedModel"])], workdir=SCRIPTS.parents[2]
         )
         self.assertEqual(plan["schema"], "agent-auto-router.desktop-plan.v1")
         self.assertEqual(plan["status"], "ready")
@@ -67,6 +71,22 @@ class DesktopExecutionTests(unittest.TestCase):
         self.assertEqual(plan["plannedAgentCalls"], 0)
         self.assertIsNone(plan["agent"])
 
+    def test_foreign_backend_model_is_blocked_in_desktop(self) -> None:
+        route = {
+            "routeId": "route-test",
+            "selectedModel": "claude:sonnet",
+            "executionPlan": build_execution_plan(
+                select_model("Implement a routine change", "balance")
+            ),
+        }
+        plan = build_desktop_plan(
+            route, ["sonnet"], workdir=SCRIPTS.parents[2]
+        )
+        self.assertEqual(plan["status"], "blocked")
+        self.assertEqual(plan["blocked"]["code"], "desktop_backend_unsupported")
+        self.assertEqual(plan["plannedAgentCalls"], 0)
+        self.assertIsNone(plan["agent"])
+
     def test_multi_role_route_is_explicitly_blocked(self) -> None:
         route = route_for(
             "Implement API and tests for several independent components",
@@ -74,7 +94,7 @@ class DesktopExecutionTests(unittest.TestCase):
         )
         self.assertEqual(route["executionPlan"]["topology"], "orchestrated")
         plan = build_desktop_plan(
-            route, [route["selectedModel"]], workdir=SCRIPTS.parents[2]
+            route, [_bare(route["selectedModel"])], workdir=SCRIPTS.parents[2]
         )
         self.assertEqual(plan["status"], "blocked")
         self.assertEqual(
@@ -86,7 +106,7 @@ class DesktopExecutionTests(unittest.TestCase):
         route = route_for("Implement a routine change")
         plan = build_desktop_plan(
             route,
-            [route["selectedModel"]],
+            [_bare(route["selectedModel"])],
             workdir=SCRIPTS.parents[2],
             requested_sandbox="danger-full-access",
         )

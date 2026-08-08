@@ -220,6 +220,8 @@ class CodexCliAdapter:
         max_output_tokens: int = 4000,
     ) -> tuple[str, dict[str, Any]]:
         effective_effort = self.effective_effort(role, effort)
+        from model_registry import strip_backend_prefix
+        execution_model = strip_backend_prefix(model, "codex")
         prompt = (
             f"{self.preamble_for_role(role)}\n\nWorkspace: {self.workdir}\n\n"
             f"Keep the response within {max_output_tokens} tokens.\n\n"
@@ -241,7 +243,7 @@ class CodexCliAdapter:
             command.extend(self.configuration_flags(role))
             command.extend([
                 "--skip-git-repo-check", "--sandbox", self.sandbox_for_role(role),
-                "--color", "never", "--model", model, "--config",
+                "--color", "never", "--model", execution_model, "--config",
                 f'model_reasoning_effort="{effective_effort}"', "--json",
                 "--output-last-message", str(output_path), "--cd", str(self.workdir), "-",
             ])
@@ -317,7 +319,7 @@ class CodexCliAdapter:
                     "observed_total_tokens": observed_total,
                 })
                 raise RuntimeError(
-                    f"Codex CLI failed for role={role}, model={model}, "
+                    f"Codex CLI failed for role={role}, model={execution_model}, "
                     f"exit={completed.returncode}\nSTDERR:\n{completed.stderr[-2000:].strip()}\n"
                     f"STDOUT:\n{completed.stdout[-2000:].strip()}"
                 )
@@ -332,7 +334,7 @@ class CodexCliAdapter:
             output_tokens = usage["output_tokens"]
             context.records.append(CallRecord(
                 role=role,
-                model=model,
+                model=execution_model,
                 effort=effective_effort,
                 latency_seconds=latency,
                 input_tokens=input_tokens,

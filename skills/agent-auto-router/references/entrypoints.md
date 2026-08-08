@@ -24,7 +24,9 @@ Inside Codex Desktop, use `scripts/invoke_auto_task.ps1` as a planner and set th
   -Explain
 ```
 
-The available-model list must come from the current Desktop `spawn_agent` tool metadata, not from configuration files, prompt text, or guesses. The command prints one `agent-auto-router.desktop-plan.v1` JSON object and makes no model or CLI call. The plan excludes the task body while carrying the normalized target workdir, context profile, route identity, and separate routing-versus-planned-agent call counts.
+The available-model list must come from the current Desktop
+
+The commands below reference model IDs as they appear in the Desktop runtime (bare IDs such as `gpt-5.6-sol`) or CLI (`codex exec --model`). Internally, the router and execution adapters use backend-qualified IDs (`codex:gpt-5.6-sol`, `claude:sonnet`) and strip the prefix as needed per backend. `spawn_agent` tool metadata, not from configuration files, prompt text, or guesses. The command prints one `agent-auto-router.desktop-plan.v1` JSON object and makes no model or CLI call. The plan excludes the task body while carrying the normalized target workdir, context profile, route identity, and separate routing-versus-planned-agent call counts.
 
 For `executionRequested=false`, report the plan and launch nothing. Otherwise, for `status=ready`, the primary Desktop agent calls `spawn_agent` exactly once with the plan's exact model, reasoning effort, and `fork_turns=agent.forkTurns`. Desktop v1 sets `forkTurns` to `none`, so the primary must put the complete original task and `agent.workdir` boundary in the child task instead of relying on inherited conversation history. That `direct` child is the sole writer. For `status=blocked`, launch nothing and report the structured reason.
 

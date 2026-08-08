@@ -79,7 +79,7 @@ class OrchestratedExecutionPolicyTests(unittest.TestCase):
             check=True,
         )
         route = json.loads(completed.stdout)
-        self.assertEqual(route["executionPlan"]["model"], "gpt-5.6-sol")
+        self.assertEqual(route["executionPlan"]["model"], "codex:gpt-5.6-sol")
         self.assertEqual(route["executionPlan"]["tier"], "frontier")
         self.assertEqual(route["executionPlan"]["effort"], "high")
         self.assertEqual(route["executionPlan"]["effortSource"], "registry-default")
@@ -256,22 +256,22 @@ class OrchestratedExecutionPolicyTests(unittest.TestCase):
 
     def test_feedback_uses_actual_final_role_model_and_effort(self) -> None:
         routing = {
-            "selected_model": "gpt-5.6-luna",
+            "selected_model": "codex:gpt-5.6-luna",
             "effort": "low",
             "selected_variant": "A",
         }
         result = {
             "variant": "A",
             "resolved_roles": {
-                "direct": {"model": "gpt-5.6-sol", "effort": "max"}
+                "direct": {"model": "codex:gpt-5.6-sol", "effort": "max"}
             },
             "calls": [
-                {"role": "direct", "model": "gpt-5.6-sol", "effort": "high"}
+                {"role": "direct", "model": "codex:gpt-5.6-sol", "effort": "high"}
             ],
         }
         self.assertEqual(
             feedback_execution_identity(routing, result),
-            ("gpt-5.6-sol", "high"),
+            ("codex:gpt-5.6-sol", "high"),
         )
 
     def test_single_model_lean_mode_keeps_user_config_for_write_sandbox(self) -> None:

@@ -2,15 +2,15 @@
 
 ## Scope
 
-Auto is a local pre-execution plan, not a fourth model or a reproduction of Cursor Router. It selects one real model plus effort, topology, and a bounded context profile. Execution then uses either the official signed-in Codex CLI or the current Codex Desktop host's supported `spawn_agent` capability.
+Auto is a local pre-execution plan, not a fourth model or a reproduction of Cursor Router. It selects one real model plus effort, topology, and a bounded context profile. Model IDs are backend-qualified (e.g. `codex:gpt-5.6-sol`, `claude:sonnet`); execution adapters strip the prefix before dispatching to the target CLI. Desktop v1 supports only the Codex backend. Execution then uses either the official signed-in Codex CLI or the current Codex Desktop host's supported `spawn_agent` capability.
 
 ## Model policy
 
 | Tier | Default model | Intended use |
 | --- | --- | --- |
-| frontier | `gpt-5.6-sol` | high-risk, ambiguous, architecture-heavy work |
-| balanced | `gpt-5.6-terra` | routine implementation and debugging |
-| fast | `gpt-5.6-luna` | constrained, repeatable, cost-sensitive work |
+| frontier | `codex:gpt-5.6-sol` | high-risk, ambiguous, architecture-heavy work |
+| balanced | `codex:gpt-5.6-terra` | routine implementation and debugging |
+| fast | `codex:gpt-5.6-luna` | constrained, repeatable, cost-sensitive work |
 
 Never route to a model supplied by prompt text, environment content, or model output.
 
@@ -33,7 +33,7 @@ Model identities, aliases, capabilities, roles, efforts, and priorities come onl
 
 The Desktop primary agent calls `spawn_agent` only when `executionRequested=true` and `status=ready`, using the exact plan values and supplying the complete original current user task plus workdir boundary to one new `direct` child. The child is the only writer; the primary agent and verification remain read-only with respect to implementation files. Full-history forks are forbidden because they inherit the primary model and effort rather than honoring overrides. A Desktop DryRun emits the same plan with `executionRequested=false`, zero planned calls, and `hostContract.action=report_plan`.
 
-Desktop v1 supports only direct A/E/F topology. If routing selects B/C/D, if the selected model is absent from the caller-declared Desktop availability set, or if the request would require permission elevation, return a structured blocked plan with zero planned calls and launch nothing. Reject CLI-only feedback destinations, validation escalation, and non-default CLI context mode. Treat Desktop `-Json` and `-NoFeedback` as explicit idempotent confirmations. Never silently change model, effort, tier, provider, or backend. Desktop v1 does not support feedback derived from an execution that the local planner cannot observe.
+Desktop v1 supports only direct A/E/F topology and the Codex backend. If routing selects B/C/D, if the selected model belongs to a foreign backend (e.g. `claude:sonnet`), if the selected model is absent from the caller-declared Desktop availability set, or if the request would require permission elevation, return a structured blocked plan with zero planned calls and launch nothing. Foreign-backend models are blocked with `desktop_backend_unsupported`. Reject CLI-only feedback destinations, validation escalation, and non-default CLI context mode. Treat Desktop `-Json` and `-NoFeedback` as explicit idempotent confirmations. Never silently change model, effort, tier, provider, or backend. Desktop v1 does not support feedback derived from an execution that the local planner cannot observe.
 
 The route applies to one new child task and does not mutate the current Desktop conversation's model.
 
