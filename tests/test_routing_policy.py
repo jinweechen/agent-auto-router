@@ -4,7 +4,7 @@ import pathlib
 import sys
 import unittest
 
-SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "skills" / "codex-auto-router" / "scripts"
+SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "skills" / "agent-auto-router" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from auto_router import route_case  # noqa: E402

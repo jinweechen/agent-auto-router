@@ -14,7 +14,8 @@ import time
 from typing import Any
 
 from auto_router import VARIANT_LABELS, route_case
-from codex_cli_orchestration_eval import CodexCliClient, positive_int
+from codex_cli_adapter import CodexCliAdapter
+from codex_cli_orchestration_eval import positive_int
 from model_registry import load_model_registry
 from orchestration_engine import run_variant
 from orchestration_profiles import load_orchestration_profiles
@@ -378,7 +379,7 @@ def main() -> int:
         with progress_lock:
             print(json.dumps(event, ensure_ascii=False), file=sys.stderr, flush=True)
 
-    client = CodexCliClient(
+    client = CodexCliAdapter(
         timeout_seconds=args.timeout,
         effort_override=args.effort,
         role_efforts=role_efforts,

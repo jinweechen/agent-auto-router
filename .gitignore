@@ -11,4 +11,4 @@ htmlcov/
 *.err.txt
 .orchestration-live-test-*/
 .token-benchmark-*/
-.skill-staging-codex-auto-router/
+.skill-staging-agent-auto-router/

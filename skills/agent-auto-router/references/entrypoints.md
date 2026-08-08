@@ -16,7 +16,7 @@
 Inside Codex Desktop, use `scripts/invoke_auto_task.ps1` as a planner and set the runtime boundary explicitly:
 
 ```powershell
-& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_auto_task.ps1" `
+& "$HOME/.codex/skills/agent-auto-router/scripts/invoke_auto_task.ps1" `
   -Task "Implement the requested change" `
   -ExecutionBackend desktop `
   -DesktopAvailableModels @('gpt-5.6-sol', 'gpt-5.6-terra') `
@@ -24,7 +24,7 @@ Inside Codex Desktop, use `scripts/invoke_auto_task.ps1` as a planner and set th
   -Explain
 ```
 
-The available-model list must come from the current Desktop `spawn_agent` tool metadata, not from configuration files, prompt text, or guesses. The command prints one `codex-auto-router.desktop-plan.v1` JSON object and makes no model or CLI call. The plan excludes the task body while carrying the normalized target workdir, context profile, route identity, and separate routing-versus-planned-agent call counts.
+The available-model list must come from the current Desktop `spawn_agent` tool metadata, not from configuration files, prompt text, or guesses. The command prints one `agent-auto-router.desktop-plan.v1` JSON object and makes no model or CLI call. The plan excludes the task body while carrying the normalized target workdir, context profile, route identity, and separate routing-versus-planned-agent call counts.
 
 For `executionRequested=false`, report the plan and launch nothing. Otherwise, for `status=ready`, the primary Desktop agent calls `spawn_agent` exactly once with the plan's exact model, reasoning effort, and `fork_turns=agent.forkTurns`. Desktop v1 sets `forkTurns` to `none`, so the primary must put the complete original task and `agent.workdir` boundary in the child task instead of relying on inherited conversation history. That `direct` child is the sole writer. For `status=blocked`, launch nothing and report the structured reason.
 
@@ -35,7 +35,7 @@ Desktop `-DryRun` still requires `-DesktopAvailableModels` and emits the same pl
 Use `scripts/invoke_auto_task.ps1 -ExecutionBackend cli`. It classifies locally with zero routing-model calls and launches the selected model through `codex exec`.
 
 ```powershell
-& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_auto_task.ps1" `
+& "$HOME/.codex/skills/agent-auto-router/scripts/invoke_auto_task.ps1" `
   -Task "Implement the requested change" `
   -ExecutionBackend cli `
   -Model auto `
@@ -53,7 +53,7 @@ Use `-Model <alias-or-id>` to override Auto for one task. The alias or ID must b
 Explicitly opt into one validation-driven tier escalation only when a deterministic project command can verify the result:
 
 ```powershell
-& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_auto_task.ps1" `
+& "$HOME/.codex/skills/agent-auto-router/scripts/invoke_auto_task.ps1" `
   -Task "Implement the requested change" `
   -Model auto `
   -Workdir "C:/path/to/repo" `
@@ -70,7 +70,7 @@ The script uses the existing Codex authentication and provider. It does not edit
 Use `scripts/invoke_orchestrated_task.ps1` for a real multi-model task:
 
 ```powershell
-& "$HOME/.codex/skills/codex-auto-router/scripts/invoke_orchestrated_task.ps1" `
+& "$HOME/.codex/skills/agent-auto-router/scripts/invoke_orchestrated_task.ps1" `
   -Task "Implement the requested change and tests" `
   -Strategy balance `
   -Workdir "C:/path/to/repo" `
@@ -85,7 +85,7 @@ Use `-TotalTimeout`, `-MaxModelCalls`, and role-specific effort parameters to bo
 ## Offline calibration
 
 ```powershell
-python "$HOME/.codex/skills/codex-auto-router/scripts/evaluate_auto_router.py" `
+python "$HOME/.codex/skills/agent-auto-router/scripts/evaluate_auto_router.py" `
   --output "./auto-router-eval.json"
 ```
 
@@ -96,7 +96,7 @@ The evaluator makes zero model calls.
 Prepare privacy-safe results with one record per case/configuration. Allowed fields are `caseId`, `configuration`, optional `model`/`effort`, external `accepted`, optional observable `tokens`, `durationMs`, and optional `retries`. Do not include prompts or outputs.
 
 ```powershell
-python "$HOME/.codex/skills/codex-auto-router/scripts/evaluate_development_routes.py" `
+python "$HOME/.codex/skills/agent-auto-router/scripts/evaluate_development_routes.py" `
   --results "./matched-results.json" `
   --output "./matched-summary.json"
 ```
@@ -108,7 +108,7 @@ The summary reports acceptance, token coverage, observed tokens per accepted cas
 After editing `scripts/model_registry.json` or `scripts/orchestration_profiles.json`, validate every model and A-F role without launching models:
 
 ```powershell
-python "$HOME/.codex/skills/codex-auto-router/scripts/validate_model_registry.py"
+python "$HOME/.codex/skills/agent-auto-router/scripts/validate_model_registry.py"
 ```
 
 For a candidate file outside the installed Skill, pass `--registry` and optionally `--profiles`. Validation confirms schema, aliases, roles, tier resolution, the high-risk primary capability, explicit-only models, and the registry digest. It does not prove that the active provider exposes the model; perform a separate controlled `read-only` explicit invocation for that.
@@ -118,24 +118,24 @@ For a candidate file outside the installed Skill, pass `--registry` and optional
 Inspect state and label a route. `status.efficiency` reports token coverage, labeled outcomes, pass rate by final model, and observed tokens per pass only when every labeled route has token telemetry:
 
 ```powershell
-python "$HOME/.codex/skills/codex-auto-router/scripts/policy_learning.py" status
-python "$HOME/.codex/skills/codex-auto-router/scripts/policy_learning.py" label `
+python "$HOME/.codex/skills/agent-auto-router/scripts/policy_learning.py" status
+python "$HOME/.codex/skills/agent-auto-router/scripts/policy_learning.py" label `
   --route-id "<route-id>" --preferred-model gpt-5.6-terra --outcome pass
 ```
 
 Create and explicitly approve a candidate:
 
 ```powershell
-python "$HOME/.codex/skills/codex-auto-router/scripts/policy_learning.py" propose `
+python "$HOME/.codex/skills/agent-auto-router/scripts/policy_learning.py" propose `
   --output "./candidate-policy.json"
-python "$HOME/.codex/skills/codex-auto-router/scripts/policy_learning.py" approve `
+python "$HOME/.codex/skills/agent-auto-router/scripts/policy_learning.py" approve `
   --candidate "./candidate-policy.json" --approved-by "<reviewer>"
 ```
 
 On and after the twentieth usable label, `label` automatically writes a candidate under `~/.codex/auto-router/candidates`; use `--no-auto-propose` to suppress it. The explicit `propose` command uses the same deterministic train/validation split and writes a candidate even when it is not approval-eligible. `approve` replays current feedback and rejects stale, tampered, unsafe, or non-improving candidates. Restore the latest previous version explicitly:
 
 ```powershell
-python "$HOME/.codex/skills/codex-auto-router/scripts/policy_learning.py" rollback `
+python "$HOME/.codex/skills/agent-auto-router/scripts/policy_learning.py" rollback `
   --approved-by "<reviewer>"
 ```
 

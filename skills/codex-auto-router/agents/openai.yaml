@@ -1,4 +1,0 @@
-interface:
-  display_name: "Codex Auto Router"
-  short_description: "Route trusted models through Desktop or CLI"
-  default_prompt: "Use $codex-auto-router to select a trusted route; in Desktop obey executionRequested and the plan's exact model, effort, forkTurns, and workdir for at most one direct child without fallback, and use CLI or advanced workflows only when explicitly requested."

@@ -1,5 +1,5 @@
 ---
-name: codex-auto-router
+name: agent-auto-router
 description: Automatically select trusted registered Codex models with deterministic local routing, execute through Codex Desktop child agents or the signed-in Codex CLI, safely evaluate role-based orchestration, validate model-registry extensions, or calibrate routing. Use when the user asks for Auto model selection, no-API-key routing, route explanations, model extension, calibration, or multi-model orchestration.
 ---
 
@@ -23,7 +23,7 @@ Read `references/entrypoints.md` for complete commands and backend-specific para
 Treat Desktop execution as a host protocol, not a hidden CLI login:
 
 1. Read exact supported model IDs from the current `spawn_agent` tool metadata. Never infer availability from the registry or substitute another model.
-2. Run the Desktop entrypoint with those IDs and the exact workdir. It emits `codex-auto-router.desktop-plan.v1`, makes zero routing-model calls, and omits task text.
+2. Run the Desktop entrypoint with those IDs and the exact workdir. It emits `agent-auto-router.desktop-plan.v1`, makes zero routing-model calls, and omits task text.
 3. For `executionRequested=false`, report the plan only and launch nothing.
 4. For `status=blocked`, report `blocked.code` and launch nothing.
 5. For a ready executable plan, call `spawn_agent` exactly once using `agent.model`, `agent.reasoningEffort`, and `fork_turns=agent.forkTurns`. Pass the complete original task and require work only in `agent.workdir` because v1 forbids full-history forks.
@@ -75,3 +75,5 @@ Use `references/entrypoints.md` for commands and `references/router-contract.md`
 - Never activate learned policy changes without explicit human approval.
 
 After changes, run the full unit suite, offline evaluation, registry validation, and Skill validation. Keep installation, commits, and pushes behind explicit user confirmation.
+
+Formerly known as codex-auto-router.

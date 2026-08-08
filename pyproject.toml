@@ -1,5 +1,5 @@
 [project]
-name = "codex-auto-router"
+name = "agent-auto-router"
 version = "0.5.2"
 description = "Deterministic, registry-driven routing for Codex Desktop child agents and signed-in CLI tasks"
 requires-python = ">=3.10"

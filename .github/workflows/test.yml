@@ -20,14 +20,14 @@ jobs:
       - name: Verify orchestrated dry run
         shell: pwsh
         run: |
-          & './skills/codex-auto-router/scripts/invoke_orchestrated_task.ps1' `
+          & './skills/agent-auto-router/scripts/invoke_orchestrated_task.ps1' `
             -Task 'Implement API and tests for independent modules' `
             -Strategy balance -Workdir '.' -DryRun
       - name: Verify repeatable skill installation
         shell: pwsh
         run: |
           $homePath = Join-Path $env:RUNNER_TEMP 'codex-home'
-          & './skills/codex-auto-router/scripts/install.ps1' -CodexHome $homePath
-          & './skills/codex-auto-router/scripts/install.ps1' -CodexHome $homePath
-          $nested = Join-Path $homePath 'skills/codex-auto-router/codex-auto-router'
+          & './skills/agent-auto-router/scripts/install.ps1' -CodexHome $homePath
+          & './skills/agent-auto-router/scripts/install.ps1' -CodexHome $homePath
+          $nested = Join-Path $homePath 'skills/agent-auto-router/agent-auto-router'
           if (Test-Path -LiteralPath $nested) { throw "Nested skill directory detected: $nested" }
