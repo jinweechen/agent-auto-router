@@ -72,6 +72,11 @@ def main() -> int:
                     )
 
         routing_effort = "medium" if args.effort == "auto" else args.effort
+        # allow_explicit_only when exactly one backend is explicitly named
+        allow_explicit = (
+            args.available_backends != "auto"
+            and len(available_backends) == 1
+        )
         repository_features = (
             inspect_repository(args.workdir, prompt or "") if args.workdir else None
         )
@@ -81,6 +86,7 @@ def main() -> int:
             prompt or "", args.strategy, routing_effort, policy=policy, registry=registry,
             repository_features=repository_features,
             backends=available_backends,
+            allow_explicit_only=allow_explicit,
         )
         if args.model_choice == "auto":
             selected = registry.get(decision.model, role="direct")
@@ -127,6 +133,7 @@ def main() -> int:
         "selectedTier": selected.tier,
         "selectedDefaultEffort": selected.default_effort,
         "executionPlan": execution_plan,
+        "allowExplicitOnly": allow_explicit,
         "availableBackends": list(available_backends),
         "repository": repository_features,
         "explicitOverride": explicit_override,

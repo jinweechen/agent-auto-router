@@ -10,7 +10,8 @@ SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "skills" / "agent-auto-r
 sys.path.insert(0, str(SCRIPTS))
 
 from orchestration_engine import CallRecord, RunContext, run_variant, run_workers  # noqa: E402
-from model_registry import DEFAULT_REGISTRY_PATH, registry_from_dict  # noqa: E402
+from model_registry import DEFAULT_REGISTRY_PATH, load_model_registry, registry_from_dict  # noqa: E402
+from orchestration_profiles import load_orchestration_profiles  # noqa: E402
 
 
 class FakeClient:
@@ -165,6 +166,23 @@ class OrchestrationEngineTests(unittest.TestCase):
         ]}
         with self.assertRaisesRegex(ValueError, "cycle"):
             run_workers(FakeClient(), RunContext(), self.case, plan, 2)
+
+    def test_backend_orchestration_with_allow_explicit_only(self) -> None:
+        registry = load_model_registry()
+        profiles = load_orchestration_profiles()
+        result = run_variant(
+            FakeClient(),
+            self.case,
+            "A",
+            1,
+            grade_enabled=False,
+            registry=registry,
+            profiles=profiles,
+            backends=("claude",),
+            allow_explicit_only=True,
+        )
+        self.assertEqual(result["resolved_roles"]["direct"]["model"], "claude:opus")
+        self.assertEqual(result["resolved_roles"]["direct"]["backend"], "claude")
 
 
 if __name__ == "__main__":

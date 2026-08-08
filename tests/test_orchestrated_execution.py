@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import pathlib
 import concurrent.futures
 import json
@@ -11,6 +12,7 @@ import unittest
 SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "skills" / "agent-auto-router" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+from claude_cli_adapter import ClaudeCliAdapter  # noqa: E402
 from codex_cli_adapter import CodexCliAdapter, extract_usage_details  # noqa: E402
 from single_task_runner import parse_json_lines, usage_is_available  # noqa: E402
 from execution_policy import ExecutionPolicy  # noqa: E402
@@ -18,6 +20,7 @@ from execution_plan import build_execution_plan  # noqa: E402
 from routing_policy import select_model  # noqa: E402
 from invoke_orchestrated_task import (  # noqa: E402
     bounded_worker_task_limit,
+    build_adapter,
     estimate_model_calls,
     feedback_execution_identity,
     results_dir_is_inside_workdir,
@@ -324,6 +327,35 @@ class OrchestratedExecutionPolicyTests(unittest.TestCase):
         self.assertNotIn('$backupPath = "$targetPath.backup-', script)
         self.assertIn("__pycache__", script)
         self.assertIn("*.pyc", script)
+
+    def test_build_adapter_default_is_codex(self) -> None:
+        args = argparse.Namespace(
+            timeout=600, effort=None, workdir=pathlib.Path.cwd(),
+            sandbox="workspace-write", total_timeout=1800,
+            max_model_calls=7, max_total_tokens=None, context_mode="lean",
+        )
+        adapter = build_adapter(None, args, {}, None)
+        self.assertIsInstance(adapter, CodexCliAdapter)
+
+    def test_build_adapter_claude_with_write_sandbox(self) -> None:
+        args = argparse.Namespace(
+            timeout=600, effort=None, workdir=pathlib.Path.cwd(),
+            sandbox="workspace-write", total_timeout=1800,
+            max_model_calls=7, max_total_tokens=None, context_mode="lean",
+        )
+        adapter = build_adapter("claude", args, {}, None)
+        self.assertIsInstance(adapter, ClaudeCliAdapter)
+        self.assertIn("Edit", adapter.allowed_tools)
+
+    def test_build_adapter_claude_read_only(self) -> None:
+        args = argparse.Namespace(
+            timeout=600, effort=None, workdir=pathlib.Path.cwd(),
+            sandbox="read-only", total_timeout=1800,
+            max_model_calls=7, max_total_tokens=None, context_mode="lean",
+        )
+        adapter = build_adapter("claude", args, {}, None)
+        self.assertIsInstance(adapter, ClaudeCliAdapter)
+        self.assertEqual(adapter.allowed_tools, ("Read",))
 
 
 if __name__ == "__main__":

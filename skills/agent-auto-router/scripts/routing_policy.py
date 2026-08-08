@@ -339,6 +339,7 @@ def select_model(
     registry: ModelRegistry | None = None,
     repository_features: dict[str, object] | None = None,
     backends: Sequence[str] | None = None,
+    allow_explicit_only: bool = False,
 ) -> ModelDecision:
     if strategy not in STRATEGIES:
         raise ValueError(f"unknown strategy: {strategy}")
@@ -378,6 +379,7 @@ def select_model(
         role="direct",
         required_capabilities=required_capabilities,
         backends=backends,
+        allow_explicit_only=allow_explicit_only,
     )
 
     return ModelDecision(

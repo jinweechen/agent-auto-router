@@ -383,6 +383,8 @@ def run_variant(
     registry: ModelRegistry | None = None,
     profiles: OrchestrationProfiles | None = None,
     required_capabilities: tuple[str, ...] = (),
+    backends: tuple[str, ...] | None = None,
+    allow_explicit_only: bool = False,
 ) -> dict[str, Any]:
     if max_workers < 1:
         raise ValueError("max_workers must be at least 1")
@@ -402,11 +404,14 @@ def run_variant(
             role,
             required_capabilities=final_requirements,
             required_tier="frontier" if final_requirements else None,
+            backends=backends,
+            allow_explicit_only=allow_explicit_only,
         )
         resolved_roles[role] = {
             "model": model_spec.model_id,
             "tier": model_spec.tier,
             "effort": assignment.effort,
+            "backend": model_spec.backend,
         }
         return model_spec.model_id, assignment.effort
 

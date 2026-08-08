@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Sequence
 
 from model_registry import ModelRegistry
 from execution_plan import build_execution_plan, variant_for_decision
@@ -23,6 +23,8 @@ def route_case(
     effort: str = "medium",
     policy: RoutingPolicy | None = None,
     registry: ModelRegistry | None = None,
+    backends: Sequence[str] | None = None,
+    allow_explicit_only: bool = False,
 ) -> dict[str, Any]:
     if mode not in VALID_MODES:
         raise ValueError(f"Unknown routing mode: {mode}")
@@ -39,6 +41,8 @@ def route_case(
         policy,
         registry,
         repository_features if isinstance(repository_features, dict) else None,
+        backends=backends,
+        allow_explicit_only=allow_explicit_only,
     )
 
     variant = variant_for_decision(decision)

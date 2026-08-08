@@ -326,7 +326,7 @@ python -m unittest discover -s tests -p "test_*.py"
 
 ## 多模型编排执行
 
-正式执行入口会自动选择 A-F 编排变体。规划、调度、Luna workers 和 grader 均为只读；只有直接执行模型或最终 reviewer 可以修改工作区：
+正式执行入口会自动选择 A-F 编排变体。规划、调度、Luna workers 和 grader 均为只读；只有直接执行模型或最终 reviewer 可以修改工作区。一次编排运行使用一个后端；显式指定单个 `-Backend` 时，该后端的显式试用模型（如 `claude:opus`）也可被 Auto 能力层解析选中。默认保持 codex-first 全后端行为：
 
 ```powershell
 & "$HOME/.codex/skills/agent-auto-router/scripts/invoke_orchestrated_task.ps1" `
@@ -344,6 +344,16 @@ python -m unittest discover -s tests -p "test_*.py"
   -Task "实现认证模块重构并补充测试" `
   -Variant C `
   -Workdir "D:/path/to/project"
+```
+
+指定后端运行：
+
+```powershell
+& "$HOME/.codex/skills/agent-auto-router/scripts/invoke_orchestrated_task.ps1" `
+  -Task "实现认证模块重构并补充测试" `
+  -Strategy balance `
+  -Workdir "D:/path/to/project" `
+  -Backend claude
 ```
 
 使用 `-DryRun` 只查看路由，模型调用数为零。使用 `-Sandbox read-only` 可执行完整编排但禁止最终角色写入。

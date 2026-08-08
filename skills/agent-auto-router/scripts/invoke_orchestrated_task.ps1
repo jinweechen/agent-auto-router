@@ -25,6 +25,7 @@ param(
     [string]$ContextMode = 'lean',
     [ValidateSet('read-only', 'workspace-write')]
     [string]$Sandbox = 'workspace-write',
+    [string]$Backend = '',
     [string]$Workdir = (Get-Location).Path,
     [string]$ResultsDir = '',
     [string]$StateDir = $(if ($env:CODEX_AUTO_ROUTER_STATE_DIR) { $env:CODEX_AUTO_ROUTER_STATE_DIR } else { Join-Path $HOME '.codex\auto-router' }),
@@ -70,6 +71,7 @@ $arguments = @(
     '--sandbox', $Sandbox, '--workdir', (Resolve-Path -LiteralPath $Workdir).Path
 )
 if ($Effort) { $arguments += @('--effort', $Effort) }
+if ($Backend) { $arguments += @('--backend', $Backend) }
 if ($MaxTotalTokens -gt 0) { $arguments += @('--max-total-tokens', $MaxTotalTokens) }
 if ($ResultsDir) { $arguments += @('--results-dir', $ResultsDir) }
 if ($FeedbackFile) { $arguments += @('--feedback-file', $FeedbackFile) }

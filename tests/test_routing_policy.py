@@ -171,6 +171,16 @@ class RoutingPolicyTests(unittest.TestCase):
                 backends=["claude"],
             )
 
+    def test_allow_explicit_only_selects_claude_opus_for_high_risk(self) -> None:
+        decision = select_model(
+            "Fix vulnerabilities in production authentication",
+            "balance",
+            backends=["claude"],
+            allow_explicit_only=True,
+        )
+        self.assertEqual(decision.model, "claude:opus")
+        self.assertTrue(decision.high_risk)
+
 
 if __name__ == "__main__":
     unittest.main()

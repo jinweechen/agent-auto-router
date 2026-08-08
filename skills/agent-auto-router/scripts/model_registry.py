@@ -161,6 +161,7 @@ class ModelRegistry:
         role: str,
         required_capabilities: Iterable[str] = (),
         backends: Iterable[str] | None = None,
+        allow_explicit_only: bool = False,
     ) -> ModelSpec:
         if tier not in TIERS:
             raise ValueError(f"unknown model tier: {tier}")
@@ -170,7 +171,7 @@ class ModelRegistry:
             model
             for model in self.models
             if model.enabled
-            and model.auto_eligible
+            and (model.auto_eligible or allow_explicit_only)
             and model.tier == tier
             and base_role in model.allowed_roles
             and required.issubset(model.capabilities)

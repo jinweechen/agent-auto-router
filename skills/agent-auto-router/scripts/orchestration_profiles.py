@@ -32,10 +32,16 @@ class RoleAssignment:
         *,
         required_capabilities: Iterable[str] = (),
         required_tier: str | None = None,
+        backends: Iterable[str] | None = None,
+        allow_explicit_only: bool = False,
     ) -> ModelSpec:
         required = frozenset(required_capabilities)
         if self.model:
             resolved = registry.get(self.model, role=role)
+            if backends is not None and resolved.backend not in backends:
+                raise ValueError(
+                    f"profile model {resolved.model_id} not in requested backends"
+                )
             if not resolved.auto_eligible:
                 raise ValueError(
                     f"profile model {resolved.model_id} is not eligible for Auto role={role}"
@@ -51,6 +57,8 @@ class RoleAssignment:
                 self.tier,
                 role=role,
                 required_capabilities=required,
+                backends=backends,
+                allow_explicit_only=allow_explicit_only,
             )
         else:
             raise ValueError(f"role assignment for {role} has neither model nor tier")

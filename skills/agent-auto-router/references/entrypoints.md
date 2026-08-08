@@ -80,7 +80,7 @@ Use `scripts/invoke_orchestrated_task.ps1` for a real multi-model task:
   -Explain
 ```
 
-Auto selects A-F. Use `-Variant C` to force Sol planning, Terra dispatch, Luna analysis workers, and Sol implementation/review. Non-final roles always use `read-only`; only `direct` or `reviewer` can receive `workspace-write`. Use `-DryRun` to route without launching models.
+Auto selects A-F. Use `-Variant C` to force Sol planning, Terra dispatch, Luna analysis workers, and Sol implementation/review. Non-final roles always use `read-only`; only `direct` or `reviewer` can receive `workspace-write`. One orchestration run uses one backend; explicit single `-Backend` also allows that backend's explicit-trial models (e.g. `claude:opus`) inside Auto tier resolution. Default stays codex-first all-backends. Use `-DryRun` to route without launching models.
 
 Use `-TotalTimeout`, `-MaxModelCalls`, and role-specific effort parameters to bound long runs. Use `-ResultsDir` to persist the route, calls, workspace states, and grade. Progress events are JSON lines on stderr; `-Quiet` suppresses them.
 

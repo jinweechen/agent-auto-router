@@ -291,6 +291,20 @@ class ModelRegistryTests(unittest.TestCase):
         registry_b = registry_from_dict(payload, str(DEFAULT_REGISTRY_PATH))
         self.assertEqual(registry_digest(registry_a), registry_digest(registry_b))
 
+    def test_allow_explicit_only_makes_explicit_models_selectable(self) -> None:
+        registry = load_model_registry()
+        model = registry.resolve_tier(
+            "frontier", role="direct", backends=["claude"], allow_explicit_only=True
+        )
+        self.assertEqual(model.model_id, "claude:opus")
+
+    def test_allow_explicit_only_false_still_rejects_explicit_models(self) -> None:
+        registry = load_model_registry()
+        with self.assertRaisesRegex(ValueError, "backends"):
+            registry.resolve_tier(
+                "frontier", role="direct", backends=["claude"]
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

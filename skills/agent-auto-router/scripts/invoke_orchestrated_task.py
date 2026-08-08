@@ -14,6 +14,7 @@ import time
 from typing import Any
 
 from auto_router import VARIANT_LABELS, route_case
+from claude_cli_adapter import ClaudeCliAdapter
 from codex_cli_adapter import CodexCliAdapter
 from codex_cli_orchestration_eval import positive_int
 from model_registry import load_model_registry
@@ -187,6 +188,7 @@ def record_route_feedback(
         "policy_digest": routing["policy_digest"],
         "registry_digest": routing["registry_digest"],
         "explicit_override": args.variant != "auto",
+        "backend": args.backend,
         "exit_code": exit_code,
         "duration_ms": int((time.monotonic() - started_at) * 1000),
         "observed_tokens": {
@@ -237,12 +239,45 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--no-progress", action="store_true")
     parser.add_argument("--context-mode", choices=("lean", "full"), default="lean")
+    parser.add_argument("--backend", default=None, help="Execute the whole orchestration on one backend (e.g. codex, claude). Default: all declared backends, codex-first.")
     parser.add_argument(
         "--grader-policy", choices=("auto", "always", "never"), default="auto"
     )
     for role in ("planner", "dispatcher", "worker", "reviewer", "grader"):
         parser.add_argument(f"--{role}-effort", choices=EFFORTS, default=None)
     return parser.parse_args()
+
+
+def build_adapter(backend: str | None, args: argparse.Namespace, role_efforts: dict[str, str], progress: Any) -> Any:
+    if backend in (None, "codex"):
+        return CodexCliAdapter(
+            timeout_seconds=args.timeout,
+            effort_override=args.effort,
+            role_efforts=role_efforts,
+            workdir=args.workdir,
+            execution_mode=True,
+            write_sandbox=args.sandbox,
+            total_timeout_seconds=args.total_timeout,
+            max_model_calls=args.max_model_calls,
+            max_total_tokens=args.max_total_tokens,
+            progress_callback=progress,
+            context_mode=args.context_mode,
+        )
+    if backend == "claude":
+        return ClaudeCliAdapter(
+            timeout_seconds=args.timeout,
+            effort_override=args.effort,
+            role_efforts=role_efforts,
+            workdir=args.workdir,
+            execution_mode=True,
+            allowed_tools=("Read", "Edit", "Write", "Bash") if args.sandbox == "workspace-write" else ("Read",),
+            max_turns=30,
+            total_timeout_seconds=args.total_timeout,
+            max_model_calls=args.max_model_calls,
+            max_total_tokens=args.max_total_tokens,
+            progress_callback=progress,
+        )
+    raise ValueError(f"unknown backend: {backend}")
 
 
 def main() -> int:
@@ -292,8 +327,28 @@ def main() -> int:
     routing_effort = args.effort or args.planner_effort or "medium"
     active_policy, policy_source = load_active_policy(args.state_dir)
     registry = load_model_registry()
+    if args.backend and args.backend not in registry.backends:
+        print(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "reason": "unknown_backend",
+                    "backend": args.backend,
+                    "known_backends": sorted(registry.backends.keys()),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            file=sys.stderr,
+        )
+        return 2
+    requested_backends: tuple[str, ...] | None = (args.backend,) if args.backend else None
+    allow_explicit = bool(args.backend)
     profiles = load_orchestration_profiles()
-    routing = route_case(case, args.strategy, routing_effort, active_policy, registry)
+    routing = route_case(
+        case, args.strategy, routing_effort, active_policy, registry,
+        backends=requested_backends, allow_explicit_only=allow_explicit,
+    )
     context_budget = routing["execution_plan"]["context"]
     repository_context, repository_context_metadata = build_repository_context(
         args.workdir,
@@ -325,6 +380,7 @@ def main() -> int:
     routing["grader_policy"] = args.grader_policy
     routing["worker_task_limit"] = worker_task_limit
     routing["estimated_model_calls"] = {"minimum": minimum_calls, "maximum": maximum_calls}
+    routing["selected_backend"] = args.backend or "all"
 
     if args.explain:
         print(json.dumps({"routing": routing}, ensure_ascii=False, indent=2), file=sys.stderr)
@@ -379,19 +435,7 @@ def main() -> int:
         with progress_lock:
             print(json.dumps(event, ensure_ascii=False), file=sys.stderr, flush=True)
 
-    client = CodexCliAdapter(
-        timeout_seconds=args.timeout,
-        effort_override=args.effort,
-        role_efforts=role_efforts,
-        workdir=args.workdir,
-        execution_mode=True,
-        write_sandbox=args.sandbox,
-        total_timeout_seconds=args.total_timeout,
-        max_model_calls=args.max_model_calls,
-        max_total_tokens=args.max_total_tokens,
-        progress_callback=progress,
-        context_mode=args.context_mode,
-    )
+    client = build_adapter(args.backend, args, role_efforts, progress)
     try:
         result = run_variant(
             client,
@@ -404,6 +448,8 @@ def main() -> int:
             registry=registry,
             profiles=profiles,
             required_capabilities=tuple(routing["required_capabilities"]),
+            backends=requested_backends,
+            allow_explicit_only=allow_explicit,
         )
     except Exception as exc:
         after_status = workspace_status(args.workdir)
