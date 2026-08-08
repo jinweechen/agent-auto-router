@@ -150,6 +150,25 @@ class ClaudeCliAdapter:
     def _resolve_model(self, model: str) -> str:
         return self.model_map.get(model, model)
 
+    def _finalize_argv(self, argv: list[str]) -> list[str]:
+        """Work around Windows cmd.exe wrapper argument re-parsing.
+
+        When the resolved command is a .cmd/.bat wrapper executed through
+        ``cmd.exe /d /c <wrapper> <args...>``, cmd re-parses the arguments and
+        splits whitespace inside quoted values, which corrupts multi-word
+        values such as the prompt. Pass the wrapper plus all arguments as ONE
+        command-line string to ``/c`` (quoted by list2cmdline) so cmd cannot
+        re-split them.
+        """
+        if (
+            os.name == "nt"
+            and len(argv) >= 4
+            and argv[1:3] == ["/d", "/c"]
+            and pathlib.Path(argv[0]).name.lower() in {"cmd.exe"}
+        ):
+            return [argv[0], "/d", "/c", subprocess.list2cmdline(argv[3:])]
+        return argv
+
     def _normalize_effort(self, effort: str) -> str:
         return "low" if effort == "none" else effort
 
@@ -250,13 +269,19 @@ class ClaudeCliAdapter:
         normalized_effort = self._normalize_effort(effective_effort)
         argv = [
             *self.claude_command,
-            "-p", prompt,
+            "-p",
             "--model", claude_model,
             "--effort", normalized_effort,
             "--output-format", "json",
             "--max-turns", str(self.max_turns),
             "--allowedTools", " ".join(tools_for_role),
         ]
+        # -p without a value reads the task from stdin. Passing the full
+        # prompt via stdin (instead of an argv value) keeps multi-line prompts
+        # intact even when the resolved command is a .cmd/.bat wrapper executed
+        # through cmd.exe /d /c, whose line-based parsing would truncate a
+        # prompt containing newlines.
+        argv = self._finalize_argv(argv)
         environment = os.environ.copy()
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         started = time.perf_counter()
@@ -273,6 +298,7 @@ class ClaudeCliAdapter:
                     timeout=self.remaining_timeout(),
                     check=False,
                     env=environment,
+                    input=prompt,
                 )
             except subprocess.TimeoutExpired as exc:
                 self.emit_progress({

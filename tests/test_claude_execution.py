@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import pathlib
+import subprocess
 import sys
 import threading
 import time
@@ -184,6 +185,24 @@ class ClaudeExecutionTests(unittest.TestCase):
             instance.reserve_call("worker", 0)
 
         self.assertEqual(instance.reserve_call("direct", 0), 1)
+
+    def test_finalize_argv_keeps_prompt_whole_under_cmd_wrapper(self) -> None:
+        instance = object.__new__(ClaudeCliAdapter)
+        prompt = "Do the thing now please with spaces and newlines\nsecond line"
+        argv = ["cmd.exe", "/d", "/c", "claude.cmd", "-p", prompt, "--model", "haiku"]
+        finalized = instance._finalize_argv(argv)
+        self.assertEqual(finalized[:3], ["cmd.exe", "/d", "/c"])
+        self.assertEqual(len(finalized), 4)
+        # The wrapper + arguments must be one quoted command line so cmd.exe
+        # cannot re-split the whitespace/newline inside the prompt value.
+        self.assertEqual(finalized[3], subprocess.list2cmdline(argv[3:]))
+        self.assertIn("claude.cmd", finalized[3])
+        self.assertIn(prompt, finalized[3])
+
+    def test_finalize_argv_passthrough_without_cmd_wrapper(self) -> None:
+        instance = object.__new__(ClaudeCliAdapter)
+        argv = ["claude", "-p", "hello world", "--model", "haiku"]
+        self.assertEqual(instance._finalize_argv(argv), argv)
 
 
 if __name__ == "__main__":
