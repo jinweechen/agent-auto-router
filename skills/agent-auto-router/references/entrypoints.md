@@ -9,6 +9,7 @@
 - [Matched efficiency evaluation](#matched-efficiency-evaluation)
 - [Model registry validation](#model-registry-validation)
 - [Approval-gated learning](#approval-gated-learning)
+- [Hermes host plan](#hermes-host-plan)
 - [Conversation boundary](#conversation-boundary)
 
 ## Codex Desktop workflow
@@ -146,3 +147,18 @@ The active policy, audit log, and rollback history live under `~/.codex/auto-rou
 ## Conversation boundary
 
 Neither backend adds `Auto` to the Desktop picker or switches the current conversation model. CLI starts a separate `codex exec` task. Desktop starts one separate direct child only after a ready plan and otherwise blocks explicitly.
+
+## Hermes host plan
+
+Emits `agent-auto-router.host-plan.v1` for Hermes-style hosts. Hermes hosts have no `spawn_agent` but CAN execute the task themselves (host model), invoke a CLI backend, or run multi-role orchestration. The plan never executes anything; it only indicates the dispatch action.
+
+```powershell
+python "<skill-dir>/scripts/hermes_host_plan.py" --workdir <dir> [--available-backends codex|claude] [--dry-run]
+```
+
+Hermes-style hosts act on `action.kind`:
+- `cli` — invoke the selected backend CLI with the model and effort.
+- `host_execute` — the host executes the task with its own model (approximate accuracy).
+- `orchestrate` — dispatch multi-role orchestration through the available CLI backend.
+
+`--available-backends` accepts a comma-separated list (`codex,claude`) or `auto` (default; probes PATH). `--dry-run` emits the same plan schema with `executionRequested=false` and `plannedCalls=0`.

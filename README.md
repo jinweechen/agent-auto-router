@@ -457,6 +457,7 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/codex_cli_orchestration_ev
 │   ├── test_policy_learning.py
 │   ├── test_orchestration_engine.py
 │   ├── test_desktop_execution.py
+│   ├── test_hermes_host_plan.py
 │   ├── test_claude_execution.py
 │   └── test_orchestrated_execution.py
 └── skills/agent-auto-router/
@@ -476,6 +477,7 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/codex_cli_orchestration_ev
         ├── efficiency_metrics.py
         ├── evaluate_development_routes.py
         ├── desktop_execution.py
+        ├── hermes_host_plan.py
         ├── execution_plan.py
         ├── repository_context.py
         ├── single_task_runner.py

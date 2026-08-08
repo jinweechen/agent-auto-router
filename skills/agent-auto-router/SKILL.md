@@ -76,4 +76,14 @@ Use `references/entrypoints.md` for commands and `references/router-contract.md`
 
 After changes, run the full unit suite, offline evaluation, registry validation, and Skill validation. Keep installation, commits, and pushes behind explicit user confirmation.
 
+## Using this skill from Hermes (host)
+
+When running inside a Hermes-style host that can execute tasks itself but has no `spawn_agent`:
+
+1. Run `select_auto_model.py` with the task text to produce a route JSON decision.
+2. Feed the route into `hermes_host_plan.py` to get the dispatch action (`cli` / `host_execute` / `orchestrate`).
+3. Act on the plan's `action.kind`: for `cli`, invoke the backend CLI with the model and effort; for `host_execute`, the host runs the task with its own model; for `orchestrate`, dispatch multi-role orchestration through the available CLI backend.
+
+See `references/entrypoints.md` for the full command reference.
+
 Formerly known as codex-auto-router.
