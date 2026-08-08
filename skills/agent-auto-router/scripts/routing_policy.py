@@ -338,6 +338,7 @@ def select_model(
     policy: RoutingPolicy | None = None,
     registry: ModelRegistry | None = None,
     repository_features: dict[str, object] | None = None,
+    backends: Sequence[str] | None = None,
 ) -> ModelDecision:
     if strategy not in STRATEGIES:
         raise ValueError(f"unknown strategy: {strategy}")
@@ -376,6 +377,7 @@ def select_model(
         target_tier,
         role="direct",
         required_capabilities=required_capabilities,
+        backends=backends,
     )
 
     return ModelDecision(

@@ -10,8 +10,11 @@ sys.path.insert(0, str(SCRIPTS))
 
 from model_registry import (  # noqa: E402
     DEFAULT_REGISTRY_PATH,
+    backend_for_model,
     load_model_registry,
+    registry_digest,
     registry_from_dict,
+    strip_backend_prefix,
 )
 from orchestration_profiles import (  # noqa: E402
     load_orchestration_profiles,
@@ -27,8 +30,9 @@ def registry_payload() -> dict[str, object]:
 
 def additional_fast_model() -> dict[str, object]:
     return {
-        "id": "gpt-example-fast",
+        "id": "codex:gpt-example-fast",
         "aliases": ["example-fast"],
+        "backend": "codex",
         "tier": "fast",
         "priority": 5,
         "qualityRank": 1,
@@ -45,7 +49,7 @@ def additional_fast_model() -> dict[str, object]:
 class ModelRegistryTests(unittest.TestCase):
     def test_default_registry_preserves_existing_aliases_and_tiers(self) -> None:
         registry = load_model_registry()
-        self.assertEqual(registry.get("sol").model_id, "gpt-5.6-sol")
+        self.assertEqual(registry.get("sol").model_id, "codex:gpt-5.6-sol")
         self.assertEqual(registry.get("terra").tier, "balanced")
         self.assertEqual(registry.get("luna").tier, "fast")
 
@@ -55,7 +59,7 @@ class ModelRegistryTests(unittest.TestCase):
         registry = registry_from_dict(payload, "unit-test")
         decision = select_model("Rename this field", "balance", registry=registry)
         self.assertEqual(decision.target_tier, "fast")
-        self.assertEqual(decision.model, "gpt-example-fast")
+        self.assertEqual(decision.model, "codex:gpt-example-fast")
 
     def test_disabled_model_cannot_be_selected_explicitly(self) -> None:
         payload = registry_payload()
@@ -73,10 +77,10 @@ class ModelRegistryTests(unittest.TestCase):
         model["autoEligible"] = False
         payload["models"].append(model)
         registry = registry_from_dict(payload, "unit-test")
-        self.assertEqual(registry.get("example-fast").model_id, "gpt-example-fast")
+        self.assertEqual(registry.get("example-fast").model_id, "codex:gpt-example-fast")
         self.assertEqual(
             select_model("Rename this field", "balance", registry=registry).model,
-            "gpt-5.6-luna",
+            "codex:gpt-5.6-luna",
         )
 
     def test_registry_rejects_alias_collision(self) -> None:
@@ -98,8 +102,8 @@ class ModelRegistryTests(unittest.TestCase):
         profiles = load_orchestration_profiles()
         planner = profiles.assignment("B", "planner").resolve(registry, "planner")
         worker = profiles.assignment("B", "worker").resolve(registry, "worker")
-        self.assertEqual(planner.model_id, "gpt-5.6-sol")
-        self.assertEqual(worker.model_id, "gpt-5.6-luna")
+        self.assertEqual(planner.model_id, "codex:gpt-5.6-sol")
+        self.assertEqual(worker.model_id, "codex:gpt-5.6-luna")
 
     def test_profile_tier_automatically_uses_new_higher_priority_model(self) -> None:
         payload = registry_payload()
@@ -108,7 +112,7 @@ class ModelRegistryTests(unittest.TestCase):
         worker = load_orchestration_profiles().assignment("B", "worker").resolve(
             registry, "worker"
         )
-        self.assertEqual(worker.model_id, "gpt-example-fast")
+        self.assertEqual(worker.model_id, "codex:gpt-example-fast")
 
     def test_validator_resolves_every_profile_without_model_calls(self) -> None:
         report = validate_registry_and_profiles(
@@ -117,13 +121,14 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertTrue(report["valid"])
         self.assertEqual(report["modelCalls"], 0)
         self.assertEqual(report["resolvedProfiles"]["C"]["dispatcher"]["tier"], "balanced")
-        self.assertEqual(report["highRiskFinalRoles"]["A"]["model"], "gpt-5.6-sol")
+        self.assertEqual(report["highRiskFinalRoles"]["A"]["model"], "codex:gpt-5.6-sol")
 
     def test_high_risk_profile_resolution_keeps_required_capability(self) -> None:
         payload = registry_payload()
         payload["models"].append({
-            "id": "gpt-frontier-lite",
+            "id": "codex:gpt-frontier-lite",
             "aliases": ["frontier-lite"],
+            "backend": "codex",
             "tier": "frontier",
             "priority": 1,
             "qualityRank": 2,
@@ -143,7 +148,7 @@ class ModelRegistryTests(unittest.TestCase):
             required_capabilities=("high-risk-primary",),
             required_tier="frontier",
         )
-        self.assertEqual(resolved.model_id, "gpt-5.6-sol")
+        self.assertEqual(resolved.model_id, "codex:gpt-5.6-sol")
 
     def test_explicit_only_profile_model_is_rejected_from_auto(self) -> None:
         payload = registry_payload()
@@ -155,12 +160,136 @@ class ModelRegistryTests(unittest.TestCase):
             (SCRIPTS / "orchestration_profiles.json").read_text(encoding="utf-8")
         )
         profile_payload["profiles"]["F"]["direct"] = {
-            "model": "gpt-example-fast",
+            "model": "codex:gpt-example-fast",
             "effort": "low",
         }
         profiles = profiles_from_dict(profile_payload, "unit-test")
         with self.assertRaisesRegex(ValueError, "not eligible for Auto"):
             validate_registry_and_profiles(registry, profiles)
+
+    # ---- v2 backend tests ----
+
+    def test_default_registry_backend_qualified_ids(self) -> None:
+        registry = load_model_registry()
+        self.assertEqual(registry.get("sol").model_id, "codex:gpt-5.6-sol")
+        self.assertEqual(registry.get("terra").backend, "codex")
+        self.assertEqual(registry.get("sonnet").backend, "claude")
+        self.assertEqual(registry.get("opus").tier, "frontier")
+        self.assertFalse(registry.get("opus").auto_eligible)
+
+    def test_resolve_tier_respects_backend_filter(self) -> None:
+        registry = load_model_registry()
+        # full registry: resolve with claude backend filter
+        model = registry.resolve_tier("balanced", role="direct", backends=["claude"])
+        self.assertEqual(model.model_id, "claude:sonnet")
+        # no filter -> codex wins (sorts first)
+        model = registry.resolve_tier("balanced", role="direct")
+        self.assertEqual(model.model_id, "codex:gpt-5.6-terra")
+        # fast tier with claude filter
+        model = registry.resolve_tier("fast", role="worker", backends=["claude"])
+        self.assertEqual(model.model_id, "claude:haiku")
+
+    def test_resolve_tier_no_candidate_for_backend_raises(self) -> None:
+        registry = load_model_registry()
+        with self.assertRaisesRegex(ValueError, "backends"):
+            registry.resolve_tier("frontier", role="direct", backends=["claude"])
+
+    def test_v1_registry_migrates_to_codex_backend(self) -> None:
+        v1_payload: dict[str, object] = {
+            "schemaVersion": 1,
+            "models": [
+                {
+                    "id": "gpt-5.6-sol",
+                    "aliases": ["sol"],
+                    "tier": "frontier",
+                    "priority": 10,
+                    "qualityRank": 3,
+                    "costRank": 3,
+                    "latencyRank": 3,
+                    "defaultEffort": "high",
+                    "capabilities": ["coding", "high-risk-primary"],
+                    "allowedRoles": ["direct", "planner", "dispatcher", "worker", "reviewer", "grader"],
+                    "enabled": True,
+                    "autoEligible": True,
+                },
+                {
+                    "id": "gpt-5.6-luna",
+                    "aliases": ["luna"],
+                    "tier": "fast",
+                    "priority": 10,
+                    "qualityRank": 1,
+                    "costRank": 1,
+                    "latencyRank": 1,
+                    "defaultEffort": "medium",
+                    "capabilities": ["coding", "bounded-execution"],
+                    "allowedRoles": ["direct", "worker"],
+                    "enabled": True,
+                    "autoEligible": True,
+                },
+            ],
+        }
+        registry = registry_from_dict(v1_payload, "v1-test")
+        self.assertEqual(registry.get("sol").model_id, "codex:gpt-5.6-sol")
+        self.assertIn("codex", registry.backends)
+        self.assertTrue(registry.backends["codex"].get("default"))
+
+    def test_strip_backend_prefix_helpers(self) -> None:
+        self.assertEqual(strip_backend_prefix("codex:gpt-5.6-sol", "codex"), "gpt-5.6-sol")
+        self.assertEqual(strip_backend_prefix("claude:sonnet", "claude"), "sonnet")
+        with self.assertRaises(ValueError):
+            strip_backend_prefix("claude:sonnet", "codex")
+        self.assertEqual(strip_backend_prefix("gpt-5.6-sol", "codex"), "gpt-5.6-sol")
+        self.assertEqual(backend_for_model("claude:sonnet"), "claude")
+        self.assertEqual(backend_for_model("gpt-5.6-sol"), "codex")
+
+    def test_unknown_backend_rejected(self) -> None:
+        payload = registry_payload()
+        # Add a model with an unknown backend but declare it in backends? No — the
+        # registry backends dict is the authority. To test: take the real payload,
+        # add a model whose backend is not in backends.
+        payload["models"].append({
+            "id": "nope:fake-model",
+            "aliases": ["fake"],
+            "backend": "nope",
+            "tier": "fast",
+            "priority": 5,
+            "qualityRank": 1,
+            "costRank": 1,
+            "latencyRank": 1,
+            "defaultEffort": "low",
+            "capabilities": ["coding", "bounded-execution"],
+            "allowedRoles": ["direct", "worker"],
+            "enabled": True,
+            "autoEligible": True,
+        })
+        with self.assertRaisesRegex(ValueError, "unknown backend"):
+            registry_from_dict(payload, "unit-test")
+
+    def test_model_id_prefix_must_match_backend_field(self) -> None:
+        payload = registry_payload()
+        payload["models"].append({
+            "id": "claude:sonnet",
+            "aliases": ["bad-sonnet"],
+            "backend": "codex",
+            "tier": "balanced",
+            "priority": 5,
+            "qualityRank": 2,
+            "costRank": 2,
+            "latencyRank": 2,
+            "defaultEffort": "medium",
+            "capabilities": ["coding"],
+            "allowedRoles": ["direct", "worker"],
+            "enabled": True,
+            "autoEligible": True,
+        })
+        with self.assertRaisesRegex(ValueError, "backend field"):
+            registry_from_dict(payload, "unit-test")
+
+    def test_registry_digest_stable_v2(self) -> None:
+        registry_a = load_model_registry()
+        payload = json.loads(DEFAULT_REGISTRY_PATH.read_text(encoding="utf-8"))
+        registry_b = registry_from_dict(payload, str(DEFAULT_REGISTRY_PATH))
+        self.assertEqual(registry_digest(registry_a), registry_digest(registry_b))
 
 
 if __name__ == "__main__":

@@ -1,9 +1,21 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "backends": {
+    "codex": {
+      "kind": "cli",
+      "adapter": "CodexCliAdapter",
+      "default": true
+    },
+    "claude": {
+      "kind": "cli",
+      "adapter": "ClaudeCliAdapter"
+    }
+  },
   "models": [
     {
-      "id": "gpt-5.6-sol",
+      "id": "codex:gpt-5.6-sol",
       "aliases": ["sol"],
+      "backend": "codex",
       "tier": "frontier",
       "priority": 10,
       "qualityRank": 3,
@@ -16,8 +28,9 @@
       "autoEligible": true
     },
     {
-      "id": "gpt-5.6-terra",
+      "id": "codex:gpt-5.6-terra",
       "aliases": ["terra"],
+      "backend": "codex",
       "tier": "balanced",
       "priority": 10,
       "qualityRank": 2,
@@ -30,8 +43,9 @@
       "autoEligible": true
     },
     {
-      "id": "gpt-5.6-luna",
+      "id": "codex:gpt-5.6-luna",
       "aliases": ["luna"],
+      "backend": "codex",
       "tier": "fast",
       "priority": 10,
       "qualityRank": 1,
@@ -42,6 +56,51 @@
       "allowedRoles": ["direct", "worker"],
       "enabled": true,
       "autoEligible": true
+    },
+    {
+      "id": "claude:sonnet",
+      "aliases": ["sonnet"],
+      "backend": "claude",
+      "tier": "balanced",
+      "priority": 10,
+      "qualityRank": 2,
+      "costRank": 2,
+      "latencyRank": 2,
+      "defaultEffort": "medium",
+      "capabilities": ["planning", "coding", "review", "grading", "dispatch"],
+      "allowedRoles": ["direct", "planner", "dispatcher", "worker", "reviewer", "grader"],
+      "enabled": true,
+      "autoEligible": true
+    },
+    {
+      "id": "claude:haiku",
+      "aliases": ["haiku"],
+      "backend": "claude",
+      "tier": "fast",
+      "priority": 10,
+      "qualityRank": 1,
+      "costRank": 1,
+      "latencyRank": 1,
+      "defaultEffort": "medium",
+      "capabilities": ["coding", "bounded-execution"],
+      "allowedRoles": ["direct", "worker"],
+      "enabled": true,
+      "autoEligible": true
+    },
+    {
+      "id": "claude:opus",
+      "aliases": ["opus"],
+      "backend": "claude",
+      "tier": "frontier",
+      "priority": 20,
+      "qualityRank": 3,
+      "costRank": 3,
+      "latencyRank": 3,
+      "defaultEffort": "high",
+      "capabilities": ["planning", "coding", "review", "grading", "dispatch", "high-risk-primary"],
+      "allowedRoles": ["direct", "planner", "dispatcher", "worker", "reviewer", "grader"],
+      "enabled": true,
+      "autoEligible": false
     }
   ]
 }

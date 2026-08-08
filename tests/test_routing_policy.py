@@ -33,11 +33,12 @@ class RoutingPolicyTests(unittest.TestCase):
         )
         self.assertGreaterEqual(decision.algorithm_hits, 3)
         self.assertEqual(decision.target_tier, "frontier")
+
     def test_balance_constrained_task_uses_luna_and_variant_f(self) -> None:
         prompt = "Rename this field"
         decision = select_model(prompt, "balance")
         self.assertEqual(decision.target_tier, "fast")
-        self.assertEqual(decision.model, "gpt-5.6-luna")
+        self.assertEqual(decision.model, "codex:gpt-5.6-luna")
         self.assertEqual(route_case({"prompt": prompt}, "balance")["variant"], "F")
 
     def test_routine_parallel_task_makes_variant_d_reachable(self) -> None:
@@ -46,7 +47,7 @@ class RoutingPolicyTests(unittest.TestCase):
             "acceptance_criteria": ["API", "tests", "docs", "rollback"],
         }
         result = route_case(case, "balance")
-        self.assertEqual(result["selected_model"], "gpt-5.6-terra")
+        self.assertEqual(result["selected_model"], "codex:gpt-5.6-terra")
         self.assertEqual(result["variant"], "D")
 
     def test_small_parallel_task_does_not_trigger_orchestration(self) -> None:
@@ -71,19 +72,19 @@ class RoutingPolicyTests(unittest.TestCase):
     def test_incidental_security_word_does_not_force_sol(self) -> None:
         decision = select_model("Rename the security label", "balance")
         self.assertFalse(decision.high_risk)
-        self.assertEqual(decision.model, "gpt-5.6-luna")
+        self.assertEqual(decision.model, "codex:gpt-5.6-luna")
 
     def test_true_high_risk_task_uses_sol_in_every_strategy(self) -> None:
         prompt = "Deploy a production authentication migration and fix vulnerabilities"
         for strategy in ("intelligence", "balance", "cost"):
             with self.subTest(strategy=strategy):
-                self.assertEqual(select_model(prompt, strategy).model, "gpt-5.6-sol")
+                self.assertEqual(select_model(prompt, strategy).model, "codex:gpt-5.6-sol")
 
     def test_vulnerability_review_is_inherently_high_risk(self) -> None:
         prompt = "Review a production authentication migration for security vulnerabilities"
         for strategy in ("intelligence", "balance", "cost"):
             with self.subTest(strategy=strategy):
-                self.assertEqual(select_model(prompt, strategy).model, "gpt-5.6-sol")
+                self.assertEqual(select_model(prompt, strategy).model, "codex:gpt-5.6-sol")
 
     def test_authorization_bypass_and_privacy_leakage_are_inherently_high_risk(self) -> None:
         prompt = "Review production authentication to prevent authorization bypass and privacy leakage"
@@ -92,27 +93,27 @@ class RoutingPolicyTests(unittest.TestCase):
                 decision = select_model(prompt, strategy)
                 self.assertTrue(decision.high_risk)
                 self.assertEqual(decision.target_tier, "frontier")
-                self.assertEqual(decision.model, "gpt-5.6-sol")
+                self.assertEqual(decision.model, "codex:gpt-5.6-sol")
 
     def test_migration_documentation_is_not_high_risk(self) -> None:
         decision = select_model("整理迁移文档并修复错别字", "balance")
         self.assertFalse(decision.high_risk)
-        self.assertEqual(decision.model, "gpt-5.6-luna")
+        self.assertEqual(decision.model, "codex:gpt-5.6-luna")
 
     def test_route_case_uses_explicit_effort(self) -> None:
         result = route_case({"prompt": "Implement a routine change"}, "balance", "xhigh")
         self.assertEqual(result["effort"], "xhigh")
-        self.assertEqual(result["selected_model"], "gpt-5.6-sol")
+        self.assertEqual(result["selected_model"], "codex:gpt-5.6-sol")
 
     def test_cost_strategy_uses_terra_for_complex_non_risk_work(self) -> None:
         prompt = "Redesign the distributed architecture and concurrency model"
-        self.assertEqual(select_model(prompt, "cost").model, "gpt-5.6-terra")
+        self.assertEqual(select_model(prompt, "cost").model, "codex:gpt-5.6-terra")
 
     def test_candidate_threshold_can_change_routine_boundary(self) -> None:
         policy = RoutingPolicy(policy_version="test", balance_frontier_threshold=4)
         prompt = "Refactor the integration workflow"
-        self.assertEqual(select_model(prompt, "balance").model, "gpt-5.6-sol")
-        self.assertEqual(select_model(prompt, "balance", policy=policy).model, "gpt-5.6-terra")
+        self.assertEqual(select_model(prompt, "balance").model, "codex:gpt-5.6-sol")
+        self.assertEqual(select_model(prompt, "balance", policy=policy).model, "codex:gpt-5.6-terra")
 
     def test_candidate_threshold_cannot_downgrade_high_risk_work(self) -> None:
         policy = RoutingPolicy(
@@ -126,7 +127,7 @@ class RoutingPolicyTests(unittest.TestCase):
             with self.subTest(strategy=strategy):
                 self.assertEqual(
                     select_model(prompt, strategy, policy=policy).model,
-                    "gpt-5.6-sol",
+                    "codex:gpt-5.6-sol",
                 )
 
     def test_legacy_policy_is_read_and_rewritten_as_model_agnostic_v2(self) -> None:
@@ -144,6 +145,31 @@ class RoutingPolicyTests(unittest.TestCase):
         self.assertEqual(policy.balance_frontier_threshold, 5)
         self.assertEqual(rewritten["schemaVersion"], 2)
         self.assertEqual(rewritten["targetTiers"]["highRisk"], "frontier")
+
+    def test_select_model_backends_parameter(self) -> None:
+        # Routine task with claude backends → claude:sonnet (balanced tier)
+        decision = select_model(
+            "Implement a feature to add user preferences",
+            "balance",
+            backends=["claude"],
+        )
+        self.assertEqual(decision.model, "claude:sonnet")
+
+        # Simple constrained task with claude backends → claude:haiku (fast tier)
+        decision = select_model(
+            "Rename this field",
+            "balance",
+            backends=["claude"],
+        )
+        self.assertEqual(decision.model, "claude:haiku")
+
+        # High-risk task with claude backends → ValueError (no autoEligible frontier claude model)
+        with self.assertRaisesRegex(ValueError, "backends"):
+            select_model(
+                "Fix vulnerabilities in production authentication",
+                "balance",
+                backends=["claude"],
+            )
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 import uuid
 from dataclasses import asdict, replace
@@ -35,6 +36,7 @@ def main() -> int:
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--workdir", type=Path)
     parser.add_argument("--ignore-active-policy", action="store_true")
+    parser.add_argument("--available-backends", default="auto")
     route_input = parser.add_mutually_exclusive_group(required=True)
     route_input.add_argument("--text")
     route_input.add_argument("--stdin", action="store_true")
@@ -50,6 +52,25 @@ def main() -> int:
         else:
             policy, policy_source = load_active_policy(args.state_dir)
         registry = load_model_registry()
+
+        # Resolve available backends
+        if args.available_backends == "auto":
+            found: list[str] = []
+            for bname in registry.backends:
+                if shutil.which(bname):
+                    found.append(bname)
+            if found:
+                available_backends = found
+            else:
+                available_backends = list(registry.backends.keys())
+        else:
+            available_backends = [b.strip() for b in args.available_backends.split(",")]
+            for b in available_backends:
+                if b not in registry.backends:
+                    parser.error(
+                        f"backend {b} is not declared in the model registry"
+                    )
+
         routing_effort = "medium" if args.effort == "auto" else args.effort
         repository_features = (
             inspect_repository(args.workdir, prompt or "") if args.workdir else None
@@ -59,6 +80,7 @@ def main() -> int:
         decision = select_model(
             prompt or "", args.strategy, routing_effort, policy=policy, registry=registry,
             repository_features=repository_features,
+            backends=available_backends,
         )
         if args.model_choice == "auto":
             selected = registry.get(decision.model, role="direct")
@@ -105,6 +127,7 @@ def main() -> int:
         "selectedTier": selected.tier,
         "selectedDefaultEffort": selected.default_effort,
         "executionPlan": execution_plan,
+        "availableBackends": list(available_backends),
         "repository": repository_features,
         "explicitOverride": explicit_override,
         "policy": {

@@ -43,12 +43,31 @@ def validate_registry_and_profiles(
         for model in registry.models
         if model.enabled and not model.auto_eligible
     ]
+
+    # Validate every declared backend has at least one enabled model
+    backends_with_models: set[str] = set()
+    for model in registry.models:
+        if model.enabled:
+            backends_with_models.add(model.backend)
+    for bname in registry.backends:
+        if bname not in backends_with_models:
+            raise ValueError(f"backend {bname} has no enabled models")
+
+    # Find the default backend
+    default_backend: str | None = None
+    for bname, binfo in registry.backends.items():
+        if binfo.get("default"):
+            default_backend = bname
+            break
+
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "valid": True,
         "registrySource": registry.source,
         "registryDigest": registry_digest(registry),
         "profilesSource": profiles.source,
+        "backends": sorted(registry.backends.keys()),
+        "defaultBackend": default_backend,
         "enabledModels": list(registry.enabled_model_ids),
         "autoModels": list(registry.auto_model_ids),
         "explicitOnlyModels": explicit_only,
