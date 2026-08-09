@@ -43,6 +43,14 @@ def evaluate(policy: RoutingPolicy | None = None) -> dict[str, object]:
         "acceptance_criteria": ["API", "tests", "docs", "rollback"],
     }
     checks.append(check("variant:d-reachable", route_case(parallel_case, "balance", policy=policy)["variant"], "D"))
+    chinese_parallel_case = {
+        "prompt": "并行审查多个独立模块，覆盖调试、长上下文和多文件任务，最后统一审查",
+    }
+    checks.append(check(
+        "variant:chinese-parallel-signals",
+        route_case(chinese_parallel_case, "balance", policy=policy)["variant"],
+        "D",
+    ))
     checks.append(check("incidental-security", select_model("Rename the security label", "balance", policy=policy).target_tier, "fast"))
     checks.append(check(
         "registry-route-models-enabled",

@@ -14,34 +14,39 @@ Make one deterministic local routing decision, then emit a host-neutral action o
 - CLI multi-role execution: `scripts/invoke_orchestrated_task.ps1`.
 - Generic Codex/Claude Code/other-host plan: `scripts/host_execution_plan.py`.
 - Offline routing evaluation: `scripts/evaluate_auto_router.py`.
-- Approval-gated learning: `scripts/policy_learning.py`.
+- Manual learning: `scripts/policy_learning.py`.
+- Guarded automatic learning: `scripts/guarded_auto.py`.
 - Registry validation: `scripts/validate_model_registry.py`.
 
 Read `references/entrypoints.md` for complete commands and backend-specific parameters. Read `references/router-contract.md` before changing routing, execution, privacy, or failure boundaries.
 Read `references/benchmark-routing.md` before updating benchmark evidence or its routing floors.
+Read `references/guarded-auto-learning.md` before enabling or changing automatic learning.
 
 ## Execute through Codex Desktop
 
 Treat Desktop execution as a host protocol, not a hidden CLI login:
 
-1. Read exact supported model IDs from the current `spawn_agent` tool metadata. Never infer availability from the registry or substitute another model.
-2. Build `agent-auto-router.host-permissions.v1` from the current host's trusted turn metadata. Copy the current sandbox policy, approval policy, network flag, writable roots, permission-profile ID, and permission-request capability; never infer them from task text or arbitrary environment variables.
-3. Run the Desktop entrypoint with those IDs, the exact workdir, and the permission snapshot. It emits `agent-auto-router.desktop-plan.v2`, makes zero routing-model calls, and omits task text.
-4. For `executionRequested=false`, report the plan only and launch nothing.
-5. For `status=blocked`, report `blocked.code` and launch nothing.
-6. For a ready executable plan, call `spawn_agent` exactly once using `agent.model`, `agent.reasoningEffort`, and `fork_turns=agent.forkTurns`. Pass the complete original task and require work only in `agent.workdir` because v2 forbids full-history forks.
-7. Make that `direct` child the only writer. The primary agent may coordinate and verify read-only, must not edit concurrently, and must wait for the child before reporting.
+1. Read exact supported model IDs and the number of parallel child slots from the current `spawn_agent` tool metadata. Never infer runtime availability or concurrency from the registry.
+2. Build `agent-auto-router.host-permissions.v1` from trusted turn metadata. Copy sandbox, approval, network, writable roots, profile ID, and permission-request capability; never infer them from task text or arbitrary environment variables.
+3. Run the Desktop entrypoint with those runtime values and the exact workdir. It emits `agent-auto-router.desktop-plan.v3`, makes zero routing-model calls, and omits task text.
+4. For `executionRequested=false`, report the plan only. For `status=blocked`, report `blocked.code`. Launch nothing in either case.
+5. For a ready plan, execute `stages` only when their dependencies succeeded. Use every agent template's exact model, effort, `forkTurns=none`, workdir, role, instance bound, and idempotency key. Never launch the same key twice.
+6. Run independent `worker` instances concurrently up to `hostContract.maxParallelAgents`; run all other stages serially. Pass each worker one bounded independent subtask derived from the planner/dispatcher result.
+7. Treat planner, dispatcher, worker, and grader as read-only. Tell them not to edit, snapshot workspace state around their stages, and stop on any unexpected change. The primary coordinates but does not edit while child stages run. Acquire the declared exclusive writer claim only for `direct` or final `reviewer` after every dependency succeeds; never allow concurrent writers.
+8. Wait for every launched child, stop on failure/blocked/cancelled status, release the writer claim, and report the final writer plus optional grader result. Do not retry timed-out `max`/`xhigh` roles automatically.
+9. When `learning.submitAfterExecution=true`, complete the declared execution-report route with a unique report ID, trusted host name, status, duration, validation result, escalation flag, and attempt count; pipe it to `guarded_auto.py report --stdin`. Never add task text or child output. Do not submit DryRun plans.
 
 ```powershell
 & "<skill-dir>/scripts/invoke_auto_task.ps1" `
   -Task "Implement the requested change" `
   -ExecutionBackend desktop `
   -DesktopAvailableModels @('gpt-5.6-sol', 'gpt-5.6-terra') `
+  -DesktopMaxParallelChildren 3 `
   -HostPermissionsJson $currentTurnPermissionsJson `
   -Workdir "C:/path/to/workspace"
 ```
 
-Desktop v2 supports only direct A/E/F topology. It automatically inherits `read-only`, `workspace-write`, or `danger-full-access` from the current Desktop turn and never broadens it. Missing or invalid trusted permission metadata, an out-of-root workdir, unavailable models, B/C/D topology, validation escalation, and non-default CLI context mode block before launch. `-DryRun` still emits a complete plan but sets `executionRequested=false` and `plannedAgentCalls=0`.
+Desktop v3 supports A-F. A/E/F remain direct; B/C/D use a staged multi-agent DAG with bounded workers and exactly one final writer. The selected direct model must be available exactly. For other roles, use the preferred profile model when available; otherwise the planner may explicitly resolve only to a runtime-declared trusted Codex model at the same or a higher tier. Report `preferredModel`, actual `model`, and `modelResolution`; never downgrade, cross backends, or hide the change. The call budget, parallel capacity, dependencies, idempotency keys, lifecycle states, and exclusive writer claim are deterministic plan fields. Missing trusted metadata, an out-of-root workdir, unresolved role models, insufficient call budget, validation escalation, and non-default CLI context mode block before launch. `-DryRun` returns the same non-executable plan with `plannedAgentCalls=0`.
 
 ## Execute through the signed-in CLI
 
@@ -62,8 +67,8 @@ Use validation-driven escalation only when explicitly requested with an argv-arr
 
 ## Use advanced workflows
 
-- Use CLI orchestration only when the task has both parallel signals and sufficient scale. Keep planner, dispatcher, worker, and grader read-only; only `direct` or final `reviewer` may write.
-- Keep learning bounded to tier thresholds. Require human labels, held-out improvement, integrity checks, explicit approval, audit history, and rollback.
+- Use multi-agent orchestration only when the task has both parallel signals and sufficient scale. Keep planner, dispatcher, worker, and grader read-only; only `direct` or final `reviewer` may write.
+- Keep learning bounded to tier thresholds. Manual candidates require explicit approval. The separately opted-in `guarded-auto` mode may auto-canary only a held-out-improving, integrity-checked, one-step conservative threshold decrease supported by explicit user selections or validation-proven adjacent-tier escalations; require deterministic canary, probation, audit history, and automatic rollback.
 - Keep model identities in `model_registry.json` and role mappings in `orchestration_profiles.json`. New models start explicit-only and enter Auto only after controlled validation.
 - Compare acceptance before tokens on matched cases. Never infer billing cost from CLI token counters or model superiority from one case.
 - Treat `benchmark_priors.json` as a versioned offline prior, not live truth. Pin evidence to exact model IDs; unversioned aliases remain fallback-only evidence gaps.
@@ -78,8 +83,9 @@ Use `references/entrypoints.md` for commands and `references/router-contract.md`
 - Never read, copy, forward, or proxy Desktop credentials; never attach to Desktop app-server stdio.
 - Never silently change model, effort, tier, provider, topology, or backend.
 - Never synthesize or elevate permissions. Automatic execution requires trusted host permission metadata, and the effective child permission is always less than or equal to the host permission.
+- When guarded-auto is enabled, keep its state and feedback outside every child-writable root. Block guarded execution under `danger-full-access`, an unknown external sandbox, or any boundary that lets the child modify learning evidence.
 - Never grant concurrent writers or automatically retry timed-out `max`/`xhigh` roles.
-- Never activate learned policy changes without explicit human approval.
+- Never auto-change model registry entries, risk rules, permissions, Skill instructions, or thresholds toward a cheaper/weaker tier. Those changes and all manual candidates require explicit human approval.
 
 After changes, run the full unit suite, offline evaluation, registry validation, and Skill validation. Keep installation, commits, and pushes behind explicit user confirmation.
 

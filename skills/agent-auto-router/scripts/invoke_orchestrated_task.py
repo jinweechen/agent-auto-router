@@ -14,16 +14,23 @@ import time
 from typing import Any
 
 from auto_router import VARIANT_LABELS, route_case
+from benchmark_priors import benchmark_priors_digest, load_benchmark_priors
 from claude_cli_adapter import ClaudeCliAdapter
 from codex_cli_adapter import CodexCliAdapter
 from codex_cli_orchestration_eval import positive_int
-from host_permissions import cli_permission_issue, parse_host_permissions, workdir_is_writable
-from model_registry import load_model_registry
+from host_permissions import (
+    HostPermissions,
+    cli_permission_issue,
+    parse_host_permissions,
+    workdir_is_writable,
+)
+from guarded_auto import learning_boundary_issue, process_recorded_outcome
+from model_registry import load_model_registry, registry_digest
 from orchestration_engine import run_variant
 from orchestration_profiles import load_orchestration_profiles
 from policy_learning import append_route_event, default_feedback_path
 from repository_context import build_repository_context, inspect_repository
-from routing_policy import DEFAULT_STATE_DIR, EFFORTS, STRATEGIES, load_active_policy
+from routing_policy import DEFAULT_STATE_DIR, EFFORTS, STRATEGIES, load_policy_for_route
 
 
 def should_run_grader(routing: dict[str, Any], variant: str, policy: str) -> bool:
@@ -202,6 +209,13 @@ def record_route_feedback(
     }
     try:
         append_route_event(payload, feedback_path)
+        learning = process_recorded_outcome(args.state_dir, feedback_path)
+        if learning.get("status") == "error":
+            print(
+                "warning: route feedback was recorded, but guarded automatic "
+                f"learning did not advance: {learning.get('errorType')}",
+                file=sys.stderr,
+            )
     except Exception as exc:
         print(
             f"warning: route feedback was not recorded for {route_id}: {type(exc).__name__}: {exc}",
@@ -299,6 +313,15 @@ def main() -> int:
             raise ValueError(issue)
         if args.sandbox != "read-only" and not workdir_is_writable(args.workdir, host_permissions):
             raise ValueError("Workdir is outside the writable roots declared by the host")
+        if not args.dry_run:
+            boundary_issue = learning_boundary_issue(
+                args.state_dir,
+                args.feedback_file or default_feedback_path(args.state_dir),
+                host_permissions,
+                args.sandbox,
+            )
+            if boundary_issue:
+                raise ValueError(boundary_issue)
     elif args.sandbox == "inherit":
         if args.dry_run:
             args.sandbox = "read-only"
@@ -306,6 +329,25 @@ def main() -> int:
             raise ValueError("--sandbox inherit requires --host-permissions-json")
     else:
         args.host_permissions = None
+        if not args.dry_run:
+            explicit_permissions = HostPermissions(
+                source="router-explicit-sandbox",
+                sandbox=args.sandbox,
+                approval_policy="on-request",
+                network_access=None,
+                writable_roots=(str(args.workdir.resolve()),)
+                if args.sandbox == "workspace-write"
+                else (),
+                can_request_permissions=True,
+            )
+            boundary_issue = learning_boundary_issue(
+                args.state_dir,
+                args.feedback_file or default_feedback_path(args.state_dir),
+                explicit_permissions,
+                args.sandbox,
+            )
+            if boundary_issue:
+                raise ValueError(boundary_issue)
     started_at = time.monotonic()
     if (
         args.results_dir is not None
@@ -349,8 +391,14 @@ def main() -> int:
     repository_features.pop("files", None)
     case["repository_features"] = repository_features
     routing_effort = args.effort or args.planner_effort or "medium"
-    active_policy, policy_source = load_active_policy(args.state_dir)
     registry = load_model_registry()
+    benchmark_priors = load_benchmark_priors(registry=registry)
+    active_policy, policy_source = load_policy_for_route(
+        args.state_dir,
+        run_id,
+        registry_digest_value=registry_digest(registry),
+        benchmark_priors_digest_value=benchmark_priors_digest(benchmark_priors),
+    )
     if args.backend and args.backend not in registry.backends:
         print(
             json.dumps(

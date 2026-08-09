@@ -1,0 +1,61 @@
+# Guarded automatic learning
+
+`guarded-auto` is an optional local control loop for routing thresholds. It makes no model calls and is disabled by default. Enabling it once permits only the narrow automatic lifecycle described here; it does not authorize registry, risk, permission, prompt, Skill, provider, or account changes.
+
+## Evidence boundary
+
+An automatic signal must be one of:
+
+- an explicit user preferred-model selection recorded with `preferenceSource=explicit-user-selection`; or
+- a deterministic validation-proven escalation where the initial tier failed, exactly the adjacent stronger tier passed, at least two attempts were recorded, and the route was neither high-risk nor explicitly overridden.
+
+Exit code zero, ordinary success, latency, and token count are observations, not quality labels. Task text, model output, child-agent output, tool output, credentials, and hidden instructions are rejected from the report schema and never stored.
+
+## Allowed learned surface
+
+The optimizer may change only `intelligenceFrontier`, `balanceFrontier`, and `costBalanced`. Automatic candidates must:
+
+- use at least the configured number of usable signals and pass the deterministic held-out improvement gate;
+- decrease a threshold by at most one, which routes more work to a stronger tier;
+- preserve fixed high-risk and benchmark-prior floors;
+- match the current base-policy, registry, and benchmark-prior digests;
+- pass the candidate integrity digest.
+
+Threshold increases toward cheaper or weaker tiers remain manual and approval-gated through `policy_learning.py`. Registry identities, `autoEligible`, capabilities, role mappings, risk rules, permissions, and Skill files are never automatically edited.
+
+## Lifecycle
+
+`idle -> canary -> probation -> idle`
+
+1. `idle`: build a candidate only after enough strong signals exist.
+2. `canary`: deterministically bucket opaque route IDs. At most the configured percentage, capped at 50%, sees the candidate; the rest stays on the baseline. Registry, prior, candidate, or active-policy drift fails closed.
+3. `probation`: after both canary and baseline have enough deterministic validation reports and no allowed failure-rate regression, archive the baseline and activate the candidate temporarily.
+4. `idle`: stabilize after sufficient probation reports, or automatically restore the archived baseline when verified failures regress. Every transition is metadata-only audited.
+
+After a candidate is rejected, stabilized, or rolled back, the state records the strong-signal count and will not recompute the same evidence. A new evaluation requires another bounded batch of strong signals.
+
+Only reports with deterministic validation results, no explicit override, and no high-risk flag count toward canary or probation acceptance. Learning failures do not turn a completed user task into a failed task, but corrupted canary state blocks candidate routing until it is inspected or guarded mode is disabled.
+
+The state directory and any custom feedback file are protected control-plane inputs. Automatic execution checks them before launching a child: they must be outside every child-writable root. Guarded execution is blocked under `danger-full-access`, an unknown external sandbox, or any other boundary that lets the child edit its own evidence. Manual mode is unaffected.
+
+## Enable, inspect, and disable
+
+```powershell
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" configure --mode guarded-auto
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" status
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" cycle --dry-run
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" configure --mode manual
+```
+
+Use `--state-dir` and `--feedback-file` to isolate tests. CLI entrypoints automatically run one zero-model-call cycle after recording an outcome. Desktop and other hosts submit the plan's route metadata plus actual result:
+
+```powershell
+$report | ConvertTo-Json -Depth 12 |
+  python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" report --stdin
+```
+
+The report schema is `agent-auto-router.execution-report.v1`. It requires a unique `reportId`, a trusted short `host`, the exact route metadata emitted by the planner, and result status, duration, verification, validation configuration, escalation flag, and attempt count. Report IDs are idempotent. An incomplete prior recording fails closed for operator review.
+
+## Design provenance
+
+The restricted background-review pattern was informed by [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) commit `11dc61b45eb06718e121034b54184c81df251bfe`: provenance-bearing evidence, restricted background capabilities, protected user-owned surfaces, and user-visible summaries. This Skill implements an independent deterministic threshold controller. It does not copy Hermes code, run an auxiliary reviewing model, write skills from model output, or launch recursive background work.

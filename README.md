@@ -13,7 +13,7 @@
 - 不读取、复制或转发 Desktop 凭证，不附着现有 Desktop app-server stdio。
 - 与 CC Switch 的账号切换和历史会话同步保持隔离。
 - 支持 Sol 规划、Terra 调度、Luna 执行、Sol 验收的高级编排评测。
-- 支持隐私最小化反馈、候选策略离线验证、人工审批生效和版本回滚。
+- 支持隐私最小化反馈、候选策略离线验证、人工审批，以及默认关闭的保守自动灰度、试用和回滚。
 - 支持通过版本化注册表扩展模型，并把“允许显式试用”和“允许 Auto 选择”分开。
 - 联合选择模型、reasoning effort、直接/编排拓扑和仓库上下文预算。
 - 单模型与编排路径统一采集 CLI 可观察 Token，并按验收通过结果衡量效率。
@@ -25,17 +25,17 @@
 ```text
 用户任务
   -> 本地确定性分类
-  -> 读取已审批的活动策略
+  -> 读取活动策略；若已启用 guarded-auto，则按 route ID 确定性抽取灰度策略
   -> 选择能力层、effort、拓扑和上下文预算
   -> 从受信注册表解析具体模型
   -> 从宿主可信运行时元数据读取当前权限快照
-  -> Desktop: 输出 desktop-plan.v2，由主代理启动唯一 direct 子代理
+  -> Desktop: 输出 desktop-plan.v3，由主代理执行单代理或分阶段多代理 DAG
      或 CLI: 通过 UTF-8 stdin 调用 codex exec
-  -> CLI 可记录不含任务正文的路由结果；Desktop v2 仅返回计划
+  -> CLI 自动记录隐私最小化结果；Desktop v3 返回同样不含正文的回执模板
   -> 返回执行结果
 ```
 
-Auto 是一次任务开始前的路由决策，不是第四个模型，也不会出现在 Codex Desktop 的原生模型下拉框中。Desktop v2 只允许一个 direct 子代理作为唯一写入者；模型不可用或路由要求 B/C/D 多角色拓扑时会显式阻断。两种后端都不会改变当前 Desktop 对话所使用的模型，也不会静默切换模型、effort、provider、后端或权限。
+Auto 是一次任务开始前的路由决策，不是第四个模型，也不会出现在 Codex Desktop 的原生模型下拉框中。Desktop v3 对简单任务仍只启动一个 direct 子代理，对满足并行条件的 B/C/D 路线生成 planner、dispatcher、worker、reviewer、grader 分阶段协作计划；并行角色只读，最终仍只有一个写入者。两种后端都不会改变当前 Desktop 对话所使用的模型，也不会静默切换模型、effort、provider、后端或权限。若 Desktop 未暴露某个首选角色模型，计划只允许在当前 runtime 声明的受信 Codex 模型中做同级或升级解析，并同时输出 `preferredModel`、实际 `model` 和 `modelResolution`；禁止降级或跨后端替代。
 
 ## 模型策略
 
@@ -63,7 +63,7 @@ Auto 是一次任务开始前的路由决策，不是第四个模型，也不会
 
 ## 多后端
 
-通过 `--available-backends` 参数选择可用后端（`select_auto_model.py` 自动探测 PATH 中的 CLI；也可显式传入逗号分隔列表如 `codex,claude`）。各执行适配器在构建命令前通过 `strip_backend_prefix` 剥离后端前缀，只向对应 CLI 传递裸模型名。Desktop v2 目前仅支持 Codex 后端；如路由选择了非 Codex 模型，Desktop 计划将返回 `desktop_backend_unsupported` 阻断码而非静默回退。
+通过 `--available-backends` 参数选择可用后端（`select_auto_model.py` 自动探测 PATH 中的 CLI；也可显式传入逗号分隔列表如 `codex,claude`）。各执行适配器在构建命令前通过 `strip_backend_prefix` 剥离后端前缀，只向对应 CLI 传递裸模型名。Desktop v3 目前仅支持 Codex 后端；实际角色模型必须由 Desktop 声明可用，首选模型不可用时只能显式升级到受信的可用模型，无法满足时阻断。
 
 Claude Code 的权限规则不等同于操作系统沙箱。继承 `workspace-write + never` 时，适配器允许受限文件编辑但自动拒绝 Bash；只有宿主已授予 `danger-full-access + never` 才启用 bypass。需要 Shell 的其它 Claude 任务会进入正常交互授权，或由宿主另行提供并验证外部沙箱。
 
@@ -138,7 +138,9 @@ cd agent-auto-router
 $agent-auto-router 使用 balance 策略，自动选择合适模型完成当前任务。
 ```
 
-主代理会把当前 Desktop runtime 明确支持的模型 ID 和当前任务的可信权限快照交给本地路由器。路由器输出不含任务正文、但包含规范化工作目录、上下文 profile 和有效继承权限的 `agent-auto-router.desktop-plan.v2`；只有 `executionRequested=true` 且 `status=ready` 时，主代理才启动一个 direct 子代理。`read-only`、`workspace-write` 和宿主已授予的 `danger-full-access` 均可自动继承，显式 sandbox 只能收紧、不能放宽。缺少可信权限、工作目录越界、模型不可用或要求多角色拓扑时都会停止。
+主代理会把当前 Desktop runtime 明确支持的模型 ID、可并行子代理槽位数和可信权限快照交给本地路由器。`agent-auto-router.desktop-plan.v3` 不含任务正文，包含角色模型、依赖 DAG、并发上限、调用硬预算、幂等键、运行状态和排他写入 claim。A/E/F 默认直连；B/C/D 仅在路由已判定任务可拆分时启用多个子代理。只读阶段前后必须核对工作区状态，任何意外写入都会停止；只有 direct 或最终 reviewer 可以在依赖完成后获得写入 claim。
+
+这一控制面吸收了 [Paperclip](https://github.com/paperclipai/paperclip) 的原子任务认领、显式运行状态、预算硬阻断、幂等派发和审计思路，但保持为一次 Desktop 任务内的轻量本地协议，不引入其服务器、数据库、定时心跳或长期自治体系。
 
 指定项目目录和任务：
 
@@ -177,6 +179,7 @@ Desktop-native 计划：
   -Task "审查并优化当前项目" `
   -ExecutionBackend desktop `
   -DesktopAvailableModels @('gpt-5.6-sol', 'gpt-5.6-terra') `
+  -DesktopMaxParallelChildren 3 `
   -HostPermissionsJson $currentHostPermissionsJson `
   -Model auto `
   -Strategy balance `
@@ -234,7 +237,7 @@ Desktop-native 计划：
 
 单任务 `invoke_auto_task.ps1 -Model` 支持 `auto` 及受信注册表中的 Codex 模型（如 `sol`、`codex:gpt-5.6-sol`）。Claude Code 或其他后端通过 `invoke_orchestrated_task.ps1 -Backend <name>` 或通用 `host_execution_plan.py` 使用；显式选择只覆盖当前任务，不修改全局配置。
 
-每次非 Dry Run 的 CLI 单模型或 CLI 编排执行默认记录一个隐私最小化结果：路由 ID、数值/布尔特征、选择的模型、退出码、耗时，以及 CLI JSON 事件实际暴露的 input、cached input、output、reasoning output Token。无法观测时记录为 `null`，不会猜测或按零处理。日志不会保存任务正文、模型回复、工具输出或凭据。使用 `-Explain` 查看路由 ID，使用 `-NoFeedback` 关闭本次记录；`-StateDir` 和 `-FeedbackFile` 可隔离状态位置。Desktop v2 只输出计划，不伪造执行结果。
+每次非 Dry Run 的 CLI 单模型或 CLI 编排执行默认记录一个隐私最小化结果：路由 ID、数值/布尔特征、选择的模型、退出码、耗时，以及 CLI JSON 事件实际暴露的 input、cached input、output、reasoning output Token。无法观测时记录为 `null`，不会猜测或按零处理。日志不会保存任务正文、模型回复、工具输出或凭据。使用 `-Explain` 查看路由 ID，使用 `-NoFeedback` 关闭本次记录；`-StateDir` 和 `-FeedbackFile` 可隔离状态位置。Desktop v3 不伪造执行结果，而是在计划中输出 `agent-auto-router.execution-report.v1` 回执模板，由主代理在真实执行结束后补充状态和确定性验证结果。
 
 Auto 同时给出 effort、直接/编排拓扑和分层上下文预算。路由前只读检查仓库结构，确定性排序候选路径；微型仓库没有相关候选时不注入仓库摘要，避免无效 Token。显式模型和 effort 始终优先。
 
@@ -252,7 +255,7 @@ Auto 同时给出 effort、直接/编排拓扑和分层上下文预算。路由�
   -EscalateOnValidationFailure
 ```
 
-验证命令按 argv 数组执行，不解释为任意 Shell 字符串。升级前会明确警告，升级后重新验证；显式模型不允许自动升级。认证、网络、provider、模型不可用、沙箱等 CLI 失败直接返回，不触发升级。升级后的成功不会被用于训练初始能力层阈值。
+验证命令按 argv 数组执行，不解释为任意 Shell 字符串。升级前会明确警告，升级后重新验证；显式模型不允许自动升级。认证、网络、provider、模型不可用、沙箱等 CLI 失败直接返回，不触发升级。普通人工标注学习不会把升级后的成功当作初始能力层标签；只有另行启用的 guarded-auto 会把“初始层验证失败、相邻更强层验证通过”作为保守升级证据。
 
 ## 离线路由评估
 
@@ -271,9 +274,9 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/evaluate_auto_router.py" `
 - 中文约束型任务识别
 - 零路由模型调用保证
 
-## 审批式自我优化
+## 手动审批与受控自动优化
 
-路由器可以根据人工标注过的真实结果自动生成候选阈值，但不会自行改写 Python 代码，也不会自动发布候选策略。完整闭环为：
+默认仍是审批式学习。路由器可以根据人工标注过的真实结果自动生成候选阈值，但不会自行改写 Python 代码，也不会自动发布手动候选策略。完整闭环为：
 
 ```text
 自动记录路由结果
@@ -324,6 +327,32 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/policy_learning.py" rollba
 ```
 
 学习状态默认保存在 `~/.codex/auto-router`，与 Skill 安装目录分离，因此重新安装 Skill 不会丢失活动策略、审计日志和回滚历史。策略 schema v2 学习的是 `fast / balanced / frontier` 复杂度边界，不学习任意模型 ID。高风险任务始终要求 `frontier + high-risk-primary`；注册表、风险词表和用户显式覆盖不会被优化器修改。显式试用但尚未进入 Auto 的模型标签也不会参与阈值学习。
+
+### Guarded-auto：一次授权后的保守自动闭环
+
+如果希望在日常使用中自动优化，可一次性显式启用；默认配置仍是 `manual`：
+
+```powershell
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" status
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" configure `
+  --mode guarded-auto
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" cycle --dry-run
+```
+
+启用后，CLI 每次写入执行结果都会自动运行一次零模型调用的学习周期；Desktop 或其他宿主按计划中的回执模板提交真实结果。自动证据只接受两类：用户明确选择的更合适模型，或“初始能力层确定性验证失败、相邻更强层验证通过”的升级。普通成功、退出码 0、速度更快和 Token 更少都不构成质量标签。
+
+自动候选只能把单个阈值向更强模型方向移动最多一步，必须通过独立验证集，并经过按 route ID 确定性分桶的灰度和 probation。灰度期同时收集 baseline 与 candidate 的确定性验证结果；候选、注册表、评测先验或活动策略摘要变化会停止应用。验证失败率回归会自动拒绝或恢复已归档基线。每次状态变化只记录元数据审计，不保存任务或输出。
+
+学习状态和自定义反馈文件属于受保护控制面。启动子模型前会验证它们位于所有子进程可写根之外；当子进程拥有 `danger-full-access`、不可验证的外部沙箱，或其它可改写自身证据的权限时，guarded-auto 会直接阻断，需收紧为受保护的 `workspace-write` 或切回 `manual`。
+
+向更便宜/更弱能力层移动阈值、修改模型注册表、`autoEligible`、风险规则、权限、Skill 内容、provider 或账号都不会自动执行，仍需人工审查和显式批准。停止新的自动状态转换：
+
+```powershell
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" configure `
+  --mode manual
+```
+
+该设计参考了 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 固定提交 `11dc61b45eb06718e121034b54184c81df251bfe` 的受限后台审查、来源追踪和受保护用户资产边界，但这里没有复制其代码，也不会调用辅助模型、由模型改写 Skill 或启动递归后台任务。完整协议见 `skills/agent-auto-router/references/guarded-auto-learning.md`。
 
 ## 匹配开发效率评测
 
@@ -480,6 +509,7 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/codex_cli_orchestration_ev
 │   ├── test_routing_policy.py
 │   ├── test_model_registry.py
 │   ├── test_policy_learning.py
+│   ├── test_guarded_auto.py
 │   ├── test_orchestration_engine.py
 │   ├── test_desktop_execution.py
 │   ├── test_host_execution_plan.py
@@ -490,6 +520,7 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/codex_cli_orchestration_ev
     ├── agents/openai.yaml
     ├── references/
     │   ├── entrypoints.md
+    │   ├── guarded-auto-learning.md
     │   └── router-contract.md
     └── scripts/
         ├── model_registry.json
@@ -499,6 +530,7 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/codex_cli_orchestration_ev
         ├── validate_model_registry.py
         ├── routing_policy.py
         ├── policy_learning.py
+        ├── guarded_auto.py
         ├── efficiency_metrics.py
         ├── evaluate_development_routes.py
         ├── desktop_execution.py

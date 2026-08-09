@@ -25,7 +25,7 @@ DEFAULT_REGISTRY = load_model_registry()
 STRATEGIES = ("intelligence", "balance", "cost")
 POLICY_SCHEMA_VERSION = 2
 LEGACY_POLICY_SCHEMA_VERSION = 1
-DEFAULT_POLICY_VERSION = "builtin-v2"
+DEFAULT_POLICY_VERSION = "builtin-v3"
 DEFAULT_STATE_DIR = Path.home() / ".codex" / "auto-router"
 
 COMPLEXITY_TERMS = (
@@ -296,6 +296,69 @@ def load_active_policy(state_dir: Path | None = None) -> tuple[RoutingPolicy, st
     return load_policy_file(path), str(path)
 
 
+def load_policy_for_route(
+    state_dir: Path | None,
+    route_id: str,
+    *,
+    registry_digest_value: str | None = None,
+    benchmark_priors_digest_value: str | None = None,
+) -> tuple[RoutingPolicy, str]:
+    """Select the active or guarded canary policy for one opaque route ID."""
+    active, source = load_active_policy(state_dir)
+    if not route_id or len(route_id) > 200:
+        raise ValueError("route_id must be a non-empty opaque identifier")
+    root = active_policy_path(state_dir).parent
+    config_path = root / "guarded-auto-config.json"
+    state_path = root / "guarded-auto-state.json"
+    if not config_path.is_file() or not state_path.is_file():
+        return active, source
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    if not isinstance(config, dict) or not isinstance(state, dict):
+        raise ValueError("guarded-auto configuration and state must be objects")
+    if config.get("mode") != "guarded-auto" or state.get("status") != "canary":
+        return active, source
+    if state.get("basePolicyDigest") != policy_digest(active):
+        raise ValueError("active policy changed during guarded-auto canary")
+    canary_percent = state.get("canaryPercent")
+    if isinstance(canary_percent, bool) or not isinstance(canary_percent, int):
+        raise ValueError("guarded-auto canaryPercent must be an integer")
+    if not 1 <= canary_percent <= 50:
+        raise ValueError("guarded-auto canaryPercent must be between 1 and 50")
+
+    candidate_root = (root / "candidates").resolve()
+    candidate_path = Path(str(state.get("candidatePath", ""))).resolve()
+    if candidate_path.parent != candidate_root or not candidate_path.is_file():
+        raise ValueError("guarded-auto candidate path is outside the candidate directory")
+    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    if not isinstance(candidate, dict):
+        raise ValueError("guarded-auto candidate must be an object")
+    candidate_id = candidate.get("candidateId")
+    unsigned = dict(candidate)
+    unsigned.pop("candidateId", None)
+    canonical = json.dumps(
+        unsigned, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    if not isinstance(candidate_id, str) or candidate_id != hashlib.sha256(canonical).hexdigest():
+        raise ValueError("guarded-auto candidate integrity check failed")
+    if candidate_id != state.get("candidateId"):
+        raise ValueError("guarded-auto candidate identity changed")
+    if registry_digest_value is not None and candidate.get("modelRegistryDigest") != registry_digest_value:
+        raise ValueError("guarded-auto candidate is stale because the registry changed")
+    if (
+        benchmark_priors_digest_value is not None
+        and candidate.get("benchmarkPriorsDigest") != benchmark_priors_digest_value
+    ):
+        raise ValueError("guarded-auto candidate is stale because benchmark priors changed")
+    candidate_policy = policy_from_dict(candidate.get("policy", {}))
+    if policy_digest(candidate_policy) != state.get("candidatePolicyDigest"):
+        raise ValueError("guarded-auto candidate policy digest changed")
+    bucket = int(hashlib.sha256(route_id.encode("utf-8")).hexdigest()[:8], 16) % 100
+    if bucket < canary_percent:
+        return candidate_policy, f"guarded-auto-canary:{candidate_id}"
+    return active, source
+
+
 def _count_hits(text: str, terms: Sequence[str]) -> int:
     return sum(1 for term in terms if term in text)
 
@@ -366,7 +429,12 @@ def analyze_task(
         ("dependency" in text or "依赖" in text) and criteria_count < 3
     )
     orchestration_eligible = parallelizable and (
-        complexity_score >= 2 or criteria_count >= 3 or len(prompt) >= 900
+        complexity_score >= 2
+        or criteria_count >= 3
+        or len(prompt) >= 900
+        or debugging_hits > 0
+        or long_context_hits > 0
+        or multi_file_hits > 0
     )
     long_context = (
         long_context_hits > 0

@@ -20,8 +20,8 @@ from routing_policy import (
     STRATEGIES,
     ModelDecision,
     RoutingPolicy,
-    load_active_policy,
     load_policy_file,
+    load_policy_for_route,
     policy_digest,
     select_model,
 )
@@ -44,7 +44,10 @@ def main() -> int:
     route_input.add_argument("--stdin", action="store_true")
     args = parser.parse_args()
     prompt = sys.stdin.read() if args.stdin else args.text
+    route_id = str(uuid.uuid4())
     try:
+        registry = load_model_registry()
+        benchmark_priors = load_benchmark_priors(registry=registry)
         if args.policy_file:
             policy = load_policy_file(args.policy_file)
             policy_source = str(args.policy_file)
@@ -52,9 +55,12 @@ def main() -> int:
             policy = RoutingPolicy()
             policy_source = "builtin"
         else:
-            policy, policy_source = load_active_policy(args.state_dir)
-        registry = load_model_registry()
-        benchmark_priors = load_benchmark_priors(registry=registry)
+            policy, policy_source = load_policy_for_route(
+                args.state_dir,
+                route_id,
+                registry_digest_value=registry_digest(registry),
+                benchmark_priors_digest_value=benchmark_priors_digest(benchmark_priors),
+            )
 
         # Resolve available backends
         if args.available_backends == "auto":
@@ -137,7 +143,7 @@ def main() -> int:
         execution_plan["escalation"]["nextModel"] = None
         execution_plan["escalation"]["nextEffort"] = None
     print(json.dumps({
-        "routeId": str(uuid.uuid4()),
+        "routeId": route_id,
         "decision": asdict(decision),
         "selectedModel": selected.model_id,
         "selectedTier": selected.tier,

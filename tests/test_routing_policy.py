@@ -60,6 +60,15 @@ class RoutingPolicyTests(unittest.TestCase):
         self.assertFalse(result["features"]["orchestration_eligible"])
         self.assertEqual(result["variant"], "E")
 
+    def test_chinese_parallel_benchmark_signals_trigger_orchestration(self) -> None:
+        case = {
+            "prompt": "并行审查多个独立模块，覆盖调试、长上下文和多文件任务，最后统一审查",
+        }
+        result = route_case(case, "balance")
+        self.assertTrue(result["features"]["parallelizable"])
+        self.assertTrue(result["features"]["orchestration_eligible"])
+        self.assertEqual(result["variant"], "D")
+
     def test_acceptance_criteria_alone_do_not_imply_parallel_work(self) -> None:
         case = {
             "prompt": "Implement a routine sequential change",

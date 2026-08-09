@@ -15,6 +15,7 @@ param(
     [ValidateSet('cli', 'desktop')]
     [string]$ExecutionBackend = 'cli',
     [string[]]$DesktopAvailableModels = @(),
+    [int]$DesktopMaxParallelChildren = 0,
     [string]$HostPermissionsJson = '',
     [string]$Workdir = (Get-Location).Path,
     [string]$StateDir = $(if ($env:CODEX_AUTO_ROUTER_STATE_DIR) { $env:CODEX_AUTO_ROUTER_STATE_DIR } else { Join-Path $HOME '.codex\auto-router' }),
@@ -30,10 +31,12 @@ param(
 $ErrorActionPreference = 'Stop'
 $selectorPath = Join-Path $PSScriptRoot 'select_auto_model.py'
 $learningPath = Join-Path $PSScriptRoot 'policy_learning.py'
+$guardedPath = Join-Path $PSScriptRoot 'guarded_auto.py'
 $runnerPath = Join-Path $PSScriptRoot 'single_task_runner.py'
 $desktopPath = Join-Path $PSScriptRoot 'desktop_execution.py'
 if (-not (Test-Path -LiteralPath $selectorPath -PathType Leaf)) { throw "Auto model selector not found: $selectorPath" }
 if (-not (Test-Path -LiteralPath $learningPath -PathType Leaf)) { throw "Policy learning helper not found: $learningPath" }
+if (-not (Test-Path -LiteralPath $guardedPath -PathType Leaf)) { throw "Guarded learning helper not found: $guardedPath" }
 if ($ExecutionBackend -eq 'cli' -and -not (Test-Path -LiteralPath $runnerPath -PathType Leaf)) { throw "Single task runner not found: $runnerPath" }
 if ($ExecutionBackend -eq 'desktop' -and -not (Test-Path -LiteralPath $desktopPath -PathType Leaf)) { throw "Desktop execution planner not found: $desktopPath" }
 if (-not (Test-Path -LiteralPath $Workdir -PathType Container)) { throw "Workdir not found: $Workdir" }
@@ -43,14 +46,17 @@ if (-not $python) { throw 'Python 3 is required for deterministic Auto routing.'
 if ($ExecutionBackend -eq 'desktop' -and $DesktopAvailableModels.Count -eq 0) {
     throw 'ExecutionBackend=desktop requires -DesktopAvailableModels from the current Desktop runtime.'
 }
+if ($ExecutionBackend -eq 'desktop' -and ($DesktopMaxParallelChildren -lt 1 -or $DesktopMaxParallelChildren -gt 32)) {
+    throw 'ExecutionBackend=desktop requires -DesktopMaxParallelChildren between 1 and 32 from the current Desktop runtime.'
+}
 if ($ExecutionBackend -eq 'desktop' -and ($EscalateOnValidationFailure -or $ValidationCommand.Count -gt 0)) {
-    throw 'Desktop v2 emits one direct-agent plan and does not support validation-driven escalation.'
+    throw 'Desktop v3 emits a bounded staged-agent plan and does not support validation-driven escalation.'
 }
 if ($ExecutionBackend -eq 'desktop' -and $ContextMode -ne 'lean') {
-    throw 'Desktop v2 does not consume CLI ContextMode; use the default lean value.'
+    throw 'Desktop v3 does not consume CLI ContextMode; use the default lean value.'
 }
 if ($ExecutionBackend -eq 'desktop' -and $FeedbackFile) {
-    throw 'Desktop v2 cannot write execution feedback; -FeedbackFile is CLI-only.'
+    throw 'Desktop v3 cannot write execution feedback; -FeedbackFile is CLI-only.'
 }
 $resolvedWorkdir = (Resolve-Path -LiteralPath $Workdir).Path
 if ($EscalateOnValidationFailure -and $ModelChoice -ne 'auto') {
@@ -77,6 +83,31 @@ if ($ExecutionBackend -eq 'desktop' -and -not $HostPermissionsJson) {
 }
 if ($ExecutionBackend -eq 'cli') {
     $selectorArguments += @('--available-backends', 'codex')
+}
+if (-not $DryRun) {
+    $boundaryPermissionsJson = $HostPermissionsJson
+    if (-not $boundaryPermissionsJson) {
+        $explicitRoots = if ($Sandbox -eq 'workspace-write') { @($resolvedWorkdir) } else { @() }
+        $boundaryPermissionsJson = [ordered]@{
+            schema = 'agent-auto-router.host-permissions.v1'
+            source = 'router-explicit-sandbox'
+            sandbox = $Sandbox
+            approvalPolicy = 'on-request'
+            networkAccess = $null
+            writableRoots = $explicitRoots
+            canRequestPermissions = $true
+        } | ConvertTo-Json -Compress
+    }
+    $boundaryArguments = @(
+        $guardedPath, 'check-boundary', '--state-dir', $StateDir,
+        '--host-permissions-json', $boundaryPermissionsJson,
+        '--requested-sandbox', $Sandbox
+    )
+    if ($FeedbackFile) { $boundaryArguments += @('--feedback-file', $FeedbackFile) }
+    $boundaryResult = & $python.Source @boundaryArguments 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Guarded automatic learning boundary is unsafe: $($boundaryResult -join ' ')"
+    }
 }
 $previousOutputEncoding = $OutputEncoding
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -131,7 +162,8 @@ if ($Explain -and $ExecutionBackend -eq 'cli') { $explanation | ConvertTo-Json -
 if ($ExecutionBackend -eq 'desktop') {
     $desktopArguments = @(
         $desktopPath, '--sandbox', $Sandbox, '--workdir', $resolvedWorkdir,
-        '--host-permissions-json', $HostPermissionsJson
+        '--host-permissions-json', $HostPermissionsJson,
+        '--max-parallel-children', $DesktopMaxParallelChildren
     )
     foreach ($availableModel in $DesktopAvailableModels) {
         $desktopArguments += @('--available-model', $availableModel)
@@ -345,8 +377,24 @@ if (-not $NoFeedback) {
     }
     if ($recordExitCode -ne 0) {
         Write-Warning "Task completed, but route feedback could not be recorded. Route ID: $routeId"
-    } elseif ($Explain) {
-        Write-Host "Route feedback recorded. Route ID: $routeId"
+    } else {
+        $guardedStatus = $null
+        try {
+            $recordResult = ($recordOutput -join [Environment]::NewLine) | ConvertFrom-Json
+            $guardedStatus = $recordResult.guardedAuto
+        } catch {
+            if ($Explain) {
+                Write-Warning "Route feedback was recorded, but its learning summary could not be parsed. Route ID: $routeId"
+            }
+        }
+        if ($null -ne $guardedStatus -and $guardedStatus.status -eq 'error') {
+            Write-Warning "Route feedback was recorded, but guarded automatic learning did not advance. Error: $($guardedStatus.errorType)"
+        } elseif ($Explain) {
+            $learningSummary = if ($null -ne $guardedStatus) {
+                " Guarded auto: $($guardedStatus.status)/$($guardedStatus.action)."
+            } else { '' }
+            Write-Host "Route feedback recorded. Route ID: $routeId.$learningSummary"
+        }
     }
 }
 exit $finalExitCode

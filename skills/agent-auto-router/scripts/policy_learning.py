@@ -486,6 +486,9 @@ def build_candidate(
     *,
     min_labels: int = 20,
     min_validation_accuracy_gain: float = 0.05,
+    max_threshold_step: int | None = None,
+    conservative_only: bool = False,
+    requires_human_approval: bool = True,
     registry: ModelRegistry | None = None,
     benchmark_priors: BenchmarkPriors | None = None,
 ) -> dict[str, Any]:
@@ -495,6 +498,10 @@ def build_candidate(
         raise ValueError("min_labels must be at least 4")
     if not 0 <= min_validation_accuracy_gain <= 1:
         raise ValueError("min_validation_accuracy_gain must be between 0 and 1")
+    if max_threshold_step is not None and (
+        isinstance(max_threshold_step, bool) or not 1 <= max_threshold_step <= 7
+    ):
+        raise ValueError("max_threshold_step must be between 1 and 7")
     if len(samples) < min_labels:
         raise ValueError(f"at least {min_labels} labeled routes are required; found {len(samples)}")
     training, validation = _split_samples(samples)
@@ -509,7 +516,42 @@ def build_candidate(
         )
         return (float(score["weightedLoss"]), -float(score["accuracy"]), distance)
 
-    best = min(_candidate_policies(base_policy), key=rank)
+    policies = list(_candidate_policies(base_policy))
+    if max_threshold_step is not None:
+        base_thresholds = (
+            base_policy.intelligence_frontier_threshold,
+            base_policy.balance_frontier_threshold,
+            base_policy.cost_balanced_threshold,
+        )
+        policies = [
+            policy
+            for policy in policies
+            if all(
+                abs(candidate - base) <= max_threshold_step
+                for candidate, base in zip(
+                    (
+                        policy.intelligence_frontier_threshold,
+                        policy.balance_frontier_threshold,
+                        policy.cost_balanced_threshold,
+                    ),
+                    base_thresholds,
+                )
+            )
+            and (
+                not conservative_only
+                or (
+                    policy.intelligence_frontier_threshold
+                    <= base_policy.intelligence_frontier_threshold
+                    and policy.balance_frontier_threshold
+                    <= base_policy.balance_frontier_threshold
+                    and policy.cost_balanced_threshold
+                    <= base_policy.cost_balanced_threshold
+                )
+            )
+        ]
+    if not policies:
+        raise ValueError("candidate constraints leave no routing policies to evaluate")
+    best = min(policies, key=rank)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     best = RoutingPolicy(
         policy_version=f"candidate-{timestamp}",
@@ -568,11 +610,13 @@ def build_candidate(
         },
         "safetyChecks": safety_checks,
         "eligibleForApproval": eligible,
-        "requiresHumanApproval": True,
+        "requiresHumanApproval": requires_human_approval,
         "modelCalls": 0,
         "optimizerSettings": {
             "minimumLabels": min_labels,
             "minimumValidationAccuracyGain": min_validation_accuracy_gain,
+            "maximumThresholdStep": max_threshold_step,
+            "conservativeOnly": conservative_only,
         },
     }
     candidate["candidateId"] = _canonical_digest(candidate)
@@ -627,6 +671,9 @@ def approve_candidate(
         current,
         min_labels=int(settings.get("minimumLabels", 20)),
         min_validation_accuracy_gain=float(settings.get("minimumValidationAccuracyGain", 0.05)),
+        max_threshold_step=settings.get("maximumThresholdStep"),
+        conservative_only=bool(settings.get("conservativeOnly", False)),
+        requires_human_approval=bool(candidate.get("requiresHumanApproval", True)),
         registry=active_registry,
         benchmark_priors=active_priors,
     )
@@ -742,7 +789,13 @@ def main() -> int:
     feedback_path = getattr(args, "feedback_file", None) or default_feedback_path(state_dir)
 
     if args.command == "record":
-        result = append_route_event(_read_stdin_object(), feedback_path, registry)
+        event = append_route_event(_read_stdin_object(), feedback_path, registry)
+        from guarded_auto import process_recorded_outcome
+
+        result = dict(event)
+        result["guardedAuto"] = process_recorded_outcome(
+            state_dir, feedback_path, registry=registry
+        )
     elif args.command == "label":
         label_event = append_label_event(
             args.route_id, args.preferred_model, args.outcome, feedback_path, registry
@@ -772,6 +825,11 @@ def main() -> int:
                 "eligibleForApproval": candidate["eligibleForApproval"],
                 "requiresHumanApproval": True,
             }
+        from guarded_auto import process_recorded_outcome
+
+        result["guardedAuto"] = process_recorded_outcome(
+            state_dir, feedback_path, registry=registry
+        )
     elif args.command == "propose":
         policy, source = load_active_policy(state_dir)
         samples = labeled_samples(read_feedback(feedback_path), registry)

@@ -8,7 +8,7 @@
 - [Offline calibration](#offline-calibration)
 - [Matched efficiency evaluation](#matched-efficiency-evaluation)
 - [Model registry validation](#model-registry-validation)
-- [Approval-gated learning](#approval-gated-learning)
+- [Manual and guarded automatic learning](#manual-and-guarded-automatic-learning)
 - [Generic host plan](#generic-host-plan)
 - [Conversation boundary](#conversation-boundary)
 
@@ -21,18 +21,23 @@ Inside Codex Desktop, use `scripts/invoke_auto_task.ps1` as a planner and set th
   -Task "Implement the requested change" `
   -ExecutionBackend desktop `
   -DesktopAvailableModels @('gpt-5.6-sol', 'gpt-5.6-terra') `
+  -DesktopMaxParallelChildren 3 `
   -HostPermissionsJson $currentTurnPermissionsJson `
   -Workdir "C:/path/to/repo" `
   -Explain
 ```
 
-The available-model list and permission snapshot must come from the current Desktop runtime. Build the permission snapshot as `agent-auto-router.host-permissions.v1` from trusted turn metadata, including `sandbox`, `approvalPolicy`, `networkAccess`, `writableRoots`, optional `profileId`, and `canRequestPermissions`. Never derive it from the task or untrusted environment variables.
+The available-model list, maximum parallel child count, and permission snapshot must come from the current Desktop runtime. `DesktopMaxParallelChildren` counts child slots and excludes the primary coordinator. Build the permission snapshot as `agent-auto-router.host-permissions.v1` from trusted turn metadata, including `sandbox`, `approvalPolicy`, `networkAccess`, `writableRoots`, optional `profileId`, and `canRequestPermissions`. Never derive these values from the task or untrusted environment variables.
 
-The commands below reference model IDs as they appear in the Desktop runtime (bare IDs such as `gpt-5.6-sol`) or CLI (`codex exec --model`). Internally, the router uses backend-qualified IDs. The command prints one `agent-auto-router.desktop-plan.v2` JSON object and makes no model or CLI call. The plan excludes the task body while carrying the normalized workdir, route identity, effective inherited permissions, and call counts.
+The commands below reference model IDs as they appear in the Desktop runtime (bare IDs such as `gpt-5.6-sol`) or CLI (`codex exec --model`). Internally, the router uses backend-qualified IDs. The command prints one `agent-auto-router.desktop-plan.v3` JSON object and makes no model or CLI call. The plan excludes the task body while carrying the normalized workdir, role models, staged dependencies, effective permissions, call budget, idempotency keys, and lifecycle states.
 
-For `executionRequested=false`, report the plan and launch nothing. Otherwise, for `status=ready`, the primary Desktop agent calls `spawn_agent` exactly once with the plan's exact model, reasoning effort, and `fork_turns=agent.forkTurns`. Desktop v2 sets `forkTurns` to `none`, so the primary must put the complete original task and `agent.workdir` boundary in the child task instead of relying on inherited conversation history. That `direct` child is the sole writer. For `status=blocked`, launch nothing and report the structured reason.
+For `executionRequested=false`, report the plan and launch nothing. For `status=blocked`, launch nothing and report the structured reason. Otherwise the primary executes dependency-ready `stages`: serial planner/dispatcher, bounded parallel workers, one final reviewer, and an optional read-only grader. A/E/F usually contain only `direct`; high-risk direct work may add a grader. Use the exact role model, effort, `forkTurns=none`, workdir, and instance bounds. The primary provides the original task and upstream results because children receive no full-history fork.
 
-Desktop `-DryRun` still requires the model list and permission snapshot and emits the same plan schema with `executionRequested=false`, `plannedAgentCalls=0`, and `hostContract.action=report_plan`. `-Json` and `-NoFeedback` are idempotent: Desktop output is already JSON and Desktop v2 never records child execution feedback. `-FeedbackFile`, validation commands/escalation, and `-ContextMode full` are rejected as CLI-only or unsupported. Desktop never accesses credentials or app-server stdio and never falls back to CLI, another provider, model, effort, or permission level.
+Before every non-writer stage, snapshot workspace state and explicitly prohibit edits. Stop if it changes. Acquire `coordination.writerClaim` only for the declared `hostContract.onlyWriter`, after its dependencies succeed; release it when that child terminates. Record the required lifecycle events without task text or child output, never reuse an `idempotencyKeyTemplate` instance, and never exceed `callBudget.maximum` or `hostContract.maxParallelAgents`.
+
+After a non-DryRun execution terminates, use `learning.route` unchanged, add a unique report ID and trusted host name, and fill the required result metadata from the actual run. Submit `agent-auto-router.execution-report.v1` to `guarded_auto.py report --stdin`. Do not submit task text, agent output, tool output, or a DryRun. Report ingestion is idempotent and advances guarded learning with zero model calls.
+
+Desktop `-DryRun` still requires all runtime metadata and emits the same plan schema with `executionRequested=false`, `plannedAgentCalls=0`, and `hostContract.action=report_plan`. `wouldPlanAgentCalls` retains the non-executable minimum/maximum estimate. `-Json` and `-NoFeedback` are idempotent: Desktop output is already JSON and Desktop v3 never records child output. `-FeedbackFile`, validation commands/escalation, and `-ContextMode full` are rejected as CLI-only or unsupported. Desktop never accesses credentials or app-server stdio and never falls back to CLI, another provider, lower model tier, effort, or permission level. A non-direct role may use a same-or-higher-tier runtime model only when the plan explicitly preserves `preferredModel` and declares `modelResolution=runtime-tier-upgrade`.
 
 ## Signed-in CLI workflow
 
@@ -120,7 +125,7 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/validate_model_registry.py
 
 For a candidate file outside the installed Skill, pass `--registry` and optionally `--profiles`. Validation confirms schema, aliases, roles, tier resolution, the high-risk primary capability, explicit-only models, and the registry digest. It does not prove that the active provider exposes the model; perform a separate controlled `read-only` explicit invocation for that.
 
-## Approval-gated learning
+## Manual and guarded automatic learning
 
 Inspect state and label a route. `status.efficiency` reports token coverage, labeled outcomes, pass rate by final model, and observed tokens per pass only when every labeled route has token telemetry:
 
@@ -148,9 +153,22 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/policy_learning.py" rollba
 
 The active policy, audit log, and rollback history live under `~/.codex/auto-router` and survive skill reinstallations.
 
+Manual mode remains the default. To authorize the narrow guarded loop once, inspect its configuration and enable it explicitly:
+
+```powershell
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" status
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" configure `
+  --mode guarded-auto
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" cycle --dry-run
+```
+
+CLI outcome recording automatically runs one cycle. The loop accepts only explicit user selections or deterministic validation-proven adjacent-tier escalations, may only lower one threshold by one step, and must pass held-out evaluation, deterministic canary, and probation before stabilizing. Registry, benchmark, candidate, or active-policy drift fails closed; verified regression rejects or rolls back automatically. Disable future automatic transitions with `configure --mode manual`. See `guarded-auto-learning.md` for the report schema and full boundary. Cost-saving threshold increases and every protected surface remain manual and approval-gated.
+
+Keep `--state-dir` and any `--feedback-file` outside every child-writable root. The CLI entrypoints check this before a non-DryRun launch and block guarded mode under full access or an unverifiable external sandbox; tighten the child to a protected workspace boundary or disable guarded mode rather than letting a model write its own evidence.
+
 ## Conversation boundary
 
-Neither backend adds `Auto` to the Desktop picker or switches the current conversation model. CLI starts a separate `codex exec` task. Desktop starts one separate direct child only after a ready plan and otherwise blocks explicitly.
+Neither backend adds `Auto` to the Desktop picker or switches the current conversation model. CLI starts separate signed-in CLI tasks. Desktop starts only the bounded child calls declared by a ready v3 plan and otherwise blocks explicitly.
 
 ## Generic host plan
 
