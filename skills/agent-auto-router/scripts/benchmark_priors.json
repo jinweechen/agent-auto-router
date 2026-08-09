@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "version": "2026-08-09.gpt-5.6-public-v1",
+  "asOf": "2026-08-09",
+  "runtimeNetworkAccess": false,
+  "sources": [
+    {
+      "id": "openai-gpt-5.6",
+      "url": "https://openai.com/index/gpt-5-6/",
+      "kind": "vendor-benchmark",
+      "note": "Model-specific quality, capability, and list-price snapshot."
+    },
+    {
+      "id": "openai-benchmark-audit",
+      "url": "https://openai.com/index/separating-signal-from-noise-coding-evaluations/",
+      "kind": "benchmark-methodology",
+      "note": "Justifies using multiple signals instead of a single coding benchmark."
+    },
+    {
+      "id": "artificial-analysis-coding",
+      "url": "https://artificialanalysis.ai/methodology/coding-agents-benchmarking",
+      "kind": "independent-methodology",
+      "note": "Agent harness, effort, cost, token, and latency settings affect results."
+    }
+  ],
+  "modelEvidence": {
+    "codex:gpt-5.6-sol": {
+      "pricingUsdPerMillion": {"input": 5.0, "output": 30.0},
+      "metrics": {
+        "codingAgentIndex": 80.0,
+        "sweBenchPro": 64.6,
+        "deepSwe": 72.7,
+        "terminalBench21": 88.8,
+        "researchDebugging": 68.3,
+        "longContextMrcr256To512k": 91.5,
+        "osWorld20": 62.6,
+        "secBenchPro": 71.2,
+        "exploitBench": 73.5
+      }
+    },
+    "codex:gpt-5.6-terra": {
+      "pricingUsdPerMillion": {"input": 2.5, "output": 15.0},
+      "metrics": {
+        "codingAgentIndex": 77.4,
+        "sweBenchPro": 63.4,
+        "deepSwe": 69.6,
+        "terminalBench21": 87.4,
+        "researchDebugging": 67.8,
+        "longContextMrcr256To512k": 89.6,
+        "osWorld20": 50.2,
+        "secBenchPro": 57.7,
+        "exploitBench": 52.9
+      }
+    },
+    "codex:gpt-5.6-luna": {
+      "pricingUsdPerMillion": {"input": 1.0, "output": 6.0},
+      "metrics": {
+        "codingAgentIndex": 74.6,
+        "sweBenchPro": 62.7,
+        "deepSwe": 67.2,
+        "terminalBench21": 84.7,
+        "researchDebugging": 50.8,
+        "longContextMrcr256To512k": 41.3,
+        "osWorld20": 45.6,
+        "secBenchPro": 48.9,
+        "exploitBench": 33.2
+      }
+    }
+  },
+  "routingGuidance": {
+    "validatedBoundedCoding": {
+      "recommendedTier": "fast",
+      "reason": "benchmark_validated_bounded",
+      "evidenceMetrics": ["codingAgentIndex", "sweBenchPro", "terminalBench21"]
+    },
+    "complexDebugging": {
+      "minimumTier": "balanced",
+      "reason": "benchmark_debugging_floor",
+      "evidenceMetrics": ["researchDebugging"]
+    },
+    "longContext": {
+      "minimumTier": "balanced",
+      "reason": "benchmark_long_context_floor",
+      "evidenceMetrics": ["longContextMrcr256To512k"]
+    },
+    "multiFile": {
+      "minimumTier": "balanced",
+      "reason": "benchmark_multi_file_floor",
+      "evidenceMetrics": ["sweBenchPro", "deepSwe"]
+    },
+    "computerUse": {
+      "minimumTier": "frontier",
+      "reason": "benchmark_computer_use",
+      "evidenceMetrics": ["osWorld20"]
+    }
+  },
+  "limitations": [
+    "External scores are versioned priors, not guarantees for a local repository or prompt.",
+    "Benchmark results depend on effort, harness, tools, and scoring methodology.",
+    "No single benchmark is allowed to override deterministic high-risk routing.",
+    "Unversioned model aliases have no model-specific benchmark evidence in this snapshot."
+  ]
+}

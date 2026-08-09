@@ -181,6 +181,51 @@ class RoutingPolicyTests(unittest.TestCase):
         self.assertEqual(decision.model, "claude:opus")
         self.assertTrue(decision.high_risk)
 
+    def test_validated_bounded_coding_uses_fast_benchmark_prior(self) -> None:
+        decision = select_model(
+            "Implement a small local helper with tests",
+            "balance",
+            validation_configured=True,
+        )
+        self.assertTrue(decision.validated_bounded)
+        self.assertEqual(decision.target_tier, "fast")
+        self.assertEqual(decision.reason, "benchmark_validated_bounded")
+        self.assertIn("validatedBoundedCoding", decision.benchmark_signals)
+
+    def test_complex_debugging_has_balanced_floor_even_in_cost_mode(self) -> None:
+        decision = select_model("Diagnose a flaky failing test", "cost")
+        self.assertTrue(decision.complex_debugging)
+        self.assertEqual(decision.target_tier, "balanced")
+        self.assertEqual(decision.reason, "benchmark_debugging_floor")
+
+    def test_long_context_has_balanced_floor_even_in_cost_mode(self) -> None:
+        decision = select_model("Inspect a large repository across many files", "cost")
+        self.assertTrue(decision.long_context)
+        self.assertIn(decision.target_tier, {"balanced", "frontier"})
+        self.assertIn("longContext", decision.benchmark_signals)
+
+    def test_coordinated_multi_file_change_has_balanced_floor_in_cost_mode(self) -> None:
+        decision = select_model(
+            "Implement this feature across multiple modules and coordinate the changes",
+            "cost",
+        )
+        self.assertEqual(decision.target_tier, "balanced")
+        self.assertEqual(decision.reason, "benchmark_multi_file_floor")
+        self.assertTrue(decision.multi_file)
+        self.assertIn("multiFile", decision.benchmark_signals)
+
+    def test_computer_use_uses_frontier_benchmark_prior(self) -> None:
+        decision = select_model("Use browser automation to click through this workflow", "cost")
+        self.assertTrue(decision.computer_use)
+        self.assertEqual(decision.target_tier, "frontier")
+        self.assertEqual(decision.reason, "benchmark_computer_use")
+
+    def test_benchmark_prior_metadata_is_auditable(self) -> None:
+        decision = select_model("Rename this field", "balance")
+        self.assertEqual(decision.benchmark_prior_as_of, "2026-08-09")
+        self.assertTrue(decision.benchmark_prior_version)
+        self.assertEqual(len(decision.benchmark_prior_digest), 64)
+
 
 if __name__ == "__main__":
     unittest.main()

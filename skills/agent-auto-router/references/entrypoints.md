@@ -9,7 +9,7 @@
 - [Matched efficiency evaluation](#matched-efficiency-evaluation)
 - [Model registry validation](#model-registry-validation)
 - [Approval-gated learning](#approval-gated-learning)
-- [Hermes host plan](#hermes-host-plan)
+- [Generic host plan](#generic-host-plan)
 - [Conversation boundary](#conversation-boundary)
 
 ## Codex Desktop workflow
@@ -51,7 +51,7 @@ Use `-DryRun` for a route explanation without a model call and `-Json` for JSONL
 
 Successful and failed executions record a route outcome in `~/.codex/auto-router/feedback.jsonl`. The outcome deliberately omits task text and execution output. Add `-NoFeedback` to disable collection, `-StateDir` to isolate all learning state, or `-FeedbackFile` to choose a specific JSONL file. Use `-Explain` to display the route ID.
 
-Use `-Model <alias-or-id>` to override Auto for one task. The alias or ID must be enabled in the packaged trusted model registry; explicit-only models may keep `autoEligible: false`. Explicit effort remains authoritative. Auto effort follows tier/risk; an explicit model without `-Effort` uses its registry default.
+Use `-Model <alias-or-id>` to override Auto for one Codex CLI task. The alias or ID must be an enabled Codex model in the packaged trusted registry. Use the orchestrated entrypoint with an explicit `-Backend`, or the generic host plan, for Claude Code and other backends. Explicit effort remains authoritative; an explicit model without `-Effort` uses its registry default.
 
 Explicitly opt into one validation-driven tier escalation only when a deterministic project command can verify the result:
 
@@ -135,7 +135,7 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/policy_learning.py" approv
   --candidate "./candidate-policy.json" --approved-by "<reviewer>"
 ```
 
-On and after the twentieth usable label, `label` automatically writes a candidate under `~/.codex/auto-router/candidates`; use `--no-auto-propose` to suppress it. The explicit `propose` command uses the same deterministic train/validation split and writes a candidate even when it is not approval-eligible. `approve` replays current feedback and rejects stale, tampered, unsafe, or non-improving candidates. Restore the latest previous version explicitly:
+On and after the twentieth usable label, `label` automatically writes a candidate under `~/.codex/auto-router/candidates`; use `--no-auto-propose` to suppress it. The explicit `propose` command uses the same deterministic train/validation split and writes a candidate even when it is not approval-eligible. `approve` replays current feedback and rejects stale, tampered, unsafe, or non-improving candidates, including candidates built against an older benchmark-prior snapshot. Restore the latest previous version explicitly:
 
 ```powershell
 python "$HOME/.codex/skills/agent-auto-router/scripts/policy_learning.py" rollback `
@@ -148,17 +148,17 @@ The active policy, audit log, and rollback history live under `~/.codex/auto-rou
 
 Neither backend adds `Auto` to the Desktop picker or switches the current conversation model. CLI starts a separate `codex exec` task. Desktop starts one separate direct child only after a ready plan and otherwise blocks explicitly.
 
-## Hermes host plan
+## Generic host plan
 
-Emits `agent-auto-router.host-plan.v1` for Hermes-style hosts. Hermes hosts have no `spawn_agent` but CAN execute the task themselves (host model), invoke a CLI backend, or run multi-role orchestration. The plan never executes anything; it only indicates the dispatch action.
+Emits `agent-auto-router.host-plan.v1` for Codex, Claude Code, and other capable hosts. A host may execute the task itself, invoke a declared CLI backend, or run multi-role orchestration. The planner never executes anything and never embeds the task body; it only emits a structured dispatch action.
 
 ```powershell
-python "<skill-dir>/scripts/hermes_host_plan.py" --workdir <dir> [--available-backends codex|claude] [--dry-run]
+python "<skill-dir>/scripts/host_execution_plan.py" --workdir <dir> [--available-backends codex|claude] [--dry-run]
 ```
 
-Hermes-style hosts act on `action.kind`:
+Hosts act on `action.kind`:
 - `cli` — invoke the selected backend CLI with the model and effort.
-- `host_execute` — the host executes the task with its own model (approximate accuracy).
-- `orchestrate` — dispatch multi-role orchestration through the available CLI backend.
+- `host_execute` — the host executes the task with its own model and surfaces approximate accuracy.
+- `orchestrate` — dispatch multi-role orchestration through the selected CLI backend; never switch backends silently.
 
 `--available-backends` accepts a comma-separated list (`codex,claude`) or `auto` (default; probes PATH). `--dry-run` emits the same plan schema with `executionRequested=false` and `plannedCalls=0`.

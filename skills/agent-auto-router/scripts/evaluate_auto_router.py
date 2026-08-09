@@ -11,6 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from auto_router import route_case  # noqa: E402
+from benchmark_priors import benchmark_priors_digest, load_benchmark_priors  # noqa: E402
 from model_registry import load_model_registry  # noqa: E402
 from routing_policy import RoutingPolicy, load_policy_file, select_model  # noqa: E402
 
@@ -26,6 +27,7 @@ def check(name: str, actual: object, expected: object) -> dict[str, object]:
 
 def evaluate(policy: RoutingPolicy | None = None) -> dict[str, object]:
     registry = load_model_registry()
+    priors = load_benchmark_priors(registry=registry)
     checks = []
     routes = []
     for strategy in ("intelligence", "balance", "cost"):
@@ -56,14 +58,55 @@ def evaluate(policy: RoutingPolicy | None = None) -> dict[str, object]:
     ))
     checks.append(check("xhigh-escalation", select_model("Implement this change", "balance", "xhigh", policy=policy).target_tier, "frontier"))
     checks.append(check("chinese-constrained", select_model("请格式化这段文本", "balance", policy=policy).target_tier, "fast"))
+    checks.append(check(
+        "benchmark:validated-bounded",
+        select_model(
+            "Implement a small local helper with tests",
+            "balance",
+            policy=policy,
+            validation_configured=True,
+        ).target_tier,
+        "fast",
+    ))
+    checks.append(check(
+        "benchmark:debugging-floor",
+        select_model("Diagnose a flaky failing test", "cost", policy=policy).target_tier,
+        "balanced",
+    ))
+    checks.append(check(
+        "benchmark:long-context-floor",
+        select_model("Inspect a large repository across many files", "cost", policy=policy).target_tier,
+        "balanced",
+    ))
+    checks.append(check(
+        "benchmark:multi-file-floor",
+        select_model(
+            "Coordinate required changes across multiple modules",
+            "cost",
+            policy=policy,
+        ).target_tier,
+        "balanced",
+    ))
+    checks.append(check(
+        "benchmark:computer-use",
+        select_model("Use browser automation to click through the workflow", "cost", policy=policy).target_tier,
+        "frontier",
+    ))
 
     passed = sum(1 for item in checks if item["passed"])
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "modelCalls": 0,
         "summary": {"passed": passed, "failed": len(checks) - passed, "total": len(checks)},
         "routes": routes,
+        "benchmarkPriors": {
+            "version": priors.version,
+            "asOf": priors.as_of,
+            "digest": benchmark_priors_digest(priors),
+            "runtimeNetworkAccess": priors.runtime_network_access,
+            "evidenceModels": sorted(priors.model_evidence),
+        },
         "checks": checks,
     }
 

@@ -18,6 +18,12 @@ from typing import Any, Iterable
 
 from efficiency_metrics import summarize_feedback
 
+from benchmark_priors import (
+    BenchmarkPriors,
+    benchmark_priors_digest,
+    load_benchmark_priors,
+)
+
 from model_registry import (
     TIER_RANK,
     ModelRegistry,
@@ -49,6 +55,11 @@ ROUTE_FEATURES = {
     "parallelizable",
     "dependency_ambiguity",
     "orchestration_eligible",
+    "complex_debugging",
+    "long_context",
+    "multi_file",
+    "computer_use",
+    "validated_bounded",
     "scope_hits",
     "algorithm_hits",
     "repo_files",
@@ -74,6 +85,11 @@ ROUTE_REASONS = {
     "constrained",
     "balance_default",
     "explicit_model",
+    "benchmark_validated_bounded",
+    "benchmark_debugging_floor",
+    "benchmark_long_context_floor",
+    "benchmark_multi_file_floor",
+    "benchmark_computer_use",
 }
 FORBIDDEN_STORED_KEYS = {
     "task",
@@ -350,35 +366,75 @@ def labeled_samples(
     return samples
 
 
-def predict_sample(sample: dict[str, Any], policy: RoutingPolicy) -> str:
+def predict_sample(
+    sample: dict[str, Any],
+    policy: RoutingPolicy,
+    benchmark_priors: BenchmarkPriors | None = None,
+) -> str:
+    """Predict the effective runtime tier, including fixed benchmark guidance."""
+    active_priors = benchmark_priors or load_benchmark_priors()
     features = sample.get("features", {})
     strategy = sample.get("strategy")
     effort = sample.get("effort", "medium")
     complexity = int(features.get("complexity_score", 0))
     if bool(features.get("high_risk")):
         return "frontier"
-    if strategy == "intelligence":
-        return "frontier" if complexity >= policy.intelligence_frontier_threshold or effort in {"xhigh", "max"} else "balanced"
-    if strategy == "cost":
-        return "balanced" if complexity >= policy.cost_balanced_threshold or effort in {"xhigh", "max"} else "fast"
-    if bool(features.get("constrained")):
-        return "fast"
-    return "frontier" if complexity >= policy.balance_frontier_threshold or effort in {"xhigh", "max"} else "balanced"
+    if bool(features.get("computer_use")):
+        predicted = str(active_priors.guidance("computerUse")["minimumTier"])
+    elif strategy == "intelligence":
+        predicted = (
+            "frontier"
+            if complexity >= policy.intelligence_frontier_threshold
+            or effort in {"xhigh", "max"}
+            else "balanced"
+        )
+    elif strategy == "cost":
+        predicted = (
+            "balanced"
+            if complexity >= policy.cost_balanced_threshold
+            or effort in {"xhigh", "max"}
+            else "fast"
+        )
+    elif bool(features.get("validated_bounded")):
+        predicted = str(active_priors.guidance("validatedBoundedCoding")["recommendedTier"])
+    elif bool(features.get("constrained")):
+        predicted = "fast"
+    else:
+        predicted = (
+            "frontier"
+            if complexity >= policy.balance_frontier_threshold
+            or effort in {"xhigh", "max"}
+            else "balanced"
+        )
+
+    for active, signal in (
+        (bool(features.get("complex_debugging")), "complexDebugging"),
+        (bool(features.get("long_context")), "longContext"),
+        (bool(features.get("multi_file")), "multiFile"),
+    ):
+        if not active:
+            continue
+        minimum_tier = str(active_priors.guidance(signal)["minimumTier"])
+        if TIER_RANK[predicted] < TIER_RANK[minimum_tier]:
+            predicted = minimum_tier
+    return predicted
 
 
 def score_policy(
     samples: list[dict[str, Any]],
     policy: RoutingPolicy,
     registry: ModelRegistry | None = None,
+    benchmark_priors: BenchmarkPriors | None = None,
 ) -> dict[str, Any]:
     active_registry = registry or DEFAULT_REGISTRY
+    active_priors = benchmark_priors or load_benchmark_priors(registry=active_registry)
     exact = 0
     weighted_loss = 0
     false_upgrades = 0
     false_downgrades = 0
     high_risk_violations = 0
     for sample in samples:
-        predicted = predict_sample(sample, policy)
+        predicted = predict_sample(sample, policy, active_priors)
         preferred = str(
             sample.get("preferredTier")
             or active_registry.tier_for_model(str(sample["preferredModel"]))
@@ -431,8 +487,10 @@ def build_candidate(
     min_labels: int = 20,
     min_validation_accuracy_gain: float = 0.05,
     registry: ModelRegistry | None = None,
+    benchmark_priors: BenchmarkPriors | None = None,
 ) -> dict[str, Any]:
     active_registry = registry or DEFAULT_REGISTRY
+    active_priors = benchmark_priors or load_benchmark_priors(registry=active_registry)
     if min_labels < 4:
         raise ValueError("min_labels must be at least 4")
     if not 0 <= min_validation_accuracy_gain <= 1:
@@ -440,10 +498,10 @@ def build_candidate(
     if len(samples) < min_labels:
         raise ValueError(f"at least {min_labels} labeled routes are required; found {len(samples)}")
     training, validation = _split_samples(samples)
-    base_training = score_policy(training, base_policy, active_registry)
+    base_training = score_policy(training, base_policy, active_registry, active_priors)
 
     def rank(policy: RoutingPolicy) -> tuple[float, float, int]:
-        score = score_policy(training, policy, active_registry)
+        score = score_policy(training, policy, active_registry, active_priors)
         distance = (
             abs(policy.intelligence_frontier_threshold - base_policy.intelligence_frontier_threshold)
             + abs(policy.balance_frontier_threshold - base_policy.balance_frontier_threshold)
@@ -459,9 +517,9 @@ def build_candidate(
         balance_frontier_threshold=best.balance_frontier_threshold,
         cost_balanced_threshold=best.cost_balanced_threshold,
     )
-    candidate_training = score_policy(training, best, active_registry)
-    base_validation = score_policy(validation, base_policy, active_registry)
-    candidate_validation = score_policy(validation, best, active_registry)
+    candidate_training = score_policy(training, best, active_registry, active_priors)
+    base_validation = score_policy(validation, base_policy, active_registry, active_priors)
+    candidate_validation = score_policy(validation, best, active_registry, active_priors)
     accuracy_gain = candidate_validation["accuracy"] - base_validation["accuracy"]
     high_risk_model = active_registry.resolve_tier(
         "frontier", role="direct", required_capabilities=("high-risk-primary",)
@@ -476,7 +534,7 @@ def build_candidate(
                 "effort": "medium",
                 "features": {"high_risk": True, "complexity_score": 0, "constrained": True},
                 "preferredTier": "frontier",
-            }, best) == "frontier"
+            }, best, active_priors) == "frontier"
             for strategy in STRATEGIES
         ),
         "validationHighRiskViolations": candidate_validation["highRiskViolations"] == 0,
@@ -492,6 +550,7 @@ def build_candidate(
         "createdAt": utc_now(),
         "basePolicyDigest": policy_digest(base_policy),
         "modelRegistryDigest": registry_digest(active_registry),
+        "benchmarkPriorsDigest": benchmark_priors_digest(active_priors),
         "basePolicy": policy_to_dict(base_policy),
         "policy": policy_to_dict(best),
         "dataset": {
@@ -553,6 +612,9 @@ def approve_candidate(
         raise ValueError("candidate is stale because the active policy has changed")
     if candidate.get("modelRegistryDigest") != registry_digest(active_registry):
         raise ValueError("candidate is stale because the trusted model registry has changed")
+    active_priors = load_benchmark_priors(registry=active_registry)
+    if candidate.get("benchmarkPriorsDigest") != benchmark_priors_digest(active_priors):
+        raise ValueError("candidate is stale because the benchmark priors have changed")
     next_policy = policy_from_dict(candidate["policy"])
     settings = candidate.get("optimizerSettings", {})
     if not isinstance(settings, dict):
@@ -566,6 +628,7 @@ def approve_candidate(
         min_labels=int(settings.get("minimumLabels", 20)),
         min_validation_accuracy_gain=float(settings.get("minimumValidationAccuracyGain", 0.05)),
         registry=active_registry,
+        benchmark_priors=active_priors,
     )
     expected_thresholds = rebuilt["policy"]["thresholds"]
     if candidate["policy"].get("thresholds") != expected_thresholds:

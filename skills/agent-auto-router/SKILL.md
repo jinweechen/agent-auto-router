@@ -1,22 +1,24 @@
 ---
 name: agent-auto-router
-description: Automatically select trusted registered models across Codex/Claude backends with deterministic local routing, execute through Codex Desktop child agents or the signed-in Codex CLI, safely evaluate role-based orchestration, validate model-registry extensions, or calibrate routing. Use when the user asks for Auto model selection, no-API-key routing, route explanations, model extension, calibration, or multi-model orchestration.
+description: Automatically select trusted registered models across Codex/Claude backends with deterministic local routing, emit host-neutral execution plans for Codex, Claude Code, or other capable tools, execute through supported signed-in CLIs, safely evaluate role-based orchestration, validate model-registry extensions, or calibrate routing. Use when the user asks for Auto model selection, no-API-key routing, route explanations, model extension, calibration, or multi-model orchestration.
 ---
 
-# Route Codex Tasks Automatically
+# Route Agent Tasks Automatically
 
-Make one deterministic local routing decision, then use either one Desktop-native direct child or one signed-in `codex exec` run. Never treat Auto as a fourth model or mutate the current conversation model.
+Make one deterministic local routing decision, then emit a host-neutral action or use a supported signed-in CLI. Never treat Auto as a separate model or mutate the current conversation model.
 
 ## Choose the workflow
 
 - Desktop task: `scripts/invoke_auto_task.ps1 -ExecutionBackend desktop`.
 - CLI task: `scripts/invoke_auto_task.ps1 -ExecutionBackend cli`.
 - CLI multi-role execution: `scripts/invoke_orchestrated_task.ps1`.
+- Generic Codex/Claude Code/other-host plan: `scripts/host_execution_plan.py`.
 - Offline routing evaluation: `scripts/evaluate_auto_router.py`.
 - Approval-gated learning: `scripts/policy_learning.py`.
 - Registry validation: `scripts/validate_model_registry.py`.
 
 Read `references/entrypoints.md` for complete commands and backend-specific parameters. Read `references/router-contract.md` before changing routing, execution, privacy, or failure boundaries.
+Read `references/benchmark-routing.md` before updating benchmark evidence or its routing floors.
 
 ## Execute through Codex Desktop
 
@@ -61,6 +63,7 @@ Use validation-driven escalation only when explicitly requested with an argv-arr
 - Keep learning bounded to tier thresholds. Require human labels, held-out improvement, integrity checks, explicit approval, audit history, and rollback.
 - Keep model identities in `model_registry.json` and role mappings in `orchestration_profiles.json`. New models start explicit-only and enter Auto only after controlled validation.
 - Compare acceptance before tokens on matched cases. Never infer billing cost from CLI token counters or model superiority from one case.
+- Treat `benchmark_priors.json` as a versioned offline prior, not live truth. Pin evidence to exact model IDs; unversioned aliases remain fallback-only evidence gaps.
 
 Use `references/entrypoints.md` for commands and `references/router-contract.md` for the full invariants.
 
@@ -76,13 +79,13 @@ Use `references/entrypoints.md` for commands and `references/router-contract.md`
 
 After changes, run the full unit suite, offline evaluation, registry validation, and Skill validation. Keep installation, commits, and pushes behind explicit user confirmation.
 
-## Using this skill from Hermes (host)
+## Using this skill from another host
 
-When running inside a Hermes-style host that can execute tasks itself but has no `spawn_agent`:
+When running inside Codex, Claude Code, or another host that can execute tasks itself but has no compatible `spawn_agent`:
 
 1. Run `select_auto_model.py` with the task text to produce a route JSON decision.
-2. Feed the route into `hermes_host_plan.py` to get the dispatch action (`cli` / `host_execute` / `orchestrate`).
-3. Act on the plan's `action.kind`: for `cli`, invoke the backend CLI with the model and effort; for `host_execute`, the host runs the task with its own model; for `orchestrate`, dispatch multi-role orchestration through the available CLI backend.
+2. Feed the route into `host_execution_plan.py` to get the host-neutral dispatch action (`cli` / `host_execute` / `orchestrate`).
+3. Act on the plan's `action.kind`: for `cli`, invoke the declared backend with the exact model and effort; for `host_execute`, the host runs the task with its own model and surfaces approximate model accuracy; for `orchestrate`, dispatch multi-role orchestration through the selected CLI backend.
 
 See `references/entrypoints.md` for the full command reference.
 

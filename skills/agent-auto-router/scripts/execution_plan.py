@@ -27,11 +27,16 @@ CONTEXT_BUDGETS = {
 }
 
 
-def recommended_effort(target_tier: str, *, high_risk: bool) -> str:
+def recommended_effort(
+    target_tier: str,
+    *,
+    high_risk: bool,
+    validation_configured: bool = False,
+) -> str:
     if high_risk or target_tier == "frontier":
         return "high"
     if target_tier == "fast":
-        return "low"
+        return "low" if validation_configured else "medium"
     return "medium"
 
 
@@ -48,7 +53,9 @@ def variant_for_decision(decision: Any) -> str:
 def build_execution_plan(decision: Any, explicit_effort: str | None = None) -> dict[str, Any]:
     variant = variant_for_decision(decision)
     effort = explicit_effort or recommended_effort(
-        decision.target_tier, high_risk=bool(decision.high_risk)
+        decision.target_tier,
+        high_risk=bool(decision.high_risk),
+        validation_configured=bool(getattr(decision, "validation_configured", False)),
     )
     next_tier = {"fast": "balanced", "balanced": "frontier", "frontier": None}[
         decision.target_tier

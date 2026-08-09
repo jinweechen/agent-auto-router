@@ -2,7 +2,7 @@
 
 ## Scope
 
-Auto is a local pre-execution plan, not a fourth model or a reproduction of Cursor Router. It selects one real model plus effort, topology, and a bounded context profile. Model IDs are backend-qualified (e.g. `codex:gpt-5.6-sol`, `claude:sonnet`); execution adapters strip the prefix before dispatching to the target CLI. Desktop v1 supports only the Codex backend. Execution then uses either the official signed-in Codex CLI or the current Codex Desktop host's supported `spawn_agent` capability.
+Auto is a local pre-execution plan, not a fourth model or a reproduction of Cursor Router. It selects one real model plus effort, topology, and a bounded context profile. Model IDs are backend-qualified (e.g. `codex:gpt-5.6-sol`, `claude:sonnet`); execution adapters strip the prefix before dispatching to the target CLI. Desktop v1 supports only the Codex backend. Other capable tools consume the generic `agent-auto-router.host-plan.v1` protocol and execute only its declared `action.kind`.
 
 ## Model policy
 
@@ -24,6 +24,8 @@ Model identities, aliases, capabilities, roles, efforts, and priorities come onl
 - Never read, copy, or forward Desktop credentials and never attach to the existing Desktop app-server stdio.
 - Never modify CC Switch files, account selection, or session indexes.
 - Let `codex exec` use the user's existing CLI authentication and provider only on the CLI backend. Desktop execution uses the current host capability without exposing its authentication to the router.
+- When the independent CLI is launched from a Desktop process, remove only the parent task's process-local sandbox identity, network-disable marker, thread ID, and origin override. Preserve `CODEX_HOME`, authentication, CA configuration, user configuration, and the CLI's explicitly selected sandbox.
+- On Windows, prefer an installed Codex CLI wrapper that initializes its companion resource directory before falling back to a bare executable. Do not treat a runnable `--version` result as proof that workspace-write helpers are present.
 
 ## Execution
 
@@ -36,6 +38,8 @@ The Desktop primary agent calls `spawn_agent` only when `executionRequested=true
 Desktop v1 supports only direct A/E/F topology and the Codex backend. If routing selects B/C/D, if the selected model belongs to a foreign backend (e.g. `claude:sonnet`), if the selected model is absent from the caller-declared Desktop availability set, or if the request would require permission elevation, return a structured blocked plan with zero planned calls and launch nothing. Foreign-backend models are blocked with `desktop_backend_unsupported`. Reject CLI-only feedback destinations, validation escalation, and non-default CLI context mode. Treat Desktop `-Json` and `-NoFeedback` as explicit idempotent confirmations. Never silently change model, effort, tier, provider, or backend. Desktop v1 does not support feedback derived from an execution that the local planner cannot observe.
 
 The route applies to one new child task and does not mutate the current Desktop conversation's model.
+
+`host_execution_plan.py` is product-neutral. It never launches a process, includes no task body, and accepts only backends declared by the trusted registry. Direct routes may produce `cli` or an explicitly approximate `host_execute` action. Orchestrated routes require the selected backend and never substitute another provider; their plan declares the complete read-only role set and the single final writer. Host plans use structured argv arrays where a local orchestration entrypoint is required.
 
 Inspect repository structure read-only before routing. Use tracked/non-ignored paths, aggregate counts, and deterministic candidate ranking only. Inject a compact repository map only when it has a candidate path or the repository is large enough to justify the map. Never persist task text in repository metadata.
 
@@ -61,7 +65,7 @@ Do not equate a successful CLI exit with completed implementation. For Git-backe
 - Require a human preferred-model label before a route can participate in optimization; process exit success alone is not a quality label.
 - Tune only bounded `fast / balanced / frontier` complexity thresholds. The trusted registry, high-risk classifier, risk vocabulary, and explicit user overrides are outside the learned surface.
 - Use a deterministic held-out validation split. Approval eligibility requires validation accuracy gain, lower weighted loss, no increase in false downgrades, and zero high-risk violations.
-- Candidate generation is read-only with respect to the active policy. Activation requires a separate explicit approval command, a matching base-policy digest, a matching model-registry digest, and a valid candidate integrity digest.
+- Candidate generation is read-only with respect to the active policy. Activation requires a separate explicit approval command, matching base-policy, model-registry, and benchmark-prior digests, plus a valid candidate integrity digest.
 - Archive the previous active policy and append an audit event on every approval or rollback.
 - Exclude validation-escalated routes from threshold learning because their final success does not validate the initial tier.
 

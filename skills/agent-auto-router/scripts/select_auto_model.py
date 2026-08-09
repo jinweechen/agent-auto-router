@@ -12,6 +12,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 from model_registry import load_model_registry, registry_digest
+from benchmark_priors import benchmark_priors_digest, load_benchmark_priors
 from execution_plan import build_execution_plan
 from repository_context import inspect_repository
 from routing_policy import (
@@ -37,6 +38,7 @@ def main() -> int:
     parser.add_argument("--workdir", type=Path)
     parser.add_argument("--ignore-active-policy", action="store_true")
     parser.add_argument("--available-backends", default="auto")
+    parser.add_argument("--validation-configured", action="store_true")
     route_input = parser.add_mutually_exclusive_group(required=True)
     route_input.add_argument("--text")
     route_input.add_argument("--stdin", action="store_true")
@@ -52,6 +54,7 @@ def main() -> int:
         else:
             policy, policy_source = load_active_policy(args.state_dir)
         registry = load_model_registry()
+        benchmark_priors = load_benchmark_priors(registry=registry)
 
         # Resolve available backends
         if args.available_backends == "auto":
@@ -87,12 +90,19 @@ def main() -> int:
             repository_features=repository_features,
             backends=available_backends,
             allow_explicit_only=allow_explicit,
+            validation_configured=args.validation_configured,
+            benchmark_priors=benchmark_priors,
         )
         if args.model_choice == "auto":
             selected = registry.get(decision.model, role="direct")
             explicit_override = False
         else:
             selected = registry.get(args.model_choice, role="direct")
+            if selected.backend not in available_backends:
+                raise ValueError(
+                    f"model {selected.model_id} is not available on the requested backends: "
+                    f"{available_backends}"
+                )
             explicit_override = True
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
@@ -147,6 +157,15 @@ def main() -> int:
             "digest": registry_digest(registry),
             "enabledModels": list(registry.enabled_model_ids),
             "autoModels": list(registry.auto_model_ids),
+        },
+        "benchmarkPriors": {
+            "version": benchmark_priors.version,
+            "asOf": benchmark_priors.as_of,
+            "source": benchmark_priors.source,
+            "digest": benchmark_priors_digest(benchmark_priors),
+            "runtimeNetworkAccess": benchmark_priors.runtime_network_access,
+            "evidenceModels": sorted(benchmark_priors.model_evidence),
+            "signalsApplied": list(decision.benchmark_signals),
         },
         "modelCalls": 0,
     }, ensure_ascii=True))

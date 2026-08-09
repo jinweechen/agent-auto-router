@@ -7,38 +7,20 @@ import argparse
 import json
 import os
 import pathlib
-import shutil
 import subprocess
 import sys
 import tempfile
 import time
 from typing import Any
 
-from codex_cli_adapter import extract_thread_id, extract_usage_details
+from codex_cli_adapter import (
+    environment_for_codex_command,
+    extract_thread_id,
+    extract_usage_details,
+    resolve_codex_command,
+)
+from model_registry import strip_backend_prefix
 from repository_context import build_repository_context
-
-
-def resolve_codex_command() -> list[str]:
-    checked: set[str] = set()
-    for name in ("codex", "codex.exe", "codex.cmd", "codex.bat", "codex.ps1"):
-        executable = shutil.which(name)
-        if not executable or executable.lower() in checked:
-            continue
-        checked.add(executable.lower())
-        suffix = pathlib.Path(executable).suffix.lower()
-        if suffix == ".ps1":
-            powershell = shutil.which("pwsh") or shutil.which("pwsh.exe")
-            powershell = powershell or shutil.which("powershell.exe")
-            if powershell:
-                return [powershell, "-NoProfile", "-NonInteractive", "-File", executable]
-            continue
-        if suffix in {".cmd", ".bat"}:
-            command_shell = shutil.which("cmd.exe") or os.environ.get("COMSPEC")
-            if command_shell:
-                return [command_shell, "/d", "/c", executable]
-            continue
-        return [executable]
-    raise RuntimeError("Codex CLI executable or wrapper was not found on PATH")
 
 
 def parse_json_lines(lines: list[str]) -> list[dict[str, Any]]:
@@ -89,6 +71,11 @@ def main() -> int:
     workdir = args.workdir.resolve()
     if not workdir.is_dir():
         parser.error(f"workdir not found: {workdir}")
+    try:
+        execution_model = strip_backend_prefix(args.model, "codex")
+        codex_command = resolve_codex_command()
+    except (RuntimeError, ValueError) as exc:
+        parser.error(str(exc))
 
     repository_metadata: dict[str, Any] | None = None
     effective_task = task
@@ -104,7 +91,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="codex-auto-single-") as temp_dir:
         output_path = pathlib.Path(temp_dir) / "last-message.txt"
-        command = [*resolve_codex_command(), "exec", "--ephemeral"]
+        command = [*codex_command, "exec", "--ephemeral"]
         if args.context_mode == "lean" and args.sandbox == "read-only":
             command.append("--ignore-user-config")
         command.extend([
@@ -114,7 +101,7 @@ def main() -> int:
             "-C",
             str(workdir),
             "-m",
-            args.model,
+            execution_model,
             "-c",
             f"model_reasoning_effort='{args.effort}'",
             "--json",
@@ -122,7 +109,7 @@ def main() -> int:
             str(output_path),
             "-",
         ])
-        environment = os.environ.copy()
+        environment = environment_for_codex_command(codex_command)
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         started = time.perf_counter()
         completed = subprocess.run(

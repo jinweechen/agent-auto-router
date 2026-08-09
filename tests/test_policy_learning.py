@@ -218,6 +218,53 @@ class PolicyLearningTests(unittest.TestCase):
         )
         self.assertEqual(predict_sample(sample, policy), "frontier")
 
+    def test_learning_prediction_matches_fixed_runtime_benchmark_rules(self) -> None:
+        policy = RoutingPolicy(
+            intelligence_frontier_threshold=8,
+            balance_frontier_threshold=8,
+            cost_balanced_threshold=8,
+        )
+        sample = labeled_sample("benchmark-signals")
+
+        sample["strategy"] = "balance"
+        sample["features"] = dict(sample["features"], validated_bounded=True)
+        self.assertEqual(predict_sample(sample, policy), "fast")
+
+        sample["strategy"] = "cost"
+        sample["features"] = dict(
+            sample["features"], validated_bounded=False, complex_debugging=True
+        )
+        self.assertEqual(predict_sample(sample, policy), "balanced")
+
+        sample["features"] = dict(
+            sample["features"], complex_debugging=False, long_context=True
+        )
+        self.assertEqual(predict_sample(sample, policy), "balanced")
+
+        sample["features"] = dict(
+            sample["features"], long_context=False, multi_file=True
+        )
+        self.assertEqual(predict_sample(sample, policy), "balanced")
+
+        sample["features"] = dict(
+            sample["features"], multi_file=False, computer_use=True
+        )
+        self.assertEqual(predict_sample(sample, policy), "frontier")
+
+    def test_candidate_is_bound_to_the_benchmark_prior_snapshot(self) -> None:
+        samples = [labeled_sample(f"route-{index}") for index in range(24)]
+        candidate = build_candidate(samples, RoutingPolicy(), min_labels=20)
+        self.assertRegex(candidate["benchmarkPriorsDigest"], r"^[0-9a-f]{64}$")
+
+        candidate.pop("benchmarkPriorsDigest")
+        candidate.pop("candidateId")
+        candidate["candidateId"] = _canonical_digest(candidate)
+        with tempfile.TemporaryDirectory() as temp:
+            candidate_path = pathlib.Path(temp) / "candidate.json"
+            candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "benchmark priors have changed"):
+                approve_candidate(candidate_path, pathlib.Path(temp), "unit-test")
+
     def test_approval_and_rollback_are_explicit_and_versioned(self) -> None:
         samples = [labeled_sample(f"route-{index}") for index in range(24)]
         candidate = build_candidate(samples, RoutingPolicy(), min_labels=20)

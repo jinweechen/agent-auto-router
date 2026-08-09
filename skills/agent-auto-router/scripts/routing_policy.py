@@ -8,7 +8,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-from model_registry import EFFORTS, ModelRegistry, load_model_registry, registry_digest
+from benchmark_priors import (
+    BenchmarkPriors,
+    benchmark_priors_digest,
+    load_benchmark_priors,
+)
+from model_registry import (
+    EFFORTS,
+    TIER_RANK,
+    ModelRegistry,
+    load_model_registry,
+    registry_digest,
+)
 
 DEFAULT_REGISTRY = load_model_registry()
 STRATEGIES = ("intelligence", "balance", "cost")
@@ -80,6 +91,27 @@ ALGORITHM_TERMS = (
     "算法", "证明", "不变量", "性质测试", "编译器", "解析器", "状态机", "红黑树",
     "图算法",
 )
+DEBUGGING_TERMS = (
+    "debug", "debugging", "diagnose", "root cause", "flaky", "failing test",
+    "test failure", "regression failure", "崩溃原因", "调试", "诊断", "根因",
+    "失败测试", "回归失败", "偶发失败",
+)
+LONG_CONTEXT_TERMS = (
+    "large codebase", "large repository", "repository-wide", "codebase-wide",
+    "long context", "many files", "multi-module", "cross-module", "monorepo",
+    "大型代码库", "大型仓库", "全仓库", "长上下文", "大量文件", "多模块",
+    "跨模块",
+)
+MULTI_FILE_TERMS = (
+    "multi-file", "cross-file", "multiple files", "multiple modules",
+    "several files", "several modules", "across files", "across modules",
+    "多文件", "跨文件", "多个文件", "多个模块", "协调修改",
+)
+COMPUTER_USE_TERMS = (
+    "computer use", "browser automation", "desktop automation", "gui automation",
+    "click through", "control the browser", "control the desktop", "操作浏览器",
+    "控制浏览器", "桌面自动化", "界面自动化", "点击界面", "操作桌面",
+)
 
 
 @dataclass(frozen=True)
@@ -94,6 +126,10 @@ class RoutingFeatures:
     ambiguity_hits: int
     scope_hits: int
     algorithm_hits: int
+    debugging_hits: int
+    long_context_hits: int
+    multi_file_hits: int
+    computer_use_hits: int
     complexity_score: int
     risk_score: int
     clarity_score: int
@@ -102,6 +138,12 @@ class RoutingFeatures:
     parallelizable: bool
     dependency_ambiguity: bool
     orchestration_eligible: bool
+    complex_debugging: bool
+    long_context: bool
+    multi_file: bool
+    computer_use: bool
+    validation_configured: bool
+    validated_bounded: bool
 
 
 @dataclass(frozen=True)
@@ -120,6 +162,10 @@ class ModelDecision:
     simple_hits: int
     scope_hits: int
     algorithm_hits: int
+    debugging_hits: int
+    long_context_hits: int
+    multi_file_hits: int
+    computer_use_hits: int
     complexity_score: int
     risk_score: int
     clarity_score: int
@@ -128,9 +174,19 @@ class ModelDecision:
     parallelizable: bool
     dependency_ambiguity: bool
     orchestration_eligible: bool
+    complex_debugging: bool
+    long_context: bool
+    multi_file: bool
+    computer_use: bool
+    validation_configured: bool
+    validated_bounded: bool
     policy_version: str
     policy_digest: str
     registry_digest: str
+    benchmark_prior_version: str
+    benchmark_prior_as_of: str
+    benchmark_prior_digest: str
+    benchmark_signals: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -248,6 +304,7 @@ def analyze_task(
     prompt: str,
     acceptance_criteria: Sequence[str] | None = None,
     repository_features: dict[str, object] | None = None,
+    validation_configured: bool = False,
 ) -> RoutingFeatures:
     text = prompt.lower()
     criteria_count = len(acceptance_criteria or ())
@@ -261,6 +318,10 @@ def analyze_task(
     ambiguity_hits = _count_hits(text, AMBIGUITY_TERMS)
     scope_hits = _count_hits(text, SCOPE_TERMS)
     algorithm_hits = _count_hits(text, ALGORITHM_TERMS)
+    debugging_hits = _count_hits(text, DEBUGGING_TERMS)
+    long_context_hits = _count_hits(text, LONG_CONTEXT_TERMS)
+    multi_file_hits = _count_hits(text, MULTI_FILE_TERMS)
+    computer_use_hits = _count_hits(text, COMPUTER_USE_TERMS)
     if re.search(
         r"\b(?:[2-9]\d|[1-9]\d{2,})\b.{0,24}\b(?:files?|packages?|modules?|services?|repos(?:itories)?)\b",
         text,
@@ -307,6 +368,26 @@ def analyze_task(
     orchestration_eligible = parallelizable and (
         complexity_score >= 2 or criteria_count >= 3 or len(prompt) >= 900
     )
+    long_context = (
+        long_context_hits > 0
+        or len(prompt) >= 6000
+        or (bool(repo.get("large_repo")) and not constrained)
+        or (bool(repo.get("monorepo")) and scope_hits > 0)
+    )
+    complex_debugging = debugging_hits > 0
+    multi_file = multi_file_hits > 0
+    computer_use = computer_use_hits > 0
+    validated_bounded = (
+        validation_configured
+        and not high_risk
+        and not long_context
+        and not complex_debugging
+        and not multi_file
+        and not computer_use
+        and complexity_score <= 1
+        and scope_hits == 0
+        and algorithm_hits == 0
+    )
 
     return RoutingFeatures(
         prompt_chars=len(prompt),
@@ -319,6 +400,10 @@ def analyze_task(
         ambiguity_hits=ambiguity_hits,
         scope_hits=scope_hits,
         algorithm_hits=algorithm_hits,
+        debugging_hits=debugging_hits,
+        long_context_hits=long_context_hits,
+        multi_file_hits=multi_file_hits,
+        computer_use_hits=computer_use_hits,
         complexity_score=complexity_score,
         risk_score=risk_score,
         clarity_score=clarity_score,
@@ -327,6 +412,12 @@ def analyze_task(
         parallelizable=parallelizable,
         dependency_ambiguity=dependency_ambiguity,
         orchestration_eligible=orchestration_eligible,
+        complex_debugging=complex_debugging,
+        long_context=long_context,
+        multi_file=multi_file,
+        computer_use=computer_use,
+        validation_configured=validation_configured,
+        validated_bounded=validated_bounded,
     )
 
 
@@ -340,6 +431,8 @@ def select_model(
     repository_features: dict[str, object] | None = None,
     backends: Sequence[str] | None = None,
     allow_explicit_only: bool = False,
+    validation_configured: bool = False,
+    benchmark_priors: BenchmarkPriors | None = None,
 ) -> ModelDecision:
     if strategy not in STRATEGIES:
         raise ValueError(f"unknown strategy: {strategy}")
@@ -348,10 +441,22 @@ def select_model(
 
     active_policy = policy or RoutingPolicy()
     active_registry = registry or DEFAULT_REGISTRY
-    features = analyze_task(prompt, acceptance_criteria, repository_features)
+    active_priors = benchmark_priors or load_benchmark_priors(registry=active_registry)
+    features = analyze_task(
+        prompt,
+        acceptance_criteria,
+        repository_features,
+        validation_configured=validation_configured,
+    )
+    benchmark_signals: list[str] = []
     if features.high_risk:
         target_tier, reason = "frontier", "high_risk"
         required_capabilities = ("high-risk-primary",)
+    elif features.computer_use:
+        rule = active_priors.guidance("computerUse")
+        target_tier, reason = rule["minimumTier"], rule["reason"]
+        required_capabilities = ()
+        benchmark_signals.append("computerUse")
     elif strategy == "intelligence":
         if features.complexity_score >= active_policy.intelligence_frontier_threshold or effort in {"xhigh", "max"}:
             target_tier, reason = "frontier", "complexity"
@@ -364,6 +469,11 @@ def select_model(
         else:
             target_tier, reason = "fast", "cost_proxy_default"
         required_capabilities = ()
+    elif features.validated_bounded:
+        rule = active_priors.guidance("validatedBoundedCoding")
+        target_tier, reason = rule["recommendedTier"], rule["reason"]
+        required_capabilities = ()
+        benchmark_signals.append("validatedBoundedCoding")
     elif features.constrained:
         target_tier, reason = "fast", "constrained"
         required_capabilities = ()
@@ -373,6 +483,19 @@ def select_model(
     else:
         target_tier, reason = "balanced", "balance_default"
         required_capabilities = ()
+
+    for active, signal in (
+        (features.complex_debugging, "complexDebugging"),
+        (features.long_context, "longContext"),
+        (features.multi_file, "multiFile"),
+    ):
+        if not active:
+            continue
+        rule = active_priors.guidance(signal)
+        benchmark_signals.append(signal)
+        minimum_tier = rule["minimumTier"]
+        if TIER_RANK[target_tier] < TIER_RANK[minimum_tier]:
+            target_tier, reason = minimum_tier, rule["reason"]
 
     resolved_model = active_registry.resolve_tier(
         target_tier,
@@ -397,6 +520,10 @@ def select_model(
         simple_hits=features.simple_hits,
         scope_hits=features.scope_hits,
         algorithm_hits=features.algorithm_hits,
+        debugging_hits=features.debugging_hits,
+        long_context_hits=features.long_context_hits,
+        multi_file_hits=features.multi_file_hits,
+        computer_use_hits=features.computer_use_hits,
         complexity_score=features.complexity_score,
         risk_score=features.risk_score,
         clarity_score=features.clarity_score,
@@ -405,7 +532,17 @@ def select_model(
         parallelizable=features.parallelizable,
         dependency_ambiguity=features.dependency_ambiguity,
         orchestration_eligible=features.orchestration_eligible,
+        complex_debugging=features.complex_debugging,
+        long_context=features.long_context,
+        multi_file=features.multi_file,
+        computer_use=features.computer_use,
+        validation_configured=features.validation_configured,
+        validated_bounded=features.validated_bounded,
         policy_version=active_policy.policy_version,
         policy_digest=policy_digest(active_policy),
         registry_digest=registry_digest(active_registry),
+        benchmark_prior_version=active_priors.version,
+        benchmark_prior_as_of=active_priors.as_of,
+        benchmark_prior_digest=benchmark_priors_digest(active_priors),
+        benchmark_signals=tuple(dict.fromkeys(benchmark_signals)),
     )

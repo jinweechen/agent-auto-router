@@ -49,9 +49,16 @@ def make_client(execution_mode: bool, sandbox: str = "workspace-write") -> Codex
 class OrchestratedExecutionPolicyTests(unittest.TestCase):
     def test_execution_plan_jointly_selects_effort_topology_and_context(self) -> None:
         fast = build_execution_plan(select_model("Reply with exactly OK", "balance"))
-        self.assertEqual(fast["effort"], "low")
+        self.assertEqual(fast["effort"], "medium")
         self.assertEqual(fast["topology"], "direct")
         self.assertEqual(fast["context"]["profile"], "targeted")
+
+        validated_fast = build_execution_plan(select_model(
+            "Reply with exactly OK",
+            "balance",
+            validation_configured=True,
+        ))
+        self.assertEqual(validated_fast["effort"], "low")
 
         parallel = build_execution_plan(select_model(
             "Refactor multiple modules in parallel with independent API and tests workstreams",
@@ -94,6 +101,8 @@ class OrchestratedExecutionPolicyTests(unittest.TestCase):
         for role in ("planner", "dispatcher", "worker:one", "reviewer", "direct", "grader"):
             with self.subTest(role=role):
                 self.assertEqual(client.sandbox_for_role(role), "read-only")
+                self.assertEqual(client.configuration_flags(role), ["--ignore-user-config"])
+                self.assertNotIn("--ignore-rules", client.configuration_flags(role))
 
     def test_only_final_execution_roles_receive_write_access(self) -> None:
         client = make_client(True)
@@ -279,7 +288,8 @@ class OrchestratedExecutionPolicyTests(unittest.TestCase):
 
     def test_single_model_lean_mode_keeps_user_config_for_write_sandbox(self) -> None:
         script = (SCRIPTS / "single_task_runner.py").read_text(encoding="utf-8")
-        self.assertIn('[*resolve_codex_command(), "exec", "--ephemeral"]', script)
+        self.assertIn("codex_command = resolve_codex_command()", script)
+        self.assertIn('[*codex_command, "exec", "--ephemeral"]', script)
         self.assertIn(
             'args.context_mode == "lean" and args.sandbox == "read-only"',
             script,
@@ -306,7 +316,8 @@ class OrchestratedExecutionPolicyTests(unittest.TestCase):
 
     def test_single_model_choice_is_validated_by_dynamic_registry(self) -> None:
         script = (SCRIPTS / "invoke_auto_task.ps1").read_text(encoding="utf-8")
-        self.assertIn("--model-choice $ModelChoice", script)
+        self.assertIn("'--state-dir', $StateDir, '--model-choice', $ModelChoice", script)
+        self.assertIn("@('--available-backends', 'codex')", script)
         self.assertNotIn("gpt-5.6-sol', 'gpt-5.6-terra", script)
         self.assertIn("[string]$route.selectedDefaultEffort", script)
 
@@ -316,6 +327,7 @@ class OrchestratedExecutionPolicyTests(unittest.TestCase):
         self.assertIn("[string[]]$ValidationCommand", script)
         self.assertIn("$attemptCount = 2", script)
         self.assertIn("effort = $finalEffort", script)
+        self.assertIn("$selectorArguments += '--validation-configured'", script)
         escalation_condition = script.split("$needsEscalation =", 1)[1].split(")\nif ($needsEscalation", 1)[0]
         self.assertIn("$codexExitCode -eq 0", escalation_condition)
         self.assertNotIn("$codexExitCode -ne 0", escalation_condition)

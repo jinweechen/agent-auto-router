@@ -9,13 +9,20 @@ from pathlib import Path
 from typing import Any
 
 from model_registry import ModelRegistry, load_model_registry, registry_digest
+from benchmark_priors import (
+    BenchmarkPriors,
+    benchmark_priors_digest,
+    load_benchmark_priors,
+)
 from orchestration_profiles import OrchestrationProfiles, load_orchestration_profiles
 
 
 def validate_registry_and_profiles(
     registry: ModelRegistry,
     profiles: OrchestrationProfiles,
+    priors: BenchmarkPriors | None = None,
 ) -> dict[str, Any]:
+    active_priors = priors or load_benchmark_priors(registry=registry)
     resolved_profiles: dict[str, dict[str, dict[str, str]]] = {}
     for variant in sorted(profiles.profiles):
         resolved_profiles[variant] = {}
@@ -74,6 +81,14 @@ def validate_registry_and_profiles(
         "highRiskPrimaryModel": high_risk.model_id,
         "highRiskFinalRoles": high_risk_final_roles,
         "resolvedProfiles": resolved_profiles,
+        "benchmarkPriors": {
+            "version": active_priors.version,
+            "asOf": active_priors.as_of,
+            "source": active_priors.source,
+            "digest": benchmark_priors_digest(active_priors),
+            "runtimeNetworkAccess": active_priors.runtime_network_access,
+            "evidenceModels": sorted(active_priors.model_evidence),
+        },
         "modelCalls": 0,
     }
 
@@ -82,12 +97,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--registry", type=Path)
     parser.add_argument("--profiles", type=Path)
+    parser.add_argument("--benchmark-priors", type=Path)
     args = parser.parse_args()
     registry = load_model_registry(args.registry)
     profiles = load_orchestration_profiles(args.profiles)
+    priors = load_benchmark_priors(args.benchmark_priors, registry=registry)
     print(
         json.dumps(
-            validate_registry_and_profiles(registry, profiles),
+            validate_registry_and_profiles(registry, profiles, priors),
             ensure_ascii=True,
             indent=2,
         )

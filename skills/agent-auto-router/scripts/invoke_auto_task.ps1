@@ -39,8 +39,6 @@ if (-not (Test-Path -LiteralPath $Workdir -PathType Container)) { throw "Workdir
 $python = Get-Command python -ErrorAction SilentlyContinue
 if (-not $python) { $python = Get-Command py -ErrorAction SilentlyContinue }
 if (-not $python) { throw 'Python 3 is required for deterministic Auto routing.' }
-$codex = if ($ExecutionBackend -eq 'cli') { Get-Command codex -ErrorAction SilentlyContinue } else { $null }
-if ($ExecutionBackend -eq 'cli' -and -not $codex -and -not $DryRun) { throw 'Codex CLI is required for ExecutionBackend=cli.' }
 if ($ExecutionBackend -eq 'desktop' -and $DesktopAvailableModels.Count -eq 0) {
     throw 'ExecutionBackend=desktop requires -DesktopAvailableModels from the current Desktop runtime.'
 }
@@ -62,10 +60,21 @@ if ($EscalateOnValidationFailure -and $ValidationCommand.Count -eq 0) {
 }
 
 $routeEffort = if ($Effort) { $Effort } else { 'auto' }
+$selectorArguments = @(
+    $selectorPath, '--strategy', $Strategy, '--stdin', '--effort', $routeEffort,
+    '--state-dir', $StateDir, '--model-choice', $ModelChoice,
+    '--workdir', $resolvedWorkdir
+)
+if ($ValidationCommand.Count -gt 0) {
+    $selectorArguments += '--validation-configured'
+}
+if ($ExecutionBackend -eq 'cli') {
+    $selectorArguments += @('--available-backends', 'codex')
+}
 $previousOutputEncoding = $OutputEncoding
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 try {
-    $routeRaw = $Task | & $python.Source $selectorPath --strategy $Strategy --stdin --effort $routeEffort --state-dir $StateDir --model-choice $ModelChoice --workdir $resolvedWorkdir
+    $routeRaw = $Task | & $python.Source @selectorArguments
     $routeExitCode = $LASTEXITCODE
 } finally {
     $OutputEncoding = $previousOutputEncoding
@@ -272,6 +281,11 @@ if (-not $NoFeedback) {
             parallelizable = [bool]$route.decision.parallelizable
             dependency_ambiguity = [bool]$route.decision.dependency_ambiguity
             orchestration_eligible = [bool]$route.decision.orchestration_eligible
+            complex_debugging = [bool]$route.decision.complex_debugging
+            long_context = [bool]$route.decision.long_context
+            multi_file = [bool]$route.decision.multi_file
+            computer_use = [bool]$route.decision.computer_use
+            validated_bounded = [bool]$route.decision.validated_bounded
             scope_hits = [int]$route.decision.scope_hits
             algorithm_hits = [int]$route.decision.algorithm_hits
             repo_files = [int]$route.repository.repo_files

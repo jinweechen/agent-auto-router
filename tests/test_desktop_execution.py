@@ -237,8 +237,31 @@ class DesktopExecutionTests(unittest.TestCase):
     def test_cli_backend_remains_available(self) -> None:
         script = (SCRIPTS / "invoke_auto_task.ps1").read_text(encoding="utf-8")
         self.assertIn("single_task_runner.py", script)
+        self.assertIn("--available-backends', 'codex", script)
         runner = (SCRIPTS / "single_task_runner.py").read_text(encoding="utf-8")
-        self.assertIn('[*resolve_codex_command(), "exec", "--ephemeral"]', runner)
+        self.assertIn('[*codex_command, "exec", "--ephemeral"]', runner)
+        self.assertIn('strip_backend_prefix(args.model, "codex")', runner)
+
+    def test_cli_backend_rejects_foreign_explicit_model_before_launch(self) -> None:
+        powershell = shutil.which("pwsh") or shutil.which("powershell")
+        self.assertIsNotNone(powershell)
+        script = SCRIPTS / "invoke_auto_task.ps1"
+        repository = SCRIPTS.parents[2].resolve()
+        command = (
+            f"& '{script}' -Task 'Reply with exactly OK' "
+            "-ExecutionBackend cli -Model claude:sonnet -DryRun "
+            f"-Workdir '{repository}'"
+        )
+        completed = subprocess.run(
+            [powershell, "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("not available on the requested backends", completed.stderr)
 
 
 if __name__ == "__main__":

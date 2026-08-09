@@ -14,6 +14,120 @@ from execution_policy import ExecutionPolicy, WRITE_ROLES
 from orchestration_engine import CallRecord, RunContext
 
 
+DESKTOP_PROCESS_CONTEXT_ENVIRONMENT = (
+    "CODEX_PERMISSION_PROFILE",
+    "CODEX_SANDBOX_NETWORK_DISABLED",
+    "CODEX_THREAD_ID",
+    "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
+)
+
+
+def command_for_executable(executable: pathlib.Path) -> list[str]:
+    """Return an argv prefix for a Codex executable or Windows wrapper."""
+    executable_text = str(executable)
+    suffix = executable.suffix.lower()
+    if suffix == ".ps1":
+        powershell = shutil.which("pwsh") or shutil.which("pwsh.exe")
+        powershell = powershell or shutil.which("powershell.exe")
+        if powershell:
+            return [powershell, "-NoProfile", "-NonInteractive", "-File", executable_text]
+    if suffix in {".cmd", ".bat"}:
+        command_shell = shutil.which("cmd.exe") or os.environ.get("COMSPEC")
+        if command_shell:
+            return [command_shell, "/d", "/c", executable_text]
+    return [executable_text]
+
+
+def codex_candidates() -> list[pathlib.Path]:
+    """Return explicit, PATH, and standard Windows installation candidates."""
+    candidates: list[pathlib.Path] = []
+    configured = os.environ.get("CODEX_CLI_PATH", "").strip().strip(chr(34))
+    if configured:
+        candidates.append(pathlib.Path(os.path.expandvars(os.path.expanduser(configured))))
+
+    # On Windows, npm wrappers initialize the vendor resource directory that
+    # contains codex-command-runner.exe and codex-windows-sandbox-setup.exe.
+    # A bare Desktop-copied codex.exe can run basic commands while failing when
+    # workspace-write tries to launch those sibling helpers.
+    names = (
+        ("codex.cmd", "codex.ps1", "codex.bat", "codex.exe", "codex")
+        if os.name == "nt"
+        else ("codex", "codex.exe", "codex.cmd", "codex.bat", "codex.ps1")
+    )
+    for name in names:
+        executable = shutil.which(name)
+        if executable:
+            candidates.append(pathlib.Path(executable))
+
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            local_root = pathlib.Path(local_app_data)
+            install_roots = (
+                local_root / "Programs" / "OpenAI" / "Codex" / "bin",
+                local_root / "OpenAI" / "Codex" / "bin",
+            )
+            for install_root in install_roots:
+                candidates.append(install_root / "codex.exe")
+                try:
+                    version_dirs = sorted(
+                        (entry for entry in install_root.iterdir() if entry.is_dir()),
+                        key=lambda entry: entry.stat().st_mtime,
+                        reverse=True,
+                    )
+                except OSError:
+                    version_dirs = []
+                candidates.extend(entry / "codex.exe" for entry in version_dirs)
+    return candidates
+
+
+def environment_for_codex_command(
+    command: list[str], base: dict[str, str] | None = None
+) -> dict[str, str]:
+    """Build an independent CLI environment with sibling helpers available."""
+    environment = (os.environ if base is None else base).copy()
+    # A CLI launched from Codex Desktop is a separate execution boundary. Inheriting
+    # the parent task's process-local sandbox identity makes the CLI try to nest the
+    # Desktop sandbox and can prevent codex-windows-sandbox-setup.exe from starting.
+    # Keep authentication, CODEX_HOME, and process-local CA settings untouched.
+    for name in DESKTOP_PROCESS_CONTEXT_ENVIRONMENT:
+        environment.pop(name, None)
+    executable = pathlib.Path(command[-1]) if command else pathlib.Path()
+    if executable.is_absolute():
+        parent = str(executable.parent)
+        current_path = environment.get("PATH", "")
+        path_entries = current_path.split(os.pathsep) if current_path else []
+        if parent.lower() not in {entry.lower() for entry in path_entries}:
+            environment["PATH"] = os.pathsep.join([parent, *path_entries])
+    return environment
+
+
+def resolve_codex_command() -> list[str]:
+    """Resolve a runnable Codex CLI argv prefix from trusted local locations."""
+    checked: set[str] = set()
+    for candidate in codex_candidates():
+        if not candidate.is_file():
+            continue
+        key = str(candidate).lower()
+        if key in checked:
+            continue
+        checked.add(key)
+        return command_for_executable(candidate)
+    raise RuntimeError(
+        "Codex CLI executable or wrapper was not found; "
+        "set CODEX_CLI_PATH or add Codex to PATH"
+    )
+
+
+def codex_cli_available() -> bool:
+    """Return whether the Codex CLI can be resolved without launching it."""
+    try:
+        resolve_codex_command()
+    except RuntimeError:
+        return False
+    return True
+
+
 def extract_usage_details(events: list[dict[str, Any]]) -> dict[str, int]:
     totals = {
         "input_tokens": 0,
@@ -111,26 +225,7 @@ class CodexCliAdapter:
 
     @staticmethod
     def _resolve_codex_command() -> list[str]:
-        checked: set[str] = set()
-        for name in ("codex", "codex.exe", "codex.cmd", "codex.bat", "codex.ps1"):
-            executable = shutil.which(name)
-            if not executable or executable.lower() in checked:
-                continue
-            checked.add(executable.lower())
-            suffix = pathlib.Path(executable).suffix.lower()
-            if suffix == ".ps1":
-                powershell = shutil.which("pwsh") or shutil.which("pwsh.exe")
-                powershell = powershell or shutil.which("powershell.exe")
-                if powershell:
-                    return [powershell, "-NoProfile", "-NonInteractive", "-File", executable]
-                continue
-            if suffix in {".cmd", ".bat"}:
-                command_shell = shutil.which("cmd.exe") or os.environ.get("COMSPEC")
-                if command_shell:
-                    return [command_shell, "/d", "/c", executable]
-                continue
-            return [executable]
-        raise RuntimeError("Codex CLI executable or wrapper was not found on PATH")
+        return resolve_codex_command()
 
     def sandbox_for_role(self, role: str) -> str:
         return self.policy.sandbox_for_role(role)
@@ -204,8 +299,6 @@ class CodexCliAdapter:
             self.context_mode == "lean" and role not in WRITE_ROLES
         ):
             flags.append("--ignore-user-config")
-        if not self.policy.execution_mode:
-            flags.append("--ignore-rules")
         return flags
 
     def create(
@@ -248,7 +341,7 @@ class CodexCliAdapter:
                 "--output-last-message", str(output_path), "--cd", str(self.workdir), "-",
             ])
             started = time.perf_counter()
-            environment = os.environ.copy()
+            environment = environment_for_codex_command(self.codex_command)
             environment["PYTHONDONTWRITEBYTECODE"] = "1"
 
             def observe_output(raw_output: str | bytes | None) -> tuple[list[dict[str, Any]], dict[str, int], int]:

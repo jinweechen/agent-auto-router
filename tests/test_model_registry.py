@@ -122,6 +122,8 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertEqual(report["modelCalls"], 0)
         self.assertEqual(report["resolvedProfiles"]["C"]["dispatcher"]["tier"], "balanced")
         self.assertEqual(report["highRiskFinalRoles"]["A"]["model"], "codex:gpt-5.6-sol")
+        self.assertFalse(report["benchmarkPriors"]["runtimeNetworkAccess"])
+        self.assertNotIn("claude:sonnet", report["benchmarkPriors"]["evidenceModels"])
 
     def test_high_risk_profile_resolution_keeps_required_capability(self) -> None:
         payload = registry_payload()
