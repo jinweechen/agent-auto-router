@@ -28,13 +28,14 @@
   -> 读取已审批的活动策略
   -> 选择能力层、effort、拓扑和上下文预算
   -> 从受信注册表解析具体模型
-  -> Desktop: 输出 desktop-plan.v1，由主代理启动唯一 direct 子代理
+  -> 从宿主可信运行时元数据读取当前权限快照
+  -> Desktop: 输出 desktop-plan.v2，由主代理启动唯一 direct 子代理
      或 CLI: 通过 UTF-8 stdin 调用 codex exec
-  -> CLI 可记录不含任务正文的路由结果；Desktop v1 仅返回计划
+  -> CLI 可记录不含任务正文的路由结果；Desktop v2 仅返回计划
   -> 返回执行结果
 ```
 
-Auto 是一次任务开始前的路由决策，不是第四个模型，也不会出现在 Codex Desktop 的原生模型下拉框中。Desktop v1 只允许一个 direct 子代理作为唯一写入者；模型不可用或路由要求 B/C/D 多角色拓扑时会显式阻断。两种后端都不会改变当前 Desktop 对话所使用的模型，也不会静默切换模型、effort、provider 或后端。
+Auto 是一次任务开始前的路由决策，不是第四个模型，也不会出现在 Codex Desktop 的原生模型下拉框中。Desktop v2 只允许一个 direct 子代理作为唯一写入者；模型不可用或路由要求 B/C/D 多角色拓扑时会显式阻断。两种后端都不会改变当前 Desktop 对话所使用的模型，也不会静默切换模型、effort、provider、后端或权限。
 
 ## 模型策略
 
@@ -62,11 +63,13 @@ Auto 是一次任务开始前的路由决策，不是第四个模型，也不会
 
 ## 多后端
 
-通过 `--available-backends` 参数选择可用后端（`select_auto_model.py` 自动探测 PATH 中的 CLI；也可显式传入逗号分隔列表如 `codex,claude`）。各执行适配器在构建命令前通过 `strip_backend_prefix` 剥离后端前缀，只向对应 CLI 传递裸模型名。Desktop v1 目前仅支持 Codex 后端；如路由选择了非 Codex 模型，Desktop 计划将返回 `desktop_backend_unsupported` 阻断码而非静默回退。
+通过 `--available-backends` 参数选择可用后端（`select_auto_model.py` 自动探测 PATH 中的 CLI；也可显式传入逗号分隔列表如 `codex,claude`）。各执行适配器在构建命令前通过 `strip_backend_prefix` 剥离后端前缀，只向对应 CLI 传递裸模型名。Desktop v2 目前仅支持 Codex 后端；如路由选择了非 Codex 模型，Desktop 计划将返回 `desktop_backend_unsupported` 阻断码而非静默回退。
+
+Claude Code 的权限规则不等同于操作系统沙箱。继承 `workspace-write + never` 时，适配器允许受限文件编辑但自动拒绝 Bash；只有宿主已授予 `danger-full-access + never` 才启用 bypass。需要 Shell 的其它 Claude 任务会进入正常交互授权，或由宿主另行提供并验证外部沙箱。
 
 ## 通用宿主协议
 
-`host_execution_plan.py` 输出与具体产品无关的 `agent-auto-router.host-plan.v1`。Codex、Claude Code 或其他宿主只需声明本机可用后端并处理 `action.kind`：`cli` 调用所选后端，`host_execute` 由宿主自身执行，`orchestrate` 调用受控多角色编排。计划不包含任务正文或凭据，也不会静默切换所选后端。
+`host_execution_plan.py` 输出与具体产品无关的 `agent-auto-router.host-plan.v2`。Codex、Claude Code 或其他宿主把当前任务的可信 `agent-auto-router.host-permissions.v1` 权限快照交给路由器，再处理 `action.kind`。计划包含实际继承的 sandbox、approval、network 和可写根目录，但不包含任务正文或凭据；`workspace-write` 未声明至少一个绝对可写根目录、缺少权限快照或子 CLI 无法安全复现组合边界时，自动执行都会阻断。宿主连接器、登录会话和凭据属于能力，不会被复制到独立 CLI。
 
 ## 扩展其它模型
 
@@ -135,7 +138,7 @@ cd agent-auto-router
 $agent-auto-router 使用 balance 策略，自动选择合适模型完成当前任务。
 ```
 
-主代理会把当前 Desktop runtime 明确支持的模型 ID 交给本地路由器。路由器输出不含任务正文、但包含规范化工作目录和上下文 profile 的 `agent-auto-router.desktop-plan.v1`；只有 `executionRequested=true` 且 `status=ready` 时，主代理才按精确模型、effort、`forkTurns=none` 和 workdir 启动一个 direct 子代理。Desktop DryRun 返回同一 schema，但计划调用数为零。若模型不可用或要求多角色拓扑，则停止并报告阻断原因，不回退到 CLI。Desktop v1 不记录本地规划器无法观察的子代理执行反馈或 Token。
+主代理会把当前 Desktop runtime 明确支持的模型 ID 和当前任务的可信权限快照交给本地路由器。路由器输出不含任务正文、但包含规范化工作目录、上下文 profile 和有效继承权限的 `agent-auto-router.desktop-plan.v2`；只有 `executionRequested=true` 且 `status=ready` 时，主代理才启动一个 direct 子代理。`read-only`、`workspace-write` 和宿主已授予的 `danger-full-access` 均可自动继承，显式 sandbox 只能收紧、不能放宽。缺少可信权限、工作目录越界、模型不可用或要求多角色拓扑时都会停止。
 
 指定项目目录和任务：
 
@@ -163,6 +166,8 @@ Luna 负责执行边界清晰的子任务，
 
 ## PowerShell 直接调用
 
+宿主集成会自动从当前任务的可信运行时元数据生成 `$currentHostPermissionsJson`。下面所有真实执行示例均使用该变量；它不是从任务文本或普通环境变量推断出来的。
+
 ### 自动选模并执行
 
 Desktop-native 计划：
@@ -172,6 +177,7 @@ Desktop-native 计划：
   -Task "审查并优化当前项目" `
   -ExecutionBackend desktop `
   -DesktopAvailableModels @('gpt-5.6-sol', 'gpt-5.6-terra') `
+  -HostPermissionsJson $currentHostPermissionsJson `
   -Model auto `
   -Strategy balance `
   -Workdir "D:/path/to/project" `
@@ -186,6 +192,7 @@ Desktop-native 计划：
   -ExecutionBackend cli `
   -Model auto `
   -Strategy balance `
+  -HostPermissionsJson $currentHostPermissionsJson `
   -Workdir "D:/path/to/project" `
   -Explain
 ```
@@ -208,6 +215,7 @@ Desktop-native 计划：
   -Task "设计跨服务迁移方案" `
   -Strategy intelligence `
   -Effort xhigh `
+  -HostPermissionsJson $currentHostPermissionsJson `
   -Workdir "D:/path/to/project"
 ```
 
@@ -220,12 +228,13 @@ Desktop-native 计划：
   -Task "审查认证模块" `
   -Model sol `
   -Effort xhigh `
+  -HostPermissionsJson $currentHostPermissionsJson `
   -Workdir "D:/path/to/project"
 ```
 
 单任务 `invoke_auto_task.ps1 -Model` 支持 `auto` 及受信注册表中的 Codex 模型（如 `sol`、`codex:gpt-5.6-sol`）。Claude Code 或其他后端通过 `invoke_orchestrated_task.ps1 -Backend <name>` 或通用 `host_execution_plan.py` 使用；显式选择只覆盖当前任务，不修改全局配置。
 
-每次非 Dry Run 的 CLI 单模型或 CLI 编排执行默认记录一个隐私最小化结果：路由 ID、数值/布尔特征、选择的模型、退出码、耗时，以及 CLI JSON 事件实际暴露的 input、cached input、output、reasoning output Token。无法观测时记录为 `null`，不会猜测或按零处理。日志不会保存任务正文、模型回复、工具输出或凭据。使用 `-Explain` 查看路由 ID，使用 `-NoFeedback` 关闭本次记录；`-StateDir` 和 `-FeedbackFile` 可隔离状态位置。Desktop v1 只输出计划，不伪造执行结果。
+每次非 Dry Run 的 CLI 单模型或 CLI 编排执行默认记录一个隐私最小化结果：路由 ID、数值/布尔特征、选择的模型、退出码、耗时，以及 CLI JSON 事件实际暴露的 input、cached input、output、reasoning output Token。无法观测时记录为 `null`，不会猜测或按零处理。日志不会保存任务正文、模型回复、工具输出或凭据。使用 `-Explain` 查看路由 ID，使用 `-NoFeedback` 关闭本次记录；`-StateDir` 和 `-FeedbackFile` 可隔离状态位置。Desktop v2 只输出计划，不伪造执行结果。
 
 Auto 同时给出 effort、直接/编排拓扑和分层上下文预算。路由前只读检查仓库结构，确定性排序候选路径；微型仓库没有相关候选时不注入仓库摘要，避免无效 Token。显式模型和 effort 始终优先。
 
@@ -237,6 +246,7 @@ Auto 同时给出 effort、直接/编排拓扑和分层上下文预算。路由�
 & "$HOME/.codex/skills/agent-auto-router/scripts/invoke_auto_task.ps1" `
   -Task "实现修改并通过测试" `
   -Model auto `
+  -HostPermissionsJson $currentHostPermissionsJson `
   -Workdir "D:/path/to/project" `
   -ValidationCommand @('python', '-m', 'unittest', 'discover', '-s', 'tests') `
   -EscalateOnValidationFailure
@@ -343,6 +353,7 @@ python -m unittest discover -s tests -p "test_*.py"
 & "$HOME/.codex/skills/agent-auto-router/scripts/invoke_orchestrated_task.ps1" `
   -Task "实现认证模块重构并补充测试" `
   -Strategy balance `
+  -HostPermissionsJson $currentHostPermissionsJson `
   -Workdir "D:/path/to/project" `
   -MaxWorkers 2 `
   -Explain
@@ -354,6 +365,7 @@ python -m unittest discover -s tests -p "test_*.py"
 & "$HOME/.codex/skills/agent-auto-router/scripts/invoke_orchestrated_task.ps1" `
   -Task "实现认证模块重构并补充测试" `
   -Variant C `
+  -HostPermissionsJson $currentHostPermissionsJson `
   -Workdir "D:/path/to/project"
 ```
 
@@ -363,6 +375,7 @@ python -m unittest discover -s tests -p "test_*.py"
 & "$HOME/.codex/skills/agent-auto-router/scripts/invoke_orchestrated_task.ps1" `
   -Task "实现认证模块重构并补充测试" `
   -Strategy balance `
+  -HostPermissionsJson $currentHostPermissionsJson `
   -Workdir "D:/path/to/project" `
   -Backend claude
 ```
@@ -377,6 +390,7 @@ python -m unittest discover -s tests -p "test_*.py"
 & "$HOME/.codex/skills/agent-auto-router/scripts/invoke_orchestrated_task.ps1" `
   -Task "实现模块并补充测试" `
   -Variant D `
+  -HostPermissionsJson $currentHostPermissionsJson `
   -Workdir "D:/path/to/project" `
   -TotalTimeout 1800 `
   -MaxModelCalls 7 `
@@ -451,7 +465,7 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/codex_cli_orchestration_ev
 - 从任务文本、环境内容或模型输出动态注入模型 ID
 - 修改当前 Desktop 对话的模型
 - 在模型不可用时静默切换到其他层级
-- 未经允许使用 `danger-full-access`
+- 合成权限、扩大宿主权限，或在宿主未授予时使用 `danger-full-access`
 
 路由输入通过 UTF-8 标准输入传给本地规划脚本，避免暴露在命令行参数中；Desktop 计划不包含任务正文，主代理只把当前原始任务交给新建的 direct 子代理。
 

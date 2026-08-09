@@ -32,14 +32,46 @@ def _bare(model: str) -> str:
     return model.split(":", 1)[1] if ":" in model else model
 
 
+def host_permissions(sandbox: str = "workspace-write") -> dict[str, object]:
+    return {
+        "schema": "agent-auto-router.host-permissions.v1",
+        "source": "test-desktop-turn",
+        "sandbox": sandbox,
+        "approvalPolicy": "never",
+        "networkAccess": False,
+        "writableRoots": [str(SCRIPTS.parents[2].resolve())] if sandbox == "workspace-write" else [],
+        "canRequestPermissions": False,
+    }
+
+
 class DesktopExecutionTests(unittest.TestCase):
+    def test_automatic_execution_requires_trusted_host_permissions(self) -> None:
+        route = route_for("Implement a routine change")
+        plan = build_desktop_plan(
+            route, [_bare(route["selectedModel"])], workdir=SCRIPTS.parents[2]
+        )
+        self.assertEqual(plan["status"], "blocked")
+        self.assertEqual(plan["blocked"]["code"], "desktop_host_permissions_required")
+
+    def test_read_only_host_cannot_produce_a_writer(self) -> None:
+        route = route_for("Review a routine change")
+        plan = build_desktop_plan(
+            route,
+            [_bare(route["selectedModel"])],
+            host_permissions=host_permissions("read-only"),
+            workdir=SCRIPTS.parents[2],
+        )
+        self.assertEqual(plan["status"], "ready")
+        self.assertFalse(plan["agent"]["writer"])
+        self.assertIsNone(plan["hostContract"]["onlyWriter"])
+
     def test_direct_plan_is_single_writer_and_privacy_safe(self) -> None:
         route = route_for("Implement a routine change")
         route["task"] = "private task"
         plan = build_desktop_plan(
-            route, [_bare(route["selectedModel"])], workdir=SCRIPTS.parents[2]
+            route, [_bare(route["selectedModel"])], host_permissions=host_permissions(), workdir=SCRIPTS.parents[2]
         )
-        self.assertEqual(plan["schema"], "agent-auto-router.desktop-plan.v1")
+        self.assertEqual(plan["schema"], "agent-auto-router.desktop-plan.v2")
         self.assertEqual(plan["status"], "ready")
         self.assertEqual(plan["hostContract"]["action"], "spawn_agent")
         self.assertEqual(plan["hostContract"]["maxAgents"], 1)
@@ -64,7 +96,7 @@ class DesktopExecutionTests(unittest.TestCase):
     def test_selected_model_unavailable_is_explicitly_blocked(self) -> None:
         route = route_for("Implement a routine change")
         plan = build_desktop_plan(
-            route, ["gpt-other"], workdir=SCRIPTS.parents[2]
+            route, ["gpt-other"], host_permissions=host_permissions(), workdir=SCRIPTS.parents[2]
         )
         self.assertEqual(plan["status"], "blocked")
         self.assertEqual(plan["blocked"]["code"], "desktop_model_unavailable")
@@ -80,7 +112,7 @@ class DesktopExecutionTests(unittest.TestCase):
             ),
         }
         plan = build_desktop_plan(
-            route, ["sonnet"], workdir=SCRIPTS.parents[2]
+            route, ["sonnet"], host_permissions=host_permissions(), workdir=SCRIPTS.parents[2]
         )
         self.assertEqual(plan["status"], "blocked")
         self.assertEqual(plan["blocked"]["code"], "desktop_backend_unsupported")
@@ -94,7 +126,7 @@ class DesktopExecutionTests(unittest.TestCase):
         )
         self.assertEqual(route["executionPlan"]["topology"], "orchestrated")
         plan = build_desktop_plan(
-            route, [_bare(route["selectedModel"])], workdir=SCRIPTS.parents[2]
+            route, [_bare(route["selectedModel"])], host_permissions=host_permissions(), workdir=SCRIPTS.parents[2]
         )
         self.assertEqual(plan["status"], "blocked")
         self.assertEqual(
@@ -102,16 +134,17 @@ class DesktopExecutionTests(unittest.TestCase):
         )
         self.assertEqual(plan["plannedAgentCalls"], 0)
 
-    def test_danger_full_access_is_blocked_without_a_planned_call(self) -> None:
+    def test_danger_full_access_is_inherited_without_router_elevation(self) -> None:
         route = route_for("Implement a routine change")
         plan = build_desktop_plan(
             route,
             [_bare(route["selectedModel"])],
             workdir=SCRIPTS.parents[2],
-            requested_sandbox="danger-full-access",
+            host_permissions=host_permissions("danger-full-access"),
         )
-        self.assertEqual(plan["blocked"]["code"], "desktop_sandbox_unsupported")
-        self.assertEqual(plan["plannedAgentCalls"], 0)
+        self.assertEqual(plan["status"], "ready")
+        self.assertEqual(plan["hostContract"]["permissions"]["effectiveSandbox"], "danger-full-access")
+        self.assertTrue(plan["hostContract"]["permissions"]["noPrivilegeEscalation"])
 
     def test_desktop_planner_has_no_cli_or_process_execution_path(self) -> None:
         source = inspect.getsource(desktop_execution).lower()
@@ -151,7 +184,7 @@ class DesktopExecutionTests(unittest.TestCase):
                 f"& '{script}' -Task 'Implement a routine change' "
                 "-ExecutionBackend desktop "
                 "-DesktopAvailableModels @('gpt-5.6-sol','gpt-5.6-terra') "
-                f"-Workdir '{repository}' -NoFeedback"
+                f"-Workdir '{repository}' -HostPermissionsJson '{json.dumps(host_permissions())}' -NoFeedback"
             )
             completed = subprocess.run(
                 [
@@ -186,7 +219,7 @@ class DesktopExecutionTests(unittest.TestCase):
             f"& '{script}' -Task 'Implement a routine change' "
             "-ExecutionBackend desktop -DryRun -Explain -Json -NoFeedback "
             "-DesktopAvailableModels @('gpt-5.6-sol','gpt-5.6-terra') "
-            f"-Workdir '{repository}'"
+            f"-Workdir '{repository}' -HostPermissionsJson '{json.dumps(host_permissions())}'"
         )
         completed = subprocess.run(
             [powershell, "-NoProfile", "-NonInteractive", "-Command", command],
@@ -198,7 +231,7 @@ class DesktopExecutionTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         plan = json.loads(completed.stdout.strip())
-        self.assertEqual(plan["schema"], "agent-auto-router.desktop-plan.v1")
+        self.assertEqual(plan["schema"], "agent-auto-router.desktop-plan.v2")
         self.assertEqual(plan["status"], "ready")
         self.assertFalse(plan["executionRequested"])
         self.assertEqual(plan["plannedAgentCalls"], 0)
@@ -249,8 +282,8 @@ class DesktopExecutionTests(unittest.TestCase):
         repository = SCRIPTS.parents[2].resolve()
         command = (
             f"& '{script}' -Task 'Reply with exactly OK' "
-            "-ExecutionBackend cli -Model claude:sonnet -DryRun "
-            f"-Workdir '{repository}'"
+            "-ExecutionBackend cli -Model claude:sonnet -Sandbox read-only -DryRun "
+            f"-Workdir '{repository}' -HostPermissionsJson '{json.dumps(host_permissions())}'"
         )
         completed = subprocess.run(
             [powershell, "-NoProfile", "-NonInteractive", "-Command", command],

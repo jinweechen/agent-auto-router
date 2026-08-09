@@ -8,13 +8,14 @@ param(
     [string]$Strategy = 'balance',
     [ValidateSet('', 'none', 'low', 'medium', 'high', 'xhigh', 'max')]
     [string]$Effort = '',
-    [ValidateSet('read-only', 'workspace-write', 'danger-full-access')]
-    [string]$Sandbox = 'workspace-write',
+    [ValidateSet('inherit', 'read-only', 'workspace-write', 'danger-full-access')]
+    [string]$Sandbox = 'inherit',
     [ValidateSet('lean', 'full')]
     [string]$ContextMode = 'lean',
     [ValidateSet('cli', 'desktop')]
     [string]$ExecutionBackend = 'cli',
     [string[]]$DesktopAvailableModels = @(),
+    [string]$HostPermissionsJson = '',
     [string]$Workdir = (Get-Location).Path,
     [string]$StateDir = $(if ($env:CODEX_AUTO_ROUTER_STATE_DIR) { $env:CODEX_AUTO_ROUTER_STATE_DIR } else { Join-Path $HOME '.codex\auto-router' }),
     [string]$FeedbackFile = '',
@@ -43,13 +44,13 @@ if ($ExecutionBackend -eq 'desktop' -and $DesktopAvailableModels.Count -eq 0) {
     throw 'ExecutionBackend=desktop requires -DesktopAvailableModels from the current Desktop runtime.'
 }
 if ($ExecutionBackend -eq 'desktop' -and ($EscalateOnValidationFailure -or $ValidationCommand.Count -gt 0)) {
-    throw 'Desktop v1 emits one direct-agent plan and does not support validation-driven escalation.'
+    throw 'Desktop v2 emits one direct-agent plan and does not support validation-driven escalation.'
 }
 if ($ExecutionBackend -eq 'desktop' -and $ContextMode -ne 'lean') {
-    throw 'Desktop v1 does not consume CLI ContextMode; use the default lean value.'
+    throw 'Desktop v2 does not consume CLI ContextMode; use the default lean value.'
 }
 if ($ExecutionBackend -eq 'desktop' -and $FeedbackFile) {
-    throw 'Desktop v1 cannot write execution feedback; -FeedbackFile is CLI-only.'
+    throw 'Desktop v2 cannot write execution feedback; -FeedbackFile is CLI-only.'
 }
 $resolvedWorkdir = (Resolve-Path -LiteralPath $Workdir).Path
 if ($EscalateOnValidationFailure -and $ModelChoice -ne 'auto') {
@@ -67,6 +68,12 @@ $selectorArguments = @(
 )
 if ($ValidationCommand.Count -gt 0) {
     $selectorArguments += '--validation-configured'
+}
+if (-not $DryRun -and -not $HostPermissionsJson -and $Sandbox -eq 'inherit') {
+    throw 'Automatic permission inheritance requires -HostPermissionsJson from the current host runtime.'
+}
+if ($ExecutionBackend -eq 'desktop' -and -not $HostPermissionsJson) {
+    throw 'ExecutionBackend=desktop requires -HostPermissionsJson from the current Desktop turn.'
 }
 if ($ExecutionBackend -eq 'cli') {
     $selectorArguments += @('--available-backends', 'codex')
@@ -122,7 +129,10 @@ if ($DryRun -and $ExecutionBackend -eq 'cli') { $explanation; return }
 if ($Explain -and $ExecutionBackend -eq 'cli') { $explanation | ConvertTo-Json -Depth 6 | Write-Host }
 
 if ($ExecutionBackend -eq 'desktop') {
-    $desktopArguments = @($desktopPath, '--sandbox', $Sandbox, '--workdir', $resolvedWorkdir)
+    $desktopArguments = @(
+        $desktopPath, '--sandbox', $Sandbox, '--workdir', $resolvedWorkdir,
+        '--host-permissions-json', $HostPermissionsJson
+    )
     foreach ($availableModel in $DesktopAvailableModels) {
         $desktopArguments += @('--available-model', $availableModel)
     }
@@ -149,6 +159,7 @@ $runnerArguments = @(
     '--repo-map-tokens', [int]$route.executionPlan.context.repoMapTokens,
     '--max-candidate-files', [int]$route.executionPlan.context.maxCandidateFiles
 )
+if ($HostPermissionsJson) { $runnerArguments += @('--host-permissions-json', $HostPermissionsJson) }
 if ($Json) { $runnerArguments += '--emit-json' }
 
 $previousOutputEncoding = $OutputEncoding
@@ -223,6 +234,7 @@ if ($needsEscalation -and [bool]$route.executionPlan.escalation.eligible) {
         '--repo-map-tokens', [int]$route.executionPlan.context.repoMapTokens,
         '--max-candidate-files', [int]$route.executionPlan.context.maxCandidateFiles
     )
+    if ($HostPermissionsJson) { $escalationArguments += @('--host-permissions-json', $HostPermissionsJson) }
     if ($Json) { $escalationArguments += '--emit-json' }
     $escalationTask = "$Task`n`nA previous lower-tier attempt did not pass the user-provided deterministic validation. Inspect the current workspace state, fix the remaining issue, and run relevant validation."
     $escalationTask | & $python.Source @escalationArguments

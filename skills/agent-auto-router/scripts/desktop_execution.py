@@ -9,8 +9,10 @@ import pathlib
 import sys
 from typing import Any, Iterable
 
+from host_permissions import HostPermissions, parse_host_permissions, workdir_is_writable
 
-SCHEMA = "agent-auto-router.desktop-plan.v1"
+
+SCHEMA = "agent-auto-router.desktop-plan.v2"
 DIRECT_VARIANTS = frozenset({"A", "E", "F"})
 
 
@@ -31,7 +33,8 @@ def build_desktop_plan(
     available_models: Iterable[str],
     *,
     workdir: pathlib.Path | str,
-    requested_sandbox: str = "workspace-write",
+    host_permissions: HostPermissions | dict[str, Any] | str | None = None,
+    requested_sandbox: str = "inherit",
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Return a host-consumable plan; never executes a process or handles credentials."""
@@ -54,6 +57,18 @@ def build_desktop_plan(
     resolved_workdir = pathlib.Path(workdir).resolve(strict=True)
     if not resolved_workdir.is_dir():
         raise ValueError(f"workdir must be a directory: {resolved_workdir}")
+    permissions = (
+        host_permissions
+        if isinstance(host_permissions, HostPermissions)
+        else parse_host_permissions(host_permissions)
+        if host_permissions is not None
+        else None
+    )
+    permission_plan = permissions.as_plan(requested_sandbox) if permissions else None
+    effective_sandbox = (
+        permission_plan["effectiveSandbox"] if permission_plan else "read-only"
+    )
+    would_write = effective_sandbox != "read-only"
 
     plan: dict[str, Any] = {
         "schema": SCHEMA,
@@ -84,8 +99,8 @@ def build_desktop_plan(
             "reasoningEffort": effort,
             "forkTurns": "none",
             "workdir": str(resolved_workdir),
-            "writer": requested_sandbox == "workspace-write" and not dry_run,
-            "wouldWrite": requested_sandbox == "workspace-write",
+            "writer": would_write and not dry_run,
+            "wouldWrite": would_write,
             "taskSource": "desktop-current-user-task",
         },
         "hostContract": {
@@ -93,9 +108,9 @@ def build_desktop_plan(
             "maxAgents": 0 if dry_run else 1,
             "onlyRole": "direct",
             "onlyWriter": (
-                "direct" if requested_sandbox == "workspace-write" and not dry_run else None
+                "direct" if would_write and not dry_run else None
             ),
-            "permissions": "inherit-current-desktop-task",
+            "permissions": permission_plan,
             "fullHistoryForkAllowed": False,
             "silentModelOrProviderFallback": False,
         },
@@ -109,11 +124,24 @@ def build_desktop_plan(
         "blocked": None,
     }
 
+    if permissions is None:
+        return _blocked(
+            plan,
+            "desktop_host_permissions_required",
+            "Automatic Desktop execution requires a trusted current-turn host permission snapshot.",
+        )
+    if would_write and not workdir_is_writable(resolved_workdir, permissions):
+        return _blocked(
+            plan,
+            "desktop_workdir_not_writable",
+            "The selected workdir is outside the writable roots declared by the host.",
+        )
+
     if topology != "direct" or variant not in DIRECT_VARIANTS:
         return _blocked(
             plan,
             "desktop_multi_role_topology_unsupported",
-            "Desktop v1 supports exactly one direct child agent; the selected route requires multi-role orchestration.",
+            "Desktop v2 supports exactly one direct child agent; the selected route requires multi-role orchestration.",
         )
 
     from model_registry import strip_backend_prefix
@@ -123,7 +151,7 @@ def build_desktop_plan(
         return _blocked(
             plan,
             "desktop_backend_unsupported",
-            f"Desktop v1 supports only the codex backend; selected model: {selected_model}",
+            f"Desktop v2 supports only the codex backend; selected model: {selected_model}",
         )
 
     if unqualified not in _normalized_models(available_models):
@@ -133,12 +161,6 @@ def build_desktop_plan(
             f"Selected model is not declared available by the Desktop runtime: {selected_model}",
         )
 
-    if requested_sandbox == "danger-full-access":
-        return _blocked(
-            plan,
-            "desktop_sandbox_unsupported",
-            "Desktop v1 cannot request danger-full-access; it inherits the current Desktop task permissions.",
-        )
     return plan
 
 
@@ -149,9 +171,10 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--sandbox",
-        choices=("read-only", "workspace-write", "danger-full-access"),
-        default="workspace-write",
+        choices=("inherit", "read-only", "workspace-write", "danger-full-access"),
+        default="inherit",
     )
+    parser.add_argument("--host-permissions-json", required=True)
     args = parser.parse_args()
     try:
         route = json.load(sys.stdin)
@@ -161,6 +184,7 @@ def main() -> int:
             route,
             args.available_model,
             workdir=args.workdir,
+            host_permissions=args.host_permissions_json,
             requested_sandbox=args.sandbox,
             dry_run=args.dry_run,
         )

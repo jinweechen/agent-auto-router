@@ -19,6 +19,7 @@ from codex_cli_adapter import (
     extract_usage_details,
     resolve_codex_command,
 )
+from host_permissions import cli_permission_issue, parse_host_permissions, workdir_is_writable
 from model_registry import strip_backend_prefix
 from repository_context import build_repository_context
 
@@ -54,9 +55,10 @@ def main() -> int:
     parser.add_argument("--effort", required=True)
     parser.add_argument(
         "--sandbox",
-        choices=("read-only", "workspace-write", "danger-full-access"),
+        choices=("inherit", "read-only", "workspace-write", "danger-full-access"),
         required=True,
     )
+    parser.add_argument("--host-permissions-json")
     parser.add_argument("--context-mode", choices=("lean", "full"), default="lean")
     parser.add_argument("--workdir", type=pathlib.Path, required=True)
     parser.add_argument("--result-file", type=pathlib.Path, required=True)
@@ -71,6 +73,22 @@ def main() -> int:
     workdir = args.workdir.resolve()
     if not workdir.is_dir():
         parser.error(f"workdir not found: {workdir}")
+    permissions = None
+    if args.host_permissions_json:
+        try:
+            permissions = parse_host_permissions(args.host_permissions_json)
+            args.sandbox = permissions.effective_sandbox(args.sandbox)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if args.sandbox == "external-sandbox":
+            parser.error("Codex CLI cannot directly represent external-sandbox inheritance")
+        issue = cli_permission_issue(permissions, args.sandbox)
+        if issue:
+            parser.error(issue)
+        if args.sandbox != "read-only" and not workdir_is_writable(workdir, permissions):
+            parser.error("workdir is outside the writable roots declared by the host")
+    elif args.sandbox == "inherit":
+        parser.error("--sandbox inherit requires --host-permissions-json")
     try:
         execution_model = strip_backend_prefix(args.model, "codex")
         codex_command = resolve_codex_command()
@@ -94,6 +112,13 @@ def main() -> int:
         command = [*codex_command, "exec", "--ephemeral"]
         if args.context_mode == "lean" and args.sandbox == "read-only":
             command.append("--ignore-user-config")
+        if permissions is not None:
+            command.extend(["-c", f"approval_policy='{permissions.codex_approval_policy}'"])
+            if args.sandbox == "workspace-write":
+                network = "true" if permissions.network_access is True else "false"
+                command.extend(["-c", f"sandbox_workspace_write.network_access={network}"])
+                for root in permissions.writable_roots:
+                    command.extend(["--add-dir", root])
         command.extend([
             "--skip-git-repo-check",
             "--sandbox",

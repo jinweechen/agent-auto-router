@@ -358,6 +358,17 @@ class OrchestratedExecutionPolicyTests(unittest.TestCase):
         adapter = build_adapter("claude", args, {}, None)
         self.assertIsInstance(adapter, ClaudeCliAdapter)
         self.assertIn("Edit", adapter.allowed_tools)
+        self.assertEqual(adapter.policy.write_sandbox, "workspace-write")
+
+    def test_build_adapter_claude_inherits_danger_full_access_only_when_selected(self) -> None:
+        args = argparse.Namespace(
+            timeout=600, effort=None, workdir=pathlib.Path.cwd(),
+            sandbox="danger-full-access", total_timeout=1800,
+            max_model_calls=7, max_total_tokens=None, context_mode="lean",
+        )
+        adapter = build_adapter("claude", args, {}, None)
+        self.assertEqual(adapter.policy.write_sandbox, "danger-full-access")
+        self.assertIn("Edit", adapter.allowed_tools)
 
     def test_build_adapter_claude_read_only(self) -> None:
         args = argparse.Namespace(
@@ -368,6 +379,7 @@ class OrchestratedExecutionPolicyTests(unittest.TestCase):
         adapter = build_adapter("claude", args, {}, None)
         self.assertIsInstance(adapter, ClaudeCliAdapter)
         self.assertEqual(adapter.allowed_tools, ("Read",))
+        self.assertEqual(adapter.policy.write_sandbox, "read-only")
 
 
 if __name__ == "__main__":

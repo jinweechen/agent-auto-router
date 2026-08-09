@@ -19,10 +19,68 @@ from claude_cli_adapter import (  # noqa: E402
     parse_claude_json_output,
 )
 from execution_policy import ExecutionPolicy  # noqa: E402
+from host_permissions import parse_host_permissions  # noqa: E402
 from orchestration_engine import RunContext  # noqa: E402
 
 
 class ClaudeExecutionTests(unittest.TestCase):
+    def test_permission_argv_uses_tool_surface_and_never_preapproves_bash_in_workspace(self) -> None:
+        adapter = object.__new__(ClaudeCliAdapter)
+        adapter.execution_mode = True
+        adapter.allowed_tools = ("Read", "Edit", "Write", "Bash")
+        adapter.policy = ExecutionPolicy(True, "workspace-write")
+        adapter.host_permissions = parse_host_permissions({
+            "schema": "agent-auto-router.host-permissions.v1",
+            "source": "test-claude-turn",
+            "sandbox": "workspace-write",
+            "approvalPolicy": "never",
+            "networkAccess": False,
+            "writableRoots": [str(SCRIPTS.parents[2].resolve())],
+            "canRequestPermissions": False,
+        })
+        writer = adapter.permission_argv_for_role("reviewer")
+        self.assertEqual(writer[writer.index("--permission-mode") + 1], "dontAsk")
+        self.assertIn("Bash", writer[writer.index("--tools") + 1])
+        self.assertNotIn("Bash", writer[writer.index("--allowedTools") + 1])
+        reader = adapter.permission_argv_for_role("planner")
+        self.assertEqual(reader[reader.index("--tools") + 1], "Read")
+
+    def test_danger_full_access_is_the_only_claude_bypass_path(self) -> None:
+        adapter = object.__new__(ClaudeCliAdapter)
+        adapter.execution_mode = True
+        adapter.allowed_tools = ("Read", "Edit", "Write", "Bash")
+        adapter.policy = ExecutionPolicy(True, "danger-full-access")
+        adapter.host_permissions = parse_host_permissions({
+            "schema": "agent-auto-router.host-permissions.v1",
+            "source": "test-claude-turn",
+            "sandbox": "danger-full-access",
+            "approvalPolicy": "never",
+            "networkAccess": True,
+            "writableRoots": [str(SCRIPTS.parents[2].resolve())],
+            "canRequestPermissions": False,
+        })
+        argv = adapter.permission_argv_for_role("reviewer")
+        self.assertIn("--allow-dangerously-skip-permissions", argv)
+        self.assertEqual(argv[argv.index("--permission-mode") + 1], "bypassPermissions")
+
+    def test_request_capable_claude_execution_uses_default_permission_mode(self) -> None:
+        adapter = object.__new__(ClaudeCliAdapter)
+        adapter.execution_mode = True
+        adapter.allowed_tools = ("Read", "Edit", "Write", "Bash")
+        adapter.policy = ExecutionPolicy(True, "workspace-write")
+        adapter.host_permissions = parse_host_permissions({
+            "schema": "agent-auto-router.host-permissions.v1",
+            "source": "test-claude-turn",
+            "sandbox": "workspace-write",
+            "approvalPolicy": "on-request",
+            "networkAccess": False,
+            "writableRoots": [str(SCRIPTS.parents[2].resolve())],
+            "canRequestPermissions": True,
+        })
+        argv = adapter.permission_argv_for_role("reviewer")
+        self.assertEqual(argv[argv.index("--permission-mode") + 1], "default")
+        self.assertNotIn("--allow-dangerously-skip-permissions", argv)
+
     def test_adapter_implements_execution_adapter(self) -> None:
         from execution_adapter import ExecutionAdapter  # noqa: E402
         self.assertTrue(issubclass(ClaudeCliAdapter, ExecutionAdapter))

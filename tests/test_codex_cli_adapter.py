@@ -1,3 +1,5 @@
+import io
+import json
 import os
 import pathlib
 import subprocess
@@ -15,9 +17,74 @@ from codex_cli_adapter import (  # noqa: E402
     environment_for_codex_command,
     resolve_codex_command,
 )
+from execution_policy import ExecutionPolicy  # noqa: E402
+from host_permissions import parse_host_permissions  # noqa: E402
 
 
 class CodexCommandResolutionTests(unittest.TestCase):
+    def test_single_runner_applies_inherited_sandbox_approval_and_roots(self) -> None:
+        import single_task_runner
+
+        repository = SCRIPTS.parents[2].resolve()
+        permissions = {
+            "schema": "agent-auto-router.host-permissions.v1",
+            "source": "test-codex-turn",
+            "sandbox": "workspace-write",
+            "approvalPolicy": "never",
+            "networkAccess": False,
+            "writableRoots": [str(repository)],
+            "canRequestPermissions": False,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result_file = pathlib.Path(temp_dir) / "result.json"
+            argv = [
+                "single_task_runner.py",
+                "--model", "codex:gpt-5.6-terra",
+                "--effort", "medium",
+                "--sandbox", "inherit",
+                "--host-permissions-json", json.dumps(permissions),
+                "--workdir", str(repository),
+                "--result-file", str(result_file),
+            ]
+            completed = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout='{"usage":{"input_tokens":1,"output_tokens":1}}\n'
+            )
+            with patch.object(sys, "argv", argv), patch.object(
+                sys, "stdin", io.StringIO("Review the workspace")
+            ), patch.object(
+                single_task_runner, "resolve_codex_command", return_value=["codex"]
+            ), patch.object(
+                single_task_runner.subprocess, "run", return_value=completed
+            ) as run:
+                self.assertEqual(single_task_runner.main(), 0)
+            command = run.call_args.args[0]
+            self.assertIn("workspace-write", command)
+            self.assertIn("approval_policy='never'", command)
+            self.assertIn("sandbox_workspace_write.network_access=false", command)
+            self.assertIn("--add-dir", command)
+            self.assertIn(str(repository), command)
+
+    def test_orchestration_never_adds_writable_roots_to_read_only_roles(self) -> None:
+        repository = SCRIPTS.parents[2].resolve()
+        permissions = parse_host_permissions({
+            "schema": "agent-auto-router.host-permissions.v1",
+            "source": "test-codex-turn",
+            "sandbox": "workspace-write",
+            "approvalPolicy": "never",
+            "networkAccess": True,
+            "writableRoots": [str(repository)],
+            "canRequestPermissions": False,
+        })
+        adapter = object.__new__(CodexCliAdapter)
+        adapter.policy = ExecutionPolicy(True, "workspace-write")
+        adapter.host_permissions = permissions
+        planner_flags = adapter.permission_flags_for_role("planner")
+        reviewer_flags = adapter.permission_flags_for_role("reviewer")
+        self.assertNotIn("--add-dir", planner_flags)
+        self.assertNotIn("sandbox_workspace_write.network_access=true", planner_flags)
+        self.assertIn("--add-dir", reviewer_flags)
+        self.assertIn("sandbox_workspace_write.network_access=true", reviewer_flags)
+
     def test_windows_prefers_cli_wrapper_with_companion_resources(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = pathlib.Path(temp_dir)

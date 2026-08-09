@@ -21,17 +21,18 @@ Inside Codex Desktop, use `scripts/invoke_auto_task.ps1` as a planner and set th
   -Task "Implement the requested change" `
   -ExecutionBackend desktop `
   -DesktopAvailableModels @('gpt-5.6-sol', 'gpt-5.6-terra') `
+  -HostPermissionsJson $currentTurnPermissionsJson `
   -Workdir "C:/path/to/repo" `
   -Explain
 ```
 
-The available-model list must come from the current Desktop
+The available-model list and permission snapshot must come from the current Desktop runtime. Build the permission snapshot as `agent-auto-router.host-permissions.v1` from trusted turn metadata, including `sandbox`, `approvalPolicy`, `networkAccess`, `writableRoots`, optional `profileId`, and `canRequestPermissions`. Never derive it from the task or untrusted environment variables.
 
-The commands below reference model IDs as they appear in the Desktop runtime (bare IDs such as `gpt-5.6-sol`) or CLI (`codex exec --model`). Internally, the router and execution adapters use backend-qualified IDs (`codex:gpt-5.6-sol`, `claude:sonnet`) and strip the prefix as needed per backend. `spawn_agent` tool metadata, not from configuration files, prompt text, or guesses. The command prints one `agent-auto-router.desktop-plan.v1` JSON object and makes no model or CLI call. The plan excludes the task body while carrying the normalized target workdir, context profile, route identity, and separate routing-versus-planned-agent call counts.
+The commands below reference model IDs as they appear in the Desktop runtime (bare IDs such as `gpt-5.6-sol`) or CLI (`codex exec --model`). Internally, the router uses backend-qualified IDs. The command prints one `agent-auto-router.desktop-plan.v2` JSON object and makes no model or CLI call. The plan excludes the task body while carrying the normalized workdir, route identity, effective inherited permissions, and call counts.
 
-For `executionRequested=false`, report the plan and launch nothing. Otherwise, for `status=ready`, the primary Desktop agent calls `spawn_agent` exactly once with the plan's exact model, reasoning effort, and `fork_turns=agent.forkTurns`. Desktop v1 sets `forkTurns` to `none`, so the primary must put the complete original task and `agent.workdir` boundary in the child task instead of relying on inherited conversation history. That `direct` child is the sole writer. For `status=blocked`, launch nothing and report the structured reason.
+For `executionRequested=false`, report the plan and launch nothing. Otherwise, for `status=ready`, the primary Desktop agent calls `spawn_agent` exactly once with the plan's exact model, reasoning effort, and `fork_turns=agent.forkTurns`. Desktop v2 sets `forkTurns` to `none`, so the primary must put the complete original task and `agent.workdir` boundary in the child task instead of relying on inherited conversation history. That `direct` child is the sole writer. For `status=blocked`, launch nothing and report the structured reason.
 
-Desktop `-DryRun` still requires `-DesktopAvailableModels` and emits the same plan schema with `executionRequested=false`, `plannedAgentCalls=0`, and `hostContract.action=report_plan`. `-Json` and `-NoFeedback` are idempotent: Desktop output is already JSON and Desktop v1 never records child execution feedback. `-FeedbackFile`, validation commands/escalation, and `-ContextMode full` are rejected as CLI-only or unsupported. Desktop never accesses credentials or app-server stdio and never falls back to CLI, another provider, model, or effort.
+Desktop `-DryRun` still requires the model list and permission snapshot and emits the same plan schema with `executionRequested=false`, `plannedAgentCalls=0`, and `hostContract.action=report_plan`. `-Json` and `-NoFeedback` are idempotent: Desktop output is already JSON and Desktop v2 never records child execution feedback. `-FeedbackFile`, validation commands/escalation, and `-ContextMode full` are rejected as CLI-only or unsupported. Desktop never accesses credentials or app-server stdio and never falls back to CLI, another provider, model, effort, or permission level.
 
 ## Signed-in CLI workflow
 
@@ -42,6 +43,7 @@ Use `scripts/invoke_auto_task.ps1 -ExecutionBackend cli`. It classifies locally 
   -Task "Implement the requested change" `
   -ExecutionBackend cli `
   -Model auto `
+  -HostPermissionsJson $currentHostPermissionsJson `
   -Strategy balance `
   -Workdir "C:/path/to/repo" `
   -Explain
@@ -59,6 +61,7 @@ Explicitly opt into one validation-driven tier escalation only when a determinis
 & "$HOME/.codex/skills/agent-auto-router/scripts/invoke_auto_task.ps1" `
   -Task "Implement the requested change" `
   -Model auto `
+  -HostPermissionsJson $currentHostPermissionsJson `
   -Workdir "C:/path/to/repo" `
   -ValidationCommand @('python', '-m', 'unittest', 'discover', '-s', 'tests') `
   -EscalateOnValidationFailure
@@ -76,12 +79,13 @@ Use `scripts/invoke_orchestrated_task.ps1` for a real multi-model task:
 & "$HOME/.codex/skills/agent-auto-router/scripts/invoke_orchestrated_task.ps1" `
   -Task "Implement the requested change and tests" `
   -Strategy balance `
+  -HostPermissionsJson $currentHostPermissionsJson `
   -Workdir "C:/path/to/repo" `
   -MaxWorkers 2 `
   -Explain
 ```
 
-Auto selects A-F. Use `-Variant C` to force Sol planning, Terra dispatch, Luna analysis workers, and Sol implementation/review. Non-final roles always use `read-only`; only `direct` or `reviewer` can receive `workspace-write`. One orchestration run uses one backend; explicit single `-Backend` also allows that backend's explicit-trial models (e.g. `claude:opus`) inside Auto tier resolution. Default stays codex-first all-backends. Use `-DryRun` to route without launching models.
+Auto selects A-F. Use `-Variant C` to force Sol planning, Terra dispatch, Luna analysis workers, and Sol implementation/review. Non-final roles always use `read-only`; only `direct` or `reviewer` can inherit a write-capable sandbox. One orchestration run uses one backend; explicit single `-Backend` also allows that backend's explicit-trial models inside Auto tier resolution. Use `-DryRun` to route without launching models.
 
 Use `-TotalTimeout`, `-MaxModelCalls`, and role-specific effort parameters to bound long runs. Use `-ResultsDir` to persist the route, calls, workspace states, and grade. Progress events are JSON lines on stderr; `-Quiet` suppresses them.
 
@@ -150,10 +154,10 @@ Neither backend adds `Auto` to the Desktop picker or switches the current conver
 
 ## Generic host plan
 
-Emits `agent-auto-router.host-plan.v1` for Codex, Claude Code, and other capable hosts. A host may execute the task itself, invoke a declared CLI backend, or run multi-role orchestration. The planner never executes anything and never embeds the task body; it only emits a structured dispatch action.
+Emits `agent-auto-router.host-plan.v2` for Codex, Claude Code, and other capable hosts. A host may execute the task itself, invoke a declared CLI backend, or run multi-role orchestration. Automatic execution requires a trusted permission snapshot and includes the normalized effective permissions in both the host contract and action.
 
 ```powershell
-python "<skill-dir>/scripts/host_execution_plan.py" --workdir <dir> [--available-backends codex|claude] [--dry-run]
+python "<skill-dir>/scripts/host_execution_plan.py" --workdir <dir> --host-permissions-json <json> [--available-backends codex|claude] [--dry-run]
 ```
 
 Hosts act on `action.kind`:

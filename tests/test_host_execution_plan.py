@@ -35,12 +35,51 @@ def _route(
     }
 
 
+def _permissions(sandbox: str = "workspace-write") -> dict:
+    return {
+        "schema": "agent-auto-router.host-permissions.v1",
+        "source": "test-host-turn",
+        "sandbox": sandbox,
+        "approvalPolicy": "never",
+        "networkAccess": False,
+        "writableRoots": [str(SCRIPTS.parents[2].resolve())] if sandbox == "workspace-write" else [],
+        "canRequestPermissions": False,
+    }
+
+
 class HostExecutionPlanTests(unittest.TestCase):
+    def test_automatic_execution_without_permission_snapshot_is_blocked(self) -> None:
+        plan = build_host_plan(_route(), workdir=".", available_backends=["codex"])
+        self.assertEqual(plan["status"], "blocked")
+        self.assertEqual(plan["blocked"]["code"], "host_permissions_required")
+
+    def test_read_only_host_plan_has_no_writer(self) -> None:
+        plan = build_host_plan(
+            _route(),
+            workdir=".",
+            available_backends=["codex"],
+            host_permissions=_permissions("read-only"),
+        )
+        self.assertEqual(plan["status"], "ready")
+        self.assertFalse(plan["agent"]["writer"])
+        self.assertIsNone(plan["hostContract"]["onlyWriter"])
+        self.assertEqual(plan["action"]["permissions"]["effectiveSandbox"], "read-only")
+
+    def test_cli_blocks_permission_shape_it_cannot_reproduce(self) -> None:
+        plan = build_host_plan(
+            _route(),
+            workdir=".",
+            available_backends=["codex"],
+            host_permissions=_permissions("danger-full-access"),
+        )
+        self.assertEqual(plan["status"], "blocked")
+        self.assertEqual(plan["blocked"]["code"], "host_permissions_unrepresentable_by_cli")
+
     def test_direct_cli_action_is_host_neutral(self) -> None:
         plan = build_host_plan(
-            _route(), workdir=".", available_backends=["codex"]
+            _route(), workdir=".", available_backends=["codex"], host_permissions=_permissions()
         )
-        self.assertEqual(plan["schema"], "agent-auto-router.host-plan.v1")
+        self.assertEqual(plan["schema"], "agent-auto-router.host-plan.v2")
         self.assertEqual(plan["executionBackend"], "host")
         self.assertEqual(plan["action"]["kind"], "cli")
         self.assertEqual(plan["action"]["backend"], "codex")
@@ -50,7 +89,7 @@ class HostExecutionPlanTests(unittest.TestCase):
 
     def test_direct_falls_back_to_explicit_approximate_host_execution(self) -> None:
         plan = build_host_plan(
-            _route(), workdir=".", available_backends=["claude"]
+            _route(), workdir=".", available_backends=["claude"], host_permissions=_permissions()
         )
         self.assertEqual(plan["status"], "ready")
         self.assertEqual(plan["action"]["kind"], "host_execute")
@@ -61,7 +100,7 @@ class HostExecutionPlanTests(unittest.TestCase):
         route = _route(
             model="claude:sonnet", effort="high", topology="orchestrated", variant="D"
         )
-        plan = build_host_plan(route, workdir=".", available_backends=["claude"])
+        plan = build_host_plan(route, workdir=".", available_backends=["claude"], host_permissions=_permissions())
         self.assertEqual(plan["action"]["kind"], "orchestrate")
         self.assertEqual(plan["action"]["backend"], "claude")
         self.assertEqual(plan["action"]["entrypoint"], "invoke_orchestrated_task.py")
@@ -69,10 +108,14 @@ class HostExecutionPlanTests(unittest.TestCase):
         self.assertIn("--variant", plan["action"]["argv"])
         self.assertNotIn("--Variant", plan["action"]["argv"])
         self.assertIn("--workdir", plan["action"]["argv"])
+        permission_index = plan["action"]["argv"].index("--host-permissions-json")
+        forwarded = json.loads(plan["action"]["argv"][permission_index + 1])
+        self.assertEqual(forwarded["schema"], "agent-auto-router.host-permissions.v1")
+        self.assertEqual(forwarded["sandbox"], "workspace-write")
 
     def test_orchestration_contract_has_no_direct_agent(self) -> None:
         route = _route(topology="orchestrated", variant="D")
-        plan = build_host_plan(route, workdir=".", available_backends=["codex"])
+        plan = build_host_plan(route, workdir=".", available_backends=["codex"], host_permissions=_permissions())
         self.assertIsNone(plan["agent"])
         self.assertEqual(plan["hostContract"]["maxAgents"], 0)
         self.assertIsNone(plan["hostContract"]["onlyRole"])
@@ -84,21 +127,21 @@ class HostExecutionPlanTests(unittest.TestCase):
         route = _route(
             model="claude:sonnet", effort="high", topology="orchestrated", variant="D"
         )
-        plan = build_host_plan(route, workdir=".", available_backends=["codex"])
+        plan = build_host_plan(route, workdir=".", available_backends=["codex"], host_permissions=_permissions())
         self.assertEqual(plan["status"], "blocked")
         self.assertEqual(plan["blocked"]["code"], "host_selected_backend_unavailable")
         self.assertEqual(plan["plannedCalls"], 0)
 
     def test_unknown_programmatic_backend_is_blocked(self) -> None:
         plan = build_host_plan(
-            _route(), workdir=".", available_backends=["unknown"]
+            _route(), workdir=".", available_backends=["unknown"], host_permissions=_permissions()
         )
         self.assertEqual(plan["status"], "blocked")
         self.assertEqual(plan["blocked"]["code"], "host_unknown_backend")
 
     def test_dry_run_has_no_writer_or_planned_call(self) -> None:
         plan = build_host_plan(
-            _route(), workdir=".", available_backends=["codex"], dry_run=True
+            _route(), workdir=".", available_backends=["codex"], host_permissions=_permissions(), dry_run=True
         )
         self.assertFalse(plan["executionRequested"])
         self.assertEqual(plan["plannedCalls"], 0)
@@ -108,7 +151,7 @@ class HostExecutionPlanTests(unittest.TestCase):
     def test_privacy_fields_omit_task_and_credentials(self) -> None:
         route = _route()
         route["task"] = "private task"
-        plan = build_host_plan(route, workdir=".", available_backends=["codex"])
+        plan = build_host_plan(route, workdir=".", available_backends=["codex"], host_permissions=_permissions())
         serialized = json.dumps(plan)
         self.assertNotIn("private task", serialized)
         self.assertFalse(plan["privacy"]["taskIncludedInPlan"])
@@ -142,6 +185,8 @@ class HostExecutionPlanTests(unittest.TestCase):
                 str(repository),
                 "--available-backends",
                 "codex",
+                "--host-permissions-json",
+                json.dumps(_permissions()),
             ],
             input=generated.stdout,
             capture_output=True,
@@ -193,6 +238,7 @@ class HostExecutionPlanTests(unittest.TestCase):
             _route(topology="nested", variant="X"),
             workdir=".",
             available_backends=["codex"],
+            host_permissions=_permissions(),
         )
         self.assertEqual(plan["status"], "blocked")
         self.assertEqual(plan["blocked"]["code"], "host_topology_unsupported")

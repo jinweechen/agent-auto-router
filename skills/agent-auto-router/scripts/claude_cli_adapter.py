@@ -9,6 +9,8 @@ import threading
 import time
 from typing import Any, Callable
 
+from host_permissions import HostPermissions
+
 from execution_policy import ExecutionPolicy, WRITE_ROLES
 from orchestration_engine import CallRecord, RunContext
 
@@ -65,6 +67,7 @@ class ClaudeCliAdapter:
         role_efforts: dict[str, str] | None = None,
         workdir: pathlib.Path = pathlib.Path.cwd(),
         execution_mode: bool = False,
+        write_sandbox: str = "workspace-write",
         max_turns: int = 30,
         allowed_tools: tuple[str, ...] = ("Read", "Edit", "Write", "Bash"),
         model_map: dict[str, str] | None = None,
@@ -72,6 +75,7 @@ class ClaudeCliAdapter:
         max_model_calls: int | None = None,
         max_total_tokens: int | None = None,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
+        host_permissions: HostPermissions | None = None,
     ) -> None:
         if total_timeout_seconds is not None and total_timeout_seconds < 1:
             raise ValueError("total_timeout_seconds must be at least 1")
@@ -91,7 +95,8 @@ class ClaudeCliAdapter:
         self.max_model_calls = max_model_calls
         self.max_total_tokens = max_total_tokens
         self.progress_callback = progress_callback
-        self.policy = ExecutionPolicy(execution_mode, write_sandbox="workspace-write")
+        self.host_permissions = host_permissions
+        self.policy = ExecutionPolicy(execution_mode, write_sandbox=write_sandbox)
         self.started_at = time.monotonic()
         self.calls_started = 0
         self._call_lock = threading.Lock()
@@ -186,6 +191,36 @@ class ClaudeCliAdapter:
             return list(self.allowed_tools)
         return ["Read"]
 
+    def permission_argv_for_role(self, role: str) -> list[str]:
+        """Build a bounded Claude tool surface without treating allow rules as a sandbox."""
+        tools = self._allowed_tools_for_role(role)
+        argv = ["--tools", " ".join(tools)]
+        host_permissions = getattr(self, "host_permissions", None)
+        if not self.execution_mode or role not in WRITE_ROLES:
+            return [*argv, "--allowedTools", "Read", "--permission-mode", "dontAsk"]
+        if host_permissions is None:
+            return [*argv, "--permission-mode", "acceptEdits"]
+        if (
+            self.policy.write_sandbox == "danger-full-access"
+            and host_permissions.approval_policy == "never"
+        ):
+            return [
+                *argv,
+                "--allow-dangerously-skip-permissions",
+                "--permission-mode",
+                "bypassPermissions",
+            ]
+        if host_permissions.approval_policy == "never":
+            preapproved = [tool for tool in tools if tool != "Bash"]
+            return [
+                *argv,
+                "--allowedTools",
+                " ".join(preapproved),
+                "--permission-mode",
+                "dontAsk",
+            ]
+        return [*argv, "--permission-mode", "default"]
+
     def reserve_call(self, role: str, projected_tokens: int = 0) -> int:
         with self._call_lock:
             with self._token_lock:
@@ -266,8 +301,8 @@ class ClaudeCliAdapter:
             "effort": effective_effort,
             "backend": "claude-code",
         })
-        tools_for_role = self._allowed_tools_for_role(role)
         normalized_effort = self._normalize_effort(effective_effort)
+        host_permissions = getattr(self, "host_permissions", None)
         argv = [
             *self.claude_command,
             "-p",
@@ -275,8 +310,11 @@ class ClaudeCliAdapter:
             "--effort", normalized_effort,
             "--output-format", "json",
             "--max-turns", str(self.max_turns),
-            "--allowedTools", " ".join(tools_for_role),
         ]
+        argv.extend(self.permission_argv_for_role(role))
+        if host_permissions is not None:
+            for root in host_permissions.writable_roots:
+                argv.extend(["--add-dir", root])
         # -p without a value reads the task from stdin. Passing the full
         # prompt via stdin (instead of an argv value) keeps multi-line prompts
         # intact even when the resolved command is a .cmd/.bat wrapper executed

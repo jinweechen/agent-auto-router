@@ -1,4 +1,4 @@
 interface:
   display_name: "Agent Auto Router"
-  short_description: "Route trusted models through Desktop, CLI, or a generic host"
-  default_prompt: "Use $agent-auto-router to select a trusted route; obey executionRequested and the exact model, effort, topology, and workdir without silent fallback. In Desktop use at most one direct child; in other tools consume the generic host plan's action.kind."
+  short_description: "Route trusted models with inherited host permissions"
+  default_prompt: "Use $agent-auto-router to select a trusted route and automatically inherit the current host task's permissions without broadening them."

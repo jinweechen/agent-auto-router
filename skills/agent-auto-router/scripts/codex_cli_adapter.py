@@ -10,6 +10,8 @@ import threading
 import time
 from typing import Any, Callable
 
+from host_permissions import HostPermissions
+
 from execution_policy import ExecutionPolicy, WRITE_ROLES
 from orchestration_engine import CallRecord, RunContext
 
@@ -176,6 +178,7 @@ class CodexCliAdapter:
         max_total_tokens: int | None = None,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         context_mode: str = "full",
+        host_permissions: HostPermissions | None = None,
     ) -> None:
         if total_timeout_seconds is not None and total_timeout_seconds < 1:
             raise ValueError("total_timeout_seconds must be at least 1")
@@ -195,6 +198,7 @@ class CodexCliAdapter:
         self.max_total_tokens = max_total_tokens
         self.progress_callback = progress_callback
         self.context_mode = context_mode
+        self.host_permissions = host_permissions
         self.started_at = time.monotonic()
         self.calls_started = 0
         self._call_lock = threading.Lock()
@@ -229,6 +233,24 @@ class CodexCliAdapter:
 
     def sandbox_for_role(self, role: str) -> str:
         return self.policy.sandbox_for_role(role)
+
+    def permission_flags_for_role(self, role: str) -> list[str]:
+        host_permissions = getattr(self, "host_permissions", None)
+        if host_permissions is None:
+            return []
+        flags = [
+            "--config",
+            f"approval_policy='{host_permissions.codex_approval_policy}'",
+        ]
+        if self.sandbox_for_role(role) == "workspace-write":
+            network = "true" if host_permissions.network_access is True else "false"
+            flags.extend([
+                "--config",
+                f"sandbox_workspace_write.network_access={network}",
+            ])
+            for root in host_permissions.writable_roots:
+                flags.extend(["--add-dir", root])
+        return flags
 
     def preamble_for_role(self, role: str) -> str:
         return self.policy.preamble_for_role(role)
@@ -334,6 +356,7 @@ class CodexCliAdapter:
             output_path = pathlib.Path(temp_dir) / "last-message.txt"
             command = [*self.codex_command, "exec", "--ephemeral"]
             command.extend(self.configuration_flags(role))
+            command.extend(self.permission_flags_for_role(role))
             command.extend([
                 "--skip-git-repo-check", "--sandbox", self.sandbox_for_role(role),
                 "--color", "never", "--model", execution_model, "--config",

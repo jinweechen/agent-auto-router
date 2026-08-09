@@ -17,6 +17,7 @@ from auto_router import VARIANT_LABELS, route_case
 from claude_cli_adapter import ClaudeCliAdapter
 from codex_cli_adapter import CodexCliAdapter
 from codex_cli_orchestration_eval import positive_int
+from host_permissions import cli_permission_issue, parse_host_permissions, workdir_is_writable
 from model_registry import load_model_registry
 from orchestration_engine import run_variant
 from orchestration_profiles import load_orchestration_profiles
@@ -229,9 +230,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-feedback", action="store_true")
     parser.add_argument(
         "--sandbox",
-        choices=("read-only", "workspace-write"),
-        default="workspace-write",
+        choices=("inherit", "read-only", "workspace-write", "danger-full-access"),
+        default="inherit",
     )
+    parser.add_argument("--host-permissions-json")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--allow-dirty", action="store_true")
     parser.add_argument("--allow-no-changes", action="store_true")
@@ -262,6 +264,7 @@ def build_adapter(backend: str | None, args: argparse.Namespace, role_efforts: d
             max_total_tokens=args.max_total_tokens,
             progress_callback=progress,
             context_mode=args.context_mode,
+            host_permissions=getattr(args, "host_permissions", None),
         )
     if backend == "claude":
         return ClaudeCliAdapter(
@@ -270,18 +273,39 @@ def build_adapter(backend: str | None, args: argparse.Namespace, role_efforts: d
             role_efforts=role_efforts,
             workdir=args.workdir,
             execution_mode=True,
-            allowed_tools=("Read", "Edit", "Write", "Bash") if args.sandbox == "workspace-write" else ("Read",),
+            write_sandbox=args.sandbox,
+            allowed_tools=("Read", "Edit", "Write", "Bash") if args.sandbox != "read-only" else ("Read",),
             max_turns=30,
             total_timeout_seconds=args.total_timeout,
             max_model_calls=args.max_model_calls,
             max_total_tokens=args.max_total_tokens,
             progress_callback=progress,
+            host_permissions=getattr(args, "host_permissions", None),
         )
     raise ValueError(f"unknown backend: {backend}")
 
 
 def main() -> int:
     args = parse_args()
+    host_permissions = None
+    if args.host_permissions_json:
+        host_permissions = parse_host_permissions(args.host_permissions_json)
+        args.host_permissions = host_permissions
+        args.sandbox = host_permissions.effective_sandbox(args.sandbox)
+        if args.sandbox == "external-sandbox":
+            raise ValueError("CLI orchestration cannot directly represent external-sandbox inheritance")
+        issue = cli_permission_issue(host_permissions, args.sandbox)
+        if issue:
+            raise ValueError(issue)
+        if args.sandbox != "read-only" and not workdir_is_writable(args.workdir, host_permissions):
+            raise ValueError("Workdir is outside the writable roots declared by the host")
+    elif args.sandbox == "inherit":
+        if args.dry_run:
+            args.sandbox = "read-only"
+        else:
+            raise ValueError("--sandbox inherit requires --host-permissions-json")
+    else:
+        args.host_permissions = None
     started_at = time.monotonic()
     if (
         args.results_dir is not None
@@ -483,7 +507,7 @@ def main() -> int:
         "observed_token_usage": client.observed_usage(),
     }
     no_change_failure = (
-        args.sandbox == "workspace-write"
+        args.sandbox in {"workspace-write", "danger-full-access"}
         and before_status.get("is_git_repo")
         and after_status.get("is_git_repo")
         and workspace_modified is False

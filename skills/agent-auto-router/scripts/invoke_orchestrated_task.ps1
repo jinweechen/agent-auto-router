@@ -23,8 +23,9 @@ param(
     [string]$GraderPolicy = 'auto',
     [ValidateSet('lean', 'full')]
     [string]$ContextMode = 'lean',
-    [ValidateSet('read-only', 'workspace-write')]
-    [string]$Sandbox = 'workspace-write',
+    [ValidateSet('inherit', 'read-only', 'workspace-write', 'danger-full-access')]
+    [string]$Sandbox = 'inherit',
+    [string]$HostPermissionsJson = '',
     [string]$Backend = '',
     [string]$Workdir = (Get-Location).Path,
     [string]$ResultsDir = '',
@@ -60,6 +61,9 @@ if (-not (Test-Path -LiteralPath $Workdir -PathType Container)) {
 $python = Get-Command python -ErrorAction SilentlyContinue
 if (-not $python) { $python = Get-Command py -ErrorAction SilentlyContinue }
 if (-not $python) { throw 'Python 3 is required for multi-model orchestration.' }
+if (-not $DryRun -and -not $HostPermissionsJson -and $Sandbox -eq 'inherit') {
+    throw 'Automatic permission inheritance requires -HostPermissionsJson from the current host runtime.'
+}
 
 $arguments = @(
     $runner, '--stdin', '--strategy', $Strategy, '--variant', $Variant,
@@ -70,6 +74,7 @@ $arguments = @(
     '--state-dir', $StateDir,
     '--sandbox', $Sandbox, '--workdir', (Resolve-Path -LiteralPath $Workdir).Path
 )
+if ($HostPermissionsJson) { $arguments += @('--host-permissions-json', $HostPermissionsJson) }
 if ($Effort) { $arguments += @('--effort', $Effort) }
 if ($Backend) { $arguments += @('--backend', $Backend) }
 if ($MaxTotalTokens -gt 0) { $arguments += @('--max-total-tokens', $MaxTotalTokens) }

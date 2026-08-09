@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 WRITE_ROLES = frozenset({"direct", "reviewer"})
-VALID_WRITE_SANDBOXES = frozenset({"read-only", "workspace-write"})
+VALID_WRITE_SANDBOXES = frozenset(
+    {"read-only", "workspace-write", "danger-full-access"}
+)
 
 
 @dataclass(frozen=True)

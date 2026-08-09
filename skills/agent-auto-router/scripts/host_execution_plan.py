@@ -11,10 +11,16 @@ import sys
 from typing import Any, Iterable
 
 from codex_cli_adapter import codex_cli_available
+from host_permissions import (
+    HostPermissions,
+    cli_permission_issue,
+    parse_host_permissions,
+    workdir_is_writable,
+)
 from model_registry import load_model_registry
 
 
-SCHEMA = "agent-auto-router.host-plan.v1"
+SCHEMA = "agent-auto-router.host-plan.v2"
 DIRECT_VARIANTS = frozenset({"A", "E", "F"})
 ORCHESTRATED_VARIANTS = frozenset({"B", "C", "D"})
 
@@ -58,6 +64,7 @@ def build_host_plan(
     *,
     workdir: pathlib.Path | str,
     available_backends: Iterable[str] | None = None,
+    host_permissions: HostPermissions | dict[str, Any] | str | None = None,
     dry_run: bool = False,
     known_backends: Iterable[str] | None = None,
 ) -> dict[str, Any]:
@@ -80,6 +87,18 @@ def build_host_plan(
     resolved_workdir = pathlib.Path(workdir).resolve(strict=True)
     if not resolved_workdir.is_dir():
         raise ValueError(f"workdir must be a directory: {resolved_workdir}")
+    permissions = (
+        host_permissions
+        if isinstance(host_permissions, HostPermissions)
+        else parse_host_permissions(host_permissions)
+        if host_permissions is not None
+        else None
+    )
+    permission_plan = permissions.as_plan() if permissions else None
+    effective_sandbox = (
+        permission_plan["effectiveSandbox"] if permission_plan else "read-only"
+    )
+    would_write = effective_sandbox != "read-only"
 
     registry = load_model_registry()
     declared_backends = tuple(known_backends or registry.backends)
@@ -130,8 +149,8 @@ def build_host_plan(
                 "model": selected_model,
                 "reasoningEffort": effort,
                 "workdir": str(resolved_workdir),
-                "writer": not dry_run,
-                "wouldWrite": True,
+                "writer": would_write and not dry_run,
+                "wouldWrite": would_write,
                 "taskSource": "host-current-user-task",
             }
             if direct
@@ -152,8 +171,8 @@ def build_host_plan(
             "action": "report_plan" if dry_run else "pending",
             "maxAgents": 0 if orchestrated or dry_run else 1,
             "onlyRole": "direct" if direct else None,
-            "onlyWriter": final_writer if not dry_run else None,
-            "permissions": "inherit-current-host-task",
+            "onlyWriter": final_writer if would_write and not dry_run else None,
+            "permissions": permission_plan,
             "fullHistoryForkAllowed": False,
             "silentModelOrProviderFallback": False,
             "modelAccuracy": "exact",
@@ -168,6 +187,19 @@ def build_host_plan(
         "action": None,
         "blocked": None,
     }
+
+    if permissions is None and not dry_run:
+        return _blocked(
+            plan,
+            "host_permissions_required",
+            "Automatic host execution requires a trusted current-task permission snapshot.",
+        )
+    if permissions and would_write and not workdir_is_writable(resolved_workdir, permissions):
+        return _blocked(
+            plan,
+            "host_workdir_not_writable",
+            "The selected workdir is outside the writable roots declared by the host.",
+        )
 
     if unknown_backends:
         return _blocked(
@@ -194,12 +226,16 @@ def build_host_plan(
 
     if direct:
         if selected_backend in backends:
+            issue = cli_permission_issue(permissions, effective_sandbox) if permissions else None
+            if issue:
+                return _blocked(plan, "host_permissions_unrepresentable_by_cli", issue)
             action = {
                 "kind": "cli",
                 "backend": selected_backend,
                 "model": selected_model,
                 "effort": effort,
                 "taskSource": "host-current-user-task",
+                "permissions": permission_plan,
             }
         else:
             action = {
@@ -207,12 +243,16 @@ def build_host_plan(
                 "modelAccuracy": "approximate",
                 "effort": effort,
                 "taskSource": "host-current-user-task",
+                "permissions": permission_plan,
                 "note": (
                     "selected backend is unavailable; the host may execute with its own "
                     "model only after surfacing approximate model accuracy"
                 ),
             }
     elif selected_backend in backends:
+        issue = cli_permission_issue(permissions, effective_sandbox) if permissions else None
+        if issue:
+            return _blocked(plan, "host_permissions_unrepresentable_by_cli", issue)
         action = {
             "kind": "orchestrate",
             "backend": selected_backend,
@@ -228,7 +268,14 @@ def build_host_plan(
                 "--workdir",
                 str(resolved_workdir),
             ],
+            "permissions": permission_plan,
         }
+        if effective_sandbox != "external-sandbox":
+            action["argv"].extend(["--sandbox", effective_sandbox])
+        action["argv"].extend([
+            "--host-permissions-json",
+            json.dumps(permissions.as_snapshot(), ensure_ascii=True, separators=(",", ":")),
+        ])
     else:
         return _blocked(
             plan,
@@ -247,6 +294,7 @@ def main() -> int:
     parser.add_argument("--workdir", type=pathlib.Path, required=True)
     parser.add_argument("--available-backends", default="auto")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--host-permissions-json")
     args = parser.parse_args()
 
     registry = load_model_registry()
@@ -269,6 +317,7 @@ def main() -> int:
             route,
             workdir=args.workdir,
             available_backends=explicit_backends,
+            host_permissions=args.host_permissions_json,
             dry_run=args.dry_run,
             known_backends=registry.backends,
         )
