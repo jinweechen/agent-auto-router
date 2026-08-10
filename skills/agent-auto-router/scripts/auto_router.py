@@ -68,6 +68,7 @@ def route_case(
     for key in (
         "model", "target_tier", "required_capabilities", "reason", "strategy", "effort",
         "policy_version", "policy_digest", "registry_digest",
+        "feature_schema_version",
     ):
         features.pop(key, None)
 
@@ -75,6 +76,7 @@ def route_case(
         "router_version": decision.policy_version,
         "policy_digest": decision.policy_digest,
         "registry_digest": decision.registry_digest,
+        "feature_schema_version": decision.feature_schema_version,
         "mode": mode,
         "effort": decision.effort,
         "variant": variant,

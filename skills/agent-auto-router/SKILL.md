@@ -84,6 +84,8 @@ Use `references/entrypoints.md` for commands and `references/router-contract.md`
 - Never silently change model, effort, tier, provider, topology, or backend.
 - Never synthesize or elevate permissions. Automatic execution requires trusted host permission metadata, and the effective child permission is always less than or equal to the host permission.
 - When guarded-auto is enabled, keep its state and feedback outside every child-writable root. Block guarded execution under `danger-full-access`, an unknown external sandbox, or any boundary that lets the child modify learning evidence.
+- Serialize guarded lifecycle, approval, rollback, and feedback mutations with bounded OS file locks; an abandoned lock file must never keep learning permanently busy.
+- Bind feedback, candidates, canary statistics, and activation to the current routing feature schema. Preserve legacy records for audit, but never train or validate a new candidate with legacy feature semantics.
 - Never grant concurrent writers or automatically retry timed-out `max`/`xhigh` roles.
 - Never auto-change model registry entries, risk rules, permissions, Skill instructions, or thresholds toward a cheaper/weaker tier. Those changes and all manual candidates require explicit human approval.
 

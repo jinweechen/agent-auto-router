@@ -127,6 +127,10 @@ class DesktopExecutionTests(unittest.TestCase):
         self.assertEqual(plan["learning"]["route"]["selectorModel"], route["decision"]["model"])
         self.assertEqual(plan["learning"]["route"]["selectedModel"], direct["model"])
         self.assertEqual(plan["learning"]["route"]["policyDigest"], route["policy"]["digest"])
+        self.assertEqual(
+            plan["learning"]["route"]["featureSchemaVersion"],
+            route["decision"]["feature_schema_version"],
+        )
         self.assertNotIn("private task", json.dumps(plan))
 
     def test_selected_model_unavailable_is_explicitly_blocked(self) -> None:
@@ -374,6 +378,47 @@ class DesktopExecutionTests(unittest.TestCase):
             self.assertEqual(direct["forkTurns"], "none")
             self.assertEqual(pathlib.Path(direct["workdir"]), repository)
             self.assertFalse(marker.exists(), "Desktop backend invoked the Codex CLI shim")
+
+    def test_desktop_backend_ignores_cli_backend_path_discovery(self) -> None:
+        powershell = shutil.which("pwsh") or shutil.which("powershell")
+        self.assertIsNotNone(powershell)
+        script = SCRIPTS / "invoke_auto_task.ps1"
+        repository = SCRIPTS.parents[2].resolve()
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = pathlib.Path(temp)
+            (temp_path / "claude.cmd").write_text("@exit /b 0\r\n", encoding="utf-8")
+            environment = os.environ.copy()
+            environment["PATH"] = os.pathsep.join(
+                (str(temp_path), str(pathlib.Path(sys.executable).parent))
+            )
+            command = (
+                f"& '{script}' -Task 'Implement a routine change' "
+                "-ExecutionBackend desktop -DryRun -NoFeedback "
+                "-DesktopAvailableModels @('gpt-5.6-sol','gpt-5.6-terra') "
+                "-DesktopMaxParallelChildren 3 "
+                f"-Workdir '{repository}' -HostPermissionsJson '{json.dumps(host_permissions())}'"
+            )
+            completed = subprocess.run(
+                [
+                    powershell,
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=environment,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            plan = json.loads(completed.stdout.strip())
+            self.assertEqual(plan["status"], "ready")
+            self.assertTrue(plan["selectedModel"].startswith("codex:"))
 
     def test_desktop_dry_run_explain_and_json_emit_one_plan(self) -> None:
         powershell = shutil.which("pwsh") or shutil.which("powershell")

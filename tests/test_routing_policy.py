@@ -83,6 +83,33 @@ class RoutingPolicyTests(unittest.TestCase):
         self.assertFalse(decision.high_risk)
         self.assertEqual(decision.model, "codex:gpt-5.6-luna")
 
+    def test_ascii_terms_require_lexical_boundaries(self) -> None:
+        information = select_model(
+            "Audit the authentication information model.", "balance"
+        )
+        tokenizer = select_model(
+            "Migrate tokenizer configuration documentation.", "balance"
+        )
+        reproduction = select_model(
+            "Fix test reproduction by migrating the fixture.", "balance"
+        )
+
+        self.assertEqual(information.simple_hits, 0)
+        self.assertEqual(information.target_tier, "balanced")
+        self.assertFalse(tokenizer.high_risk)
+        self.assertEqual(tokenizer.target_tier, "balanced")
+        self.assertEqual(reproduction.high_risk_hits, 0)
+
+    def test_complex_signal_prevents_incidental_simple_classification(self) -> None:
+        decision = select_model(
+            "Investigate race conditions in format-preserving encryption.",
+            "balance",
+        )
+        self.assertGreaterEqual(decision.complex_hits, 1)
+        self.assertGreaterEqual(decision.simple_hits, 1)
+        self.assertFalse(decision.constrained)
+        self.assertNotEqual(decision.target_tier, "fast")
+
     def test_true_high_risk_task_uses_sol_in_every_strategy(self) -> None:
         prompt = "Deploy a production authentication migration and fix vulnerabilities"
         for strategy in ("intelligence", "balance", "cost"):

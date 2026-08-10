@@ -36,7 +36,11 @@ After a candidate is rejected, stabilized, or rolled back, the state records the
 
 Only reports with deterministic validation results, no explicit override, and no high-risk flag count toward canary or probation acceptance. Learning failures do not turn a completed user task into a failed task, but corrupted canary state blocks candidate routing until it is inspected or guarded mode is disabled.
 
+Feature extraction is explicitly versioned. New outcomes and candidates carry `featureSchemaVersion=2`; a record with no version remains readable as legacy v1 audit evidence, but it is excluded from labeled and inferred samples as well as canary/probation statistics. Any candidate built for another feature schema is stale and cannot be routed, approved, or promoted.
+
 The state directory and any custom feedback file are protected control-plane inputs. Automatic execution checks them before launching a child: they must be outside every child-writable root. Guarded execution is blocked under `danger-full-access`, an unknown external sandbox, or any other boundary that lets the child edit its own evidence. Manual mode is unaffected.
+
+Guarded lifecycle transitions, manual approval/rollback, and configuration changes share one bounded operating-system file lock. Feedback and audit JSONL streams use their own bounded append locks. The operating system releases an active lock when a process exits, so an abandoned `.guarded-auto.lock` file is inert rather than a permanent `busy` state.
 
 ## Enable, inspect, and disable
 

@@ -5,6 +5,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 
 SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "skills" / "agent-auto-router" / "scripts"
@@ -18,10 +19,12 @@ from policy_learning import (  # noqa: E402
     build_candidate,
     labeled_samples,
     predict_sample,
+    read_feedback,
     rollback_policy,
 )
 from model_registry import DEFAULT_REGISTRY_PATH, registry_from_dict  # noqa: E402
 from routing_policy import (  # noqa: E402
+    FEATURE_SCHEMA_VERSION,
     RoutingPolicy,
     load_active_policy,
     policy_digest,
@@ -36,6 +39,7 @@ def route_payload(route_id: str) -> dict[str, object]:
         "selector_model": "codex:gpt-5.6-sol",
         "selected_model": "codex:gpt-5.6-sol",
         "reason": "complexity",
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "features": {
             "prompt_chars": 120,
             "criteria_count": 0,
@@ -59,6 +63,7 @@ def route_payload(route_id: str) -> dict[str, object]:
 def labeled_sample(route_id: str) -> dict[str, object]:
     event = {
         "routeId": route_id,
+        "featureSchemaVersion": FEATURE_SCHEMA_VERSION,
         "strategy": "balance",
         "effort": "medium",
         "features": route_payload(route_id)["features"],
@@ -87,6 +92,39 @@ class PolicyLearningTests(unittest.TestCase):
             self.assertNotIn("prompt", stored)
             self.assertNotIn("task", stored)
 
+    def test_legacy_feature_feedback_remains_readable_but_is_not_learned(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = pathlib.Path(temp) / "feedback.jsonl"
+            payload = route_payload("legacy-route")
+            payload.pop("feature_schema_version")
+            append_route_event(payload, path)
+            append_label_event(
+                "legacy-route", "codex:gpt-5.6-terra", "pass", path
+            )
+            events = read_feedback(path)
+            self.assertEqual(events[0]["featureSchemaVersion"], 1)
+            self.assertEqual(labeled_samples(events), [])
+
+    def test_feedback_appends_are_serialized(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = pathlib.Path(temp) / "feedback.jsonl"
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                events = list(
+                    executor.map(
+                        lambda index: append_route_event(
+                            route_payload(f"route-concurrent-{index}"), path
+                        ),
+                        range(24),
+                    )
+                )
+            stored = read_feedback(path)
+            self.assertEqual(len(events), 24)
+            self.assertEqual(len(stored), 24)
+            self.assertEqual(
+                {event["routeId"] for event in stored},
+                {f"route-concurrent-{index}" for index in range(24)},
+            )
+
     def test_feedback_preserves_cached_and_reasoning_token_details(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             path = pathlib.Path(temp) / "feedback.jsonl"
@@ -100,7 +138,8 @@ class PolicyLearningTests(unittest.TestCase):
             }
             append_route_event(payload, path)
             stored = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(stored["schemaVersion"], 2)
+            self.assertEqual(stored["schemaVersion"], 3)
+            self.assertEqual(stored["featureSchemaVersion"], FEATURE_SCHEMA_VERSION)
             self.assertEqual(stored["observedTokens"]["cached_input"], 60)
             self.assertEqual(stored["observedTokens"]["reasoning_output"], 5)
 
@@ -163,6 +202,7 @@ class PolicyLearningTests(unittest.TestCase):
             {
                 "eventType": "route_outcome",
                 "routeId": "route-1",
+                "featureSchemaVersion": FEATURE_SCHEMA_VERSION,
                 "selectorModel": "codex:gpt-5.6-luna",
                 "explicitOverride": False,
                 "strategy": "balance",
@@ -183,6 +223,7 @@ class PolicyLearningTests(unittest.TestCase):
             {
                 "eventType": "route_outcome",
                 "routeId": "route-escalated",
+                "featureSchemaVersion": FEATURE_SCHEMA_VERSION,
                 "selectorModel": "codex:gpt-5.6-luna",
                 "selectedModel": "codex:gpt-5.6-terra",
                 "explicitOverride": False,
@@ -203,10 +244,17 @@ class PolicyLearningTests(unittest.TestCase):
     def test_candidate_improves_validation_before_becoming_eligible(self) -> None:
         samples = [labeled_sample(f"route-{index}") for index in range(24)]
         candidate = build_candidate(samples, RoutingPolicy(), min_labels=20)
+        self.assertEqual(candidate["featureSchemaVersion"], FEATURE_SCHEMA_VERSION)
         self.assertTrue(candidate["eligibleForApproval"])
         self.assertEqual(candidate["policy"]["thresholds"]["balanceFrontier"], 4)
         self.assertGreater(candidate["evaluation"]["validationAccuracyGain"], 0)
         self.assertTrue(candidate["safetyChecks"]["highRiskAlwaysFrontier"])
+
+    def test_candidate_rejects_mixed_feature_schemas(self) -> None:
+        samples = [labeled_sample(f"route-{index}") for index in range(24)]
+        samples[0]["featureSchemaVersion"] = FEATURE_SCHEMA_VERSION - 1
+        with self.assertRaisesRegex(ValueError, "current routing feature schema"):
+            build_candidate(samples, RoutingPolicy(), min_labels=20)
 
     def test_high_risk_prediction_is_fixed_to_frontier(self) -> None:
         sample = labeled_sample("risk")
@@ -263,6 +311,18 @@ class PolicyLearningTests(unittest.TestCase):
             candidate_path = pathlib.Path(temp) / "candidate.json"
             candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "benchmark priors have changed"):
+                approve_candidate(candidate_path, pathlib.Path(temp), "unit-test")
+
+    def test_feature_schema_change_invalidates_outstanding_candidate(self) -> None:
+        samples = [labeled_sample(f"route-{index}") for index in range(24)]
+        candidate = build_candidate(samples, RoutingPolicy(), min_labels=20)
+        candidate["featureSchemaVersion"] = FEATURE_SCHEMA_VERSION - 1
+        candidate.pop("candidateId")
+        candidate["candidateId"] = _canonical_digest(candidate)
+        with tempfile.TemporaryDirectory() as temp:
+            candidate_path = pathlib.Path(temp) / "candidate.json"
+            candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "feature schema has changed"):
                 approve_candidate(candidate_path, pathlib.Path(temp), "unit-test")
 
     def test_approval_and_rollback_are_explicit_and_versioned(self) -> None:

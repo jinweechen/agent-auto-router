@@ -467,6 +467,7 @@ def build_desktop_plan(
             "policyVersion": policy.get("version"),
             "policyDigest": policy.get("digest"),
             "modelRegistryDigest": registry_payload.get("digest"),
+            "featureSchemaVersion": decision.get("feature_schema_version", 1),
             "explicitOverride": bool(route.get("explicitOverride", False)),
         },
         "resultRequired": [

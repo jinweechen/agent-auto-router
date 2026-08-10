@@ -55,6 +55,8 @@ For orchestrated execution, resolve role models and default efforts from the pac
 
 Keyword and score routing is deterministic and free, but it cannot infer every task's true difficulty. Record false upgrades and false downgrades in representative fixtures. Explicit user model and effort choices take precedence. The cost strategy is a model-tier proxy, not measured billing evidence.
 
+Match ASCII words and phrases on lexical boundaries so substrings such as `tokenizer`/`token`, `information`/`format`, and `reproduction`/`production` do not alter routing. Continue matching CJK phrases as substrings. A task with any complex, ambiguous, debugging, long-context, multi-file, or computer-use signal cannot be classified as constrained merely because it also contains a simple-operation word.
+
 Treat acceptance-criteria count as complexity evidence only. Require an explicit independence or parallel-work signal before selecting a worker variant. Treat destructive actions as high risk only when paired with a sensitive domain, while inherently dangerous signals such as data loss or a vulnerability remain high risk on their own.
 
 Require both a parallel signal and sufficient task scale before selecting B/C/D. A short task with fewer than three criteria stays direct unless the user explicitly selects a worker variant.
@@ -69,6 +71,7 @@ Do not equate a successful CLI exit with completed implementation. For Git-backe
 
 - Store only numeric/boolean route features, selected model, reason, policy identity, exit code, duration, and CLI-observable token counts. Preserve unknown tokens as null. Never persist the task, execution output, tool output, or credentials.
 - Require either a human preferred-model label or a deterministic validation-proven adjacent-tier escalation before a route can participate in guarded optimization. Process exit success, latency, or lower token count alone is not a quality label.
+- Every route outcome records `featureSchemaVersion`. Records without it remain readable as legacy v1 evidence, but only records matching the current feature schema may enter learning, canary statistics, or probation statistics. Candidates carry the same version and fail closed after feature semantics change.
 - Tune only bounded `fast / balanced / frontier` complexity thresholds. The trusted registry, high-risk classifier, risk vocabulary, and explicit user overrides are outside the learned surface.
 - Use a deterministic held-out validation split. Approval eligibility requires validation accuracy gain, lower weighted loss, no increase in false downgrades, and zero high-risk violations.
 - Manual candidate generation is read-only with respect to the active policy. Manual activation requires a separate explicit approval command, matching base-policy, model-registry, and benchmark-prior digests, plus a valid candidate integrity digest.

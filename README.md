@@ -98,7 +98,7 @@ python "./skills/agent-auto-router/scripts/validate_model_registry.py"
 
 ## 路由权衡与限制
 
-确定性路由不产生额外模型调用，行为可解释且延迟低，但无法准确理解所有任务语义：普通文本中偶然出现风险词可能导致误升级，缺少触发词的复杂任务也可能误降级。用户显式指定的模型或 reasoning effort 始终优先，代表性误判应加入测试样例后再调整规则。
+确定性路由不产生额外模型调用，行为可解释且延迟低，但无法准确理解所有任务语义。英文关键词按词边界匹配，避免 `tokenizer`/`token`、`information`/`format` 等子串误判；中文短语继续按子串匹配。复杂、歧义、调试、长上下文、多文件或界面操作信号不会因为同时出现简单操作词而被归入 constrained。用户显式指定的模型或 reasoning effort 始终优先，代表性误判应加入测试样例后再调整规则。
 
 `cost` 只根据模型层级选择相对经济的模型。Codex CLI 不提供逐调用账单，因此当前评测不能证明实际节省金额，结果中的未知成本使用 `null`，不能按 `0` 美元解释。
 
@@ -328,6 +328,8 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/policy_learning.py" rollba
 
 学习状态默认保存在 `~/.codex/auto-router`，与 Skill 安装目录分离，因此重新安装 Skill 不会丢失活动策略、审计日志和回滚历史。策略 schema v2 学习的是 `fast / balanced / frontier` 复杂度边界，不学习任意模型 ID。高风险任务始终要求 `frontier + high-risk-primary`；注册表、风险词表和用户显式覆盖不会被优化器修改。显式试用但尚未进入 Auto 的模型标签也不会参与阈值学习。
 
+特征提取语义单独使用 `featureSchemaVersion` 版本化。当前新反馈与候选写入 v2；缺失该字段的历史反馈仍可读取和审计，但按旧版 v1 处理，不参与当前学习、灰度或 probation 统计。旧特征版本生成的候选会明确过期，不能批准、灰度或激活。
+
 ### Guarded-auto：一次授权后的保守自动闭环
 
 如果希望在日常使用中自动优化，可一次性显式启用；默认配置仍是 `manual`：
@@ -344,6 +346,8 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" cycle --d
 自动候选只能把单个阈值向更强模型方向移动最多一步，必须通过独立验证集，并经过按 route ID 确定性分桶的灰度和 probation。灰度期同时收集 baseline 与 candidate 的确定性验证结果；候选、注册表、评测先验或活动策略摘要变化会停止应用。验证失败率回归会自动拒绝或恢复已归档基线。每次状态变化只记录元数据审计，不保存任务或输出。
 
 学习状态和自定义反馈文件属于受保护控制面。启动子模型前会验证它们位于所有子进程可写根之外；当子进程拥有 `danger-full-access`、不可验证的外部沙箱，或其它可改写自身证据的权限时，guarded-auto 会直接阻断，需收紧为受保护的 `workspace-write` 或切回 `manual`。
+
+guarded 生命周期、人工批准/回滚和配置变更使用同一个有界操作系统文件锁，反馈与审计 JSONL 分别串行追加。进程异常退出时操作系统会释放锁，因此遗留的 `.guarded-auto.lock` 文件本身不会让学习永久停在 `busy`。
 
 向更便宜/更弱能力层移动阈值、修改模型注册表、`autoEligible`、风险规则、权限、Skill 内容、provider 或账号都不会自动执行，仍需人工审查和显式批准。停止新的自动状态转换：
 
@@ -531,6 +535,7 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/codex_cli_orchestration_ev
         ├── routing_policy.py
         ├── policy_learning.py
         ├── guarded_auto.py
+        ├── state_lock.py
         ├── efficiency_metrics.py
         ├── evaluate_development_routes.py
         ├── desktop_execution.py

@@ -22,11 +22,13 @@ from guarded_auto import (  # noqa: E402
 from policy_learning import append_route_event, default_feedback_path, read_feedback  # noqa: E402
 from host_permissions import HostPermissions  # noqa: E402
 from routing_policy import (  # noqa: E402
+    FEATURE_SCHEMA_VERSION,
     RoutingPolicy,
     load_active_policy,
     load_policy_for_route,
     policy_digest,
 )
+from state_lock import control_plane_lock  # noqa: E402
 
 
 def route_payload(
@@ -53,6 +55,7 @@ def route_payload(
         "selected_model": selected_model,
         "target_tier": selector_tier,
         "reason": "complexity" if selector_tier == "frontier" else "balance_default",
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "features": {
             "prompt_chars": 120,
             "criteria_count": 0,
@@ -104,6 +107,20 @@ class GuardedAutoTests(unittest.TestCase):
     def test_default_mode_is_manual(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             self.assertEqual(load_config(pathlib.Path(temp))["mode"], "manual")
+
+    def test_stale_lock_file_does_not_block_cycle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            state_dir = pathlib.Path(temp)
+            (state_dir / ".guarded-auto.lock").write_text("stale-pid", encoding="utf-8")
+            result = run_cycle(state_dir)
+            self.assertEqual(result["status"], "manual")
+
+    def test_active_control_plane_lock_returns_busy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            state_dir = pathlib.Path(temp)
+            with control_plane_lock(state_dir) as acquired:
+                self.assertTrue(acquired)
+                self.assertEqual(run_cycle(state_dir)["status"], "busy")
 
     def test_guarded_state_must_be_outside_child_write_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -183,6 +200,16 @@ class GuardedAutoTests(unittest.TestCase):
         samples = inferred_samples(events)
         self.assertEqual([sample["routeId"] for sample in samples], ["valid"])
         self.assertEqual(samples[0]["labelSource"], "verified-tier-escalation")
+
+    def test_legacy_feature_feedback_is_not_an_inferred_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            feedback = pathlib.Path(temp) / "feedback.jsonl"
+            payload = route_payload("legacy")
+            payload.pop("feature_schema_version")
+            append_route_event(payload, feedback)
+            events = read_feedback(feedback)
+        self.assertEqual(events[0]["featureSchemaVersion"], 1)
+        self.assertEqual(inferred_samples(events), [])
 
     def test_dry_run_does_not_write_candidate_or_lifecycle_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -296,6 +323,7 @@ class GuardedAutoTests(unittest.TestCase):
                 "selectedModel": "codex:gpt-5.6-terra",
                 "targetTier": "balanced",
                 "reason": "balance_default",
+                "featureSchemaVersion": FEATURE_SCHEMA_VERSION,
                 "features": route_payload("template")["features"],
                 "policyVersion": "unit-test",
                 "policyDigest": policy_digest(RoutingPolicy()),
@@ -321,6 +349,8 @@ class GuardedAutoTests(unittest.TestCase):
             }
             self.assertEqual(ingest_execution_report(report, state_dir)["status"], "recorded")
             self.assertEqual(ingest_execution_report(report, state_dir)["status"], "duplicate")
+            stored = read_feedback(default_feedback_path(state_dir))
+            self.assertEqual(stored[0]["featureSchemaVersion"], FEATURE_SCHEMA_VERSION)
             report["reportId"] = "report-with-task"
             report["route"] = dict(route, task="private")
             with self.assertRaisesRegex(ValueError, "unsupported fields"):

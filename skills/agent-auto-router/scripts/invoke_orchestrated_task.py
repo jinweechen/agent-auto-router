@@ -195,6 +195,7 @@ def record_route_feedback(
         "policy_version": routing["router_version"],
         "policy_digest": routing["policy_digest"],
         "registry_digest": routing["registry_digest"],
+        "feature_schema_version": routing["feature_schema_version"],
         "explicit_override": args.variant != "auto",
         "backend": args.backend,
         "exit_code": exit_code,

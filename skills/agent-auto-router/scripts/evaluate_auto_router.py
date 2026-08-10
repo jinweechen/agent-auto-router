@@ -53,6 +53,36 @@ def evaluate(policy: RoutingPolicy | None = None) -> dict[str, object]:
     ))
     checks.append(check("incidental-security", select_model("Rename the security label", "balance", policy=policy).target_tier, "fast"))
     checks.append(check(
+        "lexical-boundary:information-not-format",
+        select_model(
+            "Audit the authentication information model.", "balance", policy=policy
+        ).target_tier,
+        "balanced",
+    ))
+    checks.append(check(
+        "lexical-boundary:tokenizer-not-token",
+        select_model(
+            "Migrate tokenizer configuration documentation.", "balance", policy=policy
+        ).high_risk,
+        False,
+    ))
+    checks.append(check(
+        "lexical-boundary:reproduction-not-production",
+        select_model(
+            "Fix test reproduction by migrating the fixture.", "balance", policy=policy
+        ).high_risk_hits,
+        0,
+    ))
+    checks.append(check(
+        "constrained:mixed-complex-signal",
+        select_model(
+            "Investigate race conditions in format-preserving encryption.",
+            "balance",
+            policy=policy,
+        ).constrained,
+        False,
+    ))
+    checks.append(check(
         "registry-route-models-enabled",
         all(route["model"] in registry.enabled_model_ids for route in routes),
         True,

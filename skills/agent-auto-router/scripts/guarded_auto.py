@@ -9,7 +9,6 @@ import json
 import os
 import re
 import sys
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -33,12 +32,14 @@ from policy_learning import (
 )
 from routing_policy import (
     DEFAULT_STATE_DIR,
+    FEATURE_SCHEMA_VERSION,
     RoutingPolicy,
     load_active_policy,
     policy_digest,
     policy_from_dict,
     policy_to_dict,
 )
+from state_lock import control_plane_lock
 
 
 EXECUTION_REPORT_SCHEMA = "agent-auto-router.execution-report.v1"
@@ -172,7 +173,7 @@ def learning_boundary_issue(
     return None
 
 
-def configure(
+def _configure_unlocked(
     state_dir: Path,
     *,
     mode: str,
@@ -213,6 +214,34 @@ def configure(
             _atomic_write_json(_state_path(state_dir), _idle_state("guarded-auto-disabled"))
     _atomic_write_json(_config_path(state_dir), payload)
     return payload
+
+
+def configure(
+    state_dir: Path,
+    *,
+    mode: str,
+    minimum_signals: int = 20,
+    minimum_validation_accuracy_gain: float = 0.05,
+    canary_percent: int = 10,
+    minimum_canary_reports: int = 10,
+    minimum_baseline_reports: int = 10,
+    minimum_probation_reports: int = 20,
+    maximum_failure_rate_increase: float = 0.05,
+) -> dict[str, Any]:
+    with control_plane_lock(state_dir, timeout_seconds=5) as acquired:
+        if not acquired:
+            raise RuntimeError("routing control plane is busy")
+        return _configure_unlocked(
+            state_dir,
+            mode=mode,
+            minimum_signals=minimum_signals,
+            minimum_validation_accuracy_gain=minimum_validation_accuracy_gain,
+            canary_percent=canary_percent,
+            minimum_canary_reports=minimum_canary_reports,
+            minimum_baseline_reports=minimum_baseline_reports,
+            minimum_probation_reports=minimum_probation_reports,
+            maximum_failure_rate_increase=maximum_failure_rate_increase,
+        )
 
 
 def _idle_state(
@@ -268,6 +297,7 @@ def _verified_stats(
         event
         for event in events
         if event.get("eventType") == "route_outcome"
+        and event.get("featureSchemaVersion") == FEATURE_SCHEMA_VERSION
         and event.get("policyDigest") == policy_digest_value
         and _event_after(event, started_at)
         and event.get("validationConfigured") is True
@@ -292,6 +322,8 @@ def inferred_samples(
     samples: list[dict[str, Any]] = []
     for event in events:
         if event.get("eventType") != "route_outcome":
+            continue
+        if event.get("featureSchemaVersion") != FEATURE_SCHEMA_VERSION:
             continue
         features = event.get("features") if isinstance(event.get("features"), dict) else {}
         if event.get("explicitOverride") or bool(features.get("high_risk")):
@@ -429,6 +461,10 @@ def _load_state_candidate(state: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("guarded-auto candidate integrity check failed")
     if candidate.get("candidateId") != state.get("candidateId"):
         raise ValueError("guarded-auto candidate identity changed")
+    if candidate.get("featureSchemaVersion") != FEATURE_SCHEMA_VERSION:
+        raise ValueError(
+            "guarded-auto candidate is stale because the routing feature schema changed"
+        )
     return candidate
 
 
@@ -500,28 +536,6 @@ def _restore_snapshot(state_dir: Path, state: dict[str, Any], reason: str) -> di
     _append_jsonl(_audit_path(state_dir), event)
     _atomic_write_json(_state_path(state_dir), _idle_state(reason))
     return event
-
-
-@contextmanager
-def _cycle_lock(state_dir: Path):
-    state_dir.mkdir(parents=True, exist_ok=True)
-    path = state_dir / ".guarded-auto.lock"
-    try:
-        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        yield False
-        return
-    try:
-        try:
-            os.write(descriptor, str(os.getpid()).encode("ascii"))
-        finally:
-            os.close(descriptor)
-        yield True
-    finally:
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
 
 
 def _cycle_unlocked(
@@ -701,7 +715,7 @@ def run_cycle(
     registry: ModelRegistry | None = None,
 ) -> dict[str, Any]:
     active_registry = registry or load_model_registry()
-    with _cycle_lock(state_dir) as acquired:
+    with control_plane_lock(state_dir) as acquired:
         if not acquired:
             return {"status": "busy", "action": "none", "modelCalls": 0}
         return _cycle_unlocked(
@@ -747,7 +761,7 @@ def _execution_report_to_route_payload(
     allowed_route = {
         "routeId", "strategy", "effort", "selectorModel", "selectedModel", "targetTier",
         "reason", "features", "policyVersion", "policyDigest", "modelRegistryDigest",
-        "explicitOverride",
+        "featureSchemaVersion", "explicitOverride",
     }
     allowed_result = {
         "status", "durationMs", "verification", "validationConfigured", "escalated",
@@ -779,6 +793,7 @@ def _execution_report_to_route_payload(
         "policy_version": route.get("policyVersion"),
         "policy_digest": route.get("policyDigest"),
         "registry_digest": route.get("modelRegistryDigest"),
+        "feature_schema_version": route.get("featureSchemaVersion", 1),
         "explicit_override": bool(route.get("explicitOverride", False)),
         "exit_code": 0 if status == "succeeded" else 1,
         "duration_ms": result.get("durationMs", 0),

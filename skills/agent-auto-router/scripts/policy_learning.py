@@ -33,6 +33,7 @@ from model_registry import (
 from routing_policy import (
     DEFAULT_STATE_DIR,
     EFFORTS,
+    FEATURE_SCHEMA_VERSION,
     STRATEGIES,
     RoutingPolicy,
     load_active_policy,
@@ -40,8 +41,9 @@ from routing_policy import (
     policy_from_dict,
     policy_to_dict,
 )
+from state_lock import append_lock, control_plane_lock
 
-FEEDBACK_SCHEMA_VERSION = 2
+FEEDBACK_SCHEMA_VERSION = 3
 CANDIDATE_SCHEMA_VERSION = 1
 DEFAULT_REGISTRY = load_model_registry()
 ROUTE_FEATURES = {
@@ -121,16 +123,28 @@ def _canonical_digest(payload: dict[str, Any]) -> str:
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=True, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-    with path.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(line + "\n")
+    with append_lock(path) as acquired:
+        if not acquired:
+            raise RuntimeError(f"timed out waiting to append router state: {path.name}")
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(line + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
 
 
 def _reject_sensitive_keys(value: Any, parent_key: str | None = None) -> None:
@@ -241,11 +255,19 @@ def normalize_route_event(
         if normalized_tokens["reasoning_output"] > normalized_tokens["output"]:
             raise ValueError("reasoning output tokens may not exceed output tokens")
     exit_code = int(payload["exit_code"])
+    raw_feature_schema_version = payload.get("feature_schema_version", 1)
+    if (
+        isinstance(raw_feature_schema_version, bool)
+        or not isinstance(raw_feature_schema_version, int)
+        or raw_feature_schema_version < 1
+    ):
+        raise ValueError("feedback feature schema version must be a positive integer")
     return {
         "schemaVersion": FEEDBACK_SCHEMA_VERSION,
         "eventType": "route_outcome",
         "recordedAt": utc_now(),
         "routeId": route_id,
+        "featureSchemaVersion": raw_feature_schema_version,
         "strategy": payload["strategy"],
         "effort": payload["effort"],
         "selectorModel": payload["selector_model"],
@@ -310,8 +332,14 @@ def append_label_event(
 def read_feedback(feedback_path: Path) -> list[dict[str, Any]]:
     if not feedback_path.is_file():
         return []
+    with append_lock(feedback_path) as acquired:
+        if not acquired:
+            raise RuntimeError(
+                f"timed out waiting to read router state: {feedback_path.name}"
+            )
+        lines = feedback_path.read_text(encoding="utf-8").splitlines()
     events: list[dict[str, Any]] = []
-    for line_number, line in enumerate(feedback_path.read_text(encoding="utf-8").splitlines(), 1):
+    for line_number, line in enumerate(lines, 1):
         if not line.strip():
             continue
         try:
@@ -333,7 +361,8 @@ def labeled_samples(
     for event in events:
         route_id = str(event.get("routeId", ""))
         if event.get("eventType") == "route_outcome":
-            routes[route_id] = event
+            if event.get("featureSchemaVersion") == FEATURE_SCHEMA_VERSION:
+                routes[route_id] = event
         elif event.get("eventType") == "human_label":
             labels[route_id] = event
     samples = []
@@ -504,6 +533,13 @@ def build_candidate(
         raise ValueError("max_threshold_step must be between 1 and 7")
     if len(samples) < min_labels:
         raise ValueError(f"at least {min_labels} labeled routes are required; found {len(samples)}")
+    if any(
+        sample.get("featureSchemaVersion") != FEATURE_SCHEMA_VERSION
+        for sample in samples
+    ):
+        raise ValueError(
+            "all candidate samples must use the current routing feature schema"
+        )
     training, validation = _split_samples(samples)
     base_training = score_policy(training, base_policy, active_registry, active_priors)
 
@@ -589,6 +625,7 @@ def build_candidate(
     )
     candidate: dict[str, Any] = {
         "schemaVersion": CANDIDATE_SCHEMA_VERSION,
+        "featureSchemaVersion": FEATURE_SCHEMA_VERSION,
         "createdAt": utc_now(),
         "basePolicyDigest": policy_digest(base_policy),
         "modelRegistryDigest": registry_digest(active_registry),
@@ -633,7 +670,7 @@ def _archive_policy(state_dir: Path, policy: RoutingPolicy, reason: str) -> Path
     return path
 
 
-def approve_candidate(
+def _approve_candidate_unlocked(
     candidate_path: Path,
     state_dir: Path,
     approved_by: str,
@@ -644,6 +681,10 @@ def approve_candidate(
     candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
     if not isinstance(candidate, dict) or candidate.get("schemaVersion") != CANDIDATE_SCHEMA_VERSION:
         raise ValueError("unsupported policy candidate")
+    if candidate.get("featureSchemaVersion") != FEATURE_SCHEMA_VERSION:
+        raise ValueError(
+            "candidate is stale because the routing feature schema has changed"
+        )
     if not candidate.get("eligibleForApproval") or not all(candidate.get("safetyChecks", {}).values()):
         raise ValueError("candidate is not eligible for approval")
     candidate_id = candidate.get("candidateId")
@@ -704,7 +745,26 @@ def approve_candidate(
     return audit
 
 
-def rollback_policy(state_dir: Path, approved_by: str) -> dict[str, Any]:
+def approve_candidate(
+    candidate_path: Path,
+    state_dir: Path,
+    approved_by: str,
+    feedback_path: Path | None = None,
+    registry: ModelRegistry | None = None,
+) -> dict[str, Any]:
+    with control_plane_lock(state_dir, timeout_seconds=5) as acquired:
+        if not acquired:
+            raise RuntimeError("routing control plane is busy")
+        return _approve_candidate_unlocked(
+            candidate_path,
+            state_dir,
+            approved_by,
+            feedback_path,
+            registry,
+        )
+
+
+def _rollback_policy_unlocked(state_dir: Path, approved_by: str) -> dict[str, Any]:
     current, _ = load_active_policy(state_dir)
     history_dir = state_dir / "history"
     choices: list[tuple[str, Path, RoutingPolicy]] = []
@@ -734,6 +794,13 @@ def rollback_policy(state_dir: Path, approved_by: str) -> dict[str, Any]:
     }
     _append_jsonl(state_dir / "audit.jsonl", audit)
     return audit
+
+
+def rollback_policy(state_dir: Path, approved_by: str) -> dict[str, Any]:
+    with control_plane_lock(state_dir, timeout_seconds=5) as acquired:
+        if not acquired:
+            raise RuntimeError("routing control plane is busy")
+        return _rollback_policy_unlocked(state_dir, approved_by)
 
 
 def _read_stdin_object() -> dict[str, Any]:

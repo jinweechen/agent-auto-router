@@ -9,21 +9,43 @@ permissions:
 
 jobs:
   unit-tests:
-    runs-on: windows-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python-version: ['3.10', '3.12']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python-version }}
       - name: Run unit tests
         run: python -m unittest discover -s tests -p "test_*.py"
+      - name: Validate registry and offline routes
+        shell: pwsh
+        run: |
+          python './skills/agent-auto-router/scripts/validate_model_registry.py'
+          $output = Join-Path $env:RUNNER_TEMP 'auto-router-eval.json'
+          python './skills/agent-auto-router/scripts/evaluate_auto_router.py' --output $output
+      - name: Compile Python sources
+        run: python -m compileall -q skills/agent-auto-router/scripts tests
       - name: Verify orchestrated dry run
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           & './skills/agent-auto-router/scripts/invoke_orchestrated_task.ps1' `
             -Task 'Implement API and tests for independent modules' `
             -Strategy balance -Workdir '.' -DryRun
+      - name: Verify Windows PowerShell 5.1 dry run
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          & './skills/agent-auto-router/scripts/invoke_auto_task.ps1' `
+            -Task 'Implement a routine change' `
+            -ExecutionBackend cli -Strategy balance -Workdir '.' -DryRun
       - name: Verify repeatable skill installation
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $homePath = Join-Path $env:RUNNER_TEMP 'codex-home'
@@ -31,3 +53,19 @@ jobs:
           & './skills/agent-auto-router/scripts/install.ps1' -CodexHome $homePath
           $nested = Join-Path $homePath 'skills/agent-auto-router/agent-auto-router'
           if (Test-Path -LiteralPath $nested) { throw "Nested skill directory detected: $nested" }
+          $source = (Resolve-Path './skills/agent-auto-router').Path
+          $installed = Join-Path $homePath 'skills/agent-auto-router'
+          $sourceFiles = Get-ChildItem -LiteralPath $source -Recurse -File |
+            Where-Object { $_.FullName -notmatch '\\__pycache__\\' -and $_.Extension -ne '.pyc' } |
+            ForEach-Object {
+              $relative = $_.FullName.Substring($source.Length + 1)
+              "$relative|$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)"
+            }
+          $installedFiles = Get-ChildItem -LiteralPath $installed -Recurse -File |
+            Where-Object { $_.FullName -notmatch '\\__pycache__\\' -and $_.Extension -ne '.pyc' } |
+            ForEach-Object {
+              $relative = $_.FullName.Substring($installed.Length + 1)
+              "$relative|$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)"
+            }
+          $difference = Compare-Object $sourceFiles $installedFiles
+          if ($difference) { throw "Installed Skill files differ from source: $difference" }

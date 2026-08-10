@@ -81,9 +81,9 @@ if (-not $DryRun -and -not $HostPermissionsJson -and $Sandbox -eq 'inherit') {
 if ($ExecutionBackend -eq 'desktop' -and -not $HostPermissionsJson) {
     throw 'ExecutionBackend=desktop requires -HostPermissionsJson from the current Desktop turn.'
 }
-if ($ExecutionBackend -eq 'cli') {
-    $selectorArguments += @('--available-backends', 'codex')
-}
+# Both built-in execution backends are Codex-only. Desktop availability comes
+# from the current runtime metadata and must never be inferred from CLI PATH.
+$selectorArguments += @('--available-backends', 'codex')
 if (-not $DryRun) {
     $boundaryPermissionsJson = $HostPermissionsJson
     if (-not $boundaryPermissionsJson) {
@@ -349,6 +349,7 @@ if (-not $NoFeedback) {
         policy_version = [string]$route.policy.version
         policy_digest = [string]$route.policy.digest
         registry_digest = [string]$route.registry.digest
+        feature_schema_version = [int]$route.decision.feature_schema_version
         explicit_override = ($ModelChoice -ne 'auto')
         exit_code = [int]$finalExitCode
         validation_configured = ($ValidationCommand.Count -gt 0)

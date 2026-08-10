@@ -25,12 +25,13 @@ DEFAULT_REGISTRY = load_model_registry()
 STRATEGIES = ("intelligence", "balance", "cost")
 POLICY_SCHEMA_VERSION = 2
 LEGACY_POLICY_SCHEMA_VERSION = 1
+FEATURE_SCHEMA_VERSION = 2
 DEFAULT_POLICY_VERSION = "builtin-v3"
 DEFAULT_STATE_DIR = Path.home() / ".codex" / "auto-router"
 
 COMPLEXITY_TERMS = (
     "architecture", "architect", "redesign", "refactor", "distributed",
-    "concurrency", "concurrent", "race condition", "deadlock", "performance",
+    "concurrency", "concurrent", "race condition", "race conditions", "deadlock", "performance",
     "multi-module", "multi-service", "cross-system", "dependency", "ambiguous",
     "tradeoff", "root cause", "end-to-end", "workflow", "integration",
     "orchestration", "review", "audit", "架构", "重新设计", "重构", "分布式",
@@ -180,6 +181,7 @@ class ModelDecision:
     computer_use: bool
     validation_configured: bool
     validated_bounded: bool
+    feature_schema_version: int
     policy_version: str
     policy_digest: str
     registry_digest: str
@@ -343,6 +345,10 @@ def load_policy_for_route(
         raise ValueError("guarded-auto candidate integrity check failed")
     if candidate_id != state.get("candidateId"):
         raise ValueError("guarded-auto candidate identity changed")
+    if candidate.get("featureSchemaVersion") != FEATURE_SCHEMA_VERSION:
+        raise ValueError(
+            "guarded-auto candidate is stale because the routing feature schema changed"
+        )
     if registry_digest_value is not None and candidate.get("modelRegistryDigest") != registry_digest_value:
         raise ValueError("guarded-auto candidate is stale because the registry changed")
     if (
@@ -359,8 +365,19 @@ def load_policy_for_route(
     return active, source
 
 
+def _contains_term(text: str, term: str) -> bool:
+    """Match CJK phrases by substring and ASCII terms on lexical boundaries."""
+    if any("\u3400" <= char <= "\u9fff" for char in term):
+        return term in text
+    phrase = r"\s+".join(re.escape(part) for part in term.split())
+    return re.search(
+        rf"(?<![A-Za-z0-9_]){phrase}(?![A-Za-z0-9_])",
+        text,
+    ) is not None
+
+
 def _count_hits(text: str, terms: Sequence[str]) -> int:
-    return sum(1 for term in terms if term in text)
+    return sum(1 for term in terms if _contains_term(text, term))
 
 
 def analyze_task(
@@ -418,6 +435,12 @@ def analyze_task(
     )
     constrained = (
         simple_hits > 0
+        and complexity_hits == 0
+        and ambiguity_hits == 0
+        and debugging_hits == 0
+        and long_context_hits == 0
+        and multi_file_hits == 0
+        and computer_use_hits == 0
         and scope_hits == 0
         and algorithm_hits == 0
         and complexity_score <= 2
@@ -606,6 +629,7 @@ def select_model(
         computer_use=features.computer_use,
         validation_configured=features.validation_configured,
         validated_bounded=features.validated_bounded,
+        feature_schema_version=FEATURE_SCHEMA_VERSION,
         policy_version=active_policy.policy_version,
         policy_digest=policy_digest(active_policy),
         registry_digest=registry_digest(active_registry),
