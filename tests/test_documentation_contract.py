@@ -56,6 +56,13 @@ class DocumentationContractTests(unittest.TestCase):
         match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.MULTILINE)
         self.assertIsNotNone(match)
         self.assertIn(f"当前项目版本：`{match.group(1)}`", self.readme)
+        plugin = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        self.assertEqual(plugin["version"], match.group(1))
+
+    def test_plugin_installation_flow_is_actionable(self) -> None:
+        self.assertIn('python "./scripts/install_personal_plugin.py"', self.readme)
+        self.assertIn("~/.agents/plugins/marketplace.json", self.readme)
+        self.assertIn("codex plugin remove agent-auto-router@personal", self.readme)
 
     def test_backend_qualified_model_ids_are_registered(self) -> None:
         registry = json.loads(MODEL_REGISTRY.read_text(encoding="utf-8"))

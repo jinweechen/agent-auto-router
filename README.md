@@ -1,10 +1,10 @@
 # Agent Auto Router
 
-面向 Codex、Claude Code 和通用 Agent 宿主的本地确定性模型路由 Skill。
+面向 Codex、Claude Code 和通用 Agent 宿主的本地确定性模型路由插件与 Skill。
 
 它在执行前根据任务复杂度、风险、约束程度、仓库规模和 reasoning effort 选择受信模型，并生成直接执行或有界多角色编排计划。路由过程本身不调用模型，不修改 Codex 全局配置，也不读取或转发登录凭据。
 
-当前项目版本：`0.6.0`。
+当前项目版本：`0.7.0`。
 
 ## 先看结论
 
@@ -27,6 +27,7 @@
 | 模型注册表 | 分离 `enabled` 与 `autoEligible`，支持受控扩展和显式试用 |
 | 隐私最小化反馈 | 只保存路由元数据、验证状态、耗时和可观测 Token，不保存任务与回复 |
 | 受控学习 | 支持人工审批候选，以及默认关闭的 canary、probation 和自动回滚 |
+| Codex 插件 | 通过标准插件清单分发现有 Skill，不改变跨宿主核心 |
 
 ## 不会做什么
 
@@ -68,7 +69,25 @@
 
 Python 路由器仅使用标准库，没有第三方运行时依赖。
 
-### 安装
+### Codex 插件安装
+
+仓库根目录是一个标准 Codex 插件根，清单位于 [.codex-plugin/plugin.json](.codex-plugin/plugin.json)。首次安装到当前用户的 Codex，直接在仓库根目录运行：
+
+```powershell
+python "./scripts/install_personal_plugin.py"
+```
+
+该脚本先校验源码插件，在临时目录组装最小发行包，再安装到 `~/plugins/agent-auto-router`；随后创建或保留 `~/.agents/plugins/marketplace.json` 中的个人 marketplace，最后执行 `codex plugin add agent-auto-router@<marketplace-name>`。已有插件包发生变化时会备份到 `~/.codex/plugin-backups/`，已有 marketplace 的名称、显示名、顺序和其他插件条目都会保留。相同版本重复执行是幂等的。在 Windows Codex Desktop 环境中，如果本机存在 `CodexSandboxUsers` 组，安装器还会为插件包递归授予只读和执行权限，避免管理员安装后 Codex 沙箱无法读取插件。
+
+脚本不会安装 Codex CLI、Claude CLI、Python、PowerShell，也不会复制任何登录凭据。若 Codex CLI 不在 `PATH`，已准备好的本地插件包和 marketplace 会保留，按错误消息中的命令重试即可。测试或预配置环境可使用 `--home <临时目录> --skip-codex-install`，它不会调用 Codex CLI。
+
+安装成功后新建一个 Codex 任务，再调用 `$agent-auto-router`，让新任务加载插件中的 Skill。
+
+不要在同一个 Codex 环境中同时启用插件版和下面的独立 Skill 版，以免出现两个同名 `$agent-auto-router`。如果 `~/.codex/skills/agent-auto-router` 仍存在，插件安装器会在任何写入前停止。从独立 Skill 迁移时，先备份并只删除这个已安装副本，再重新运行安装器；不要删除 `~/.codex/auto-router` 学习状态。
+
+### 独立 Skill 与其他宿主
+
+Codex 传统安装、Claude Code、Hermes 和其他宿主仍可以 Clone 仓库并使用原有脚本：
 
 ```powershell
 git clone https://github.com/jinweechen/agent-auto-router.git
@@ -76,9 +95,9 @@ cd agent-auto-router
 & "./skills/agent-auto-router/scripts/install.ps1" -Backup
 ```
 
-安装目标是 `$CODEX_HOME/skills/agent-auto-router`；未设置 `CODEX_HOME` 时使用 `~/.codex/skills/agent-auto-router`。`-Backup` 会把旧版本保存到 `~/.codex/skill-backups/agent-auto-router`。
+对 Codex 传统安装，目标是 `$CODEX_HOME/skills/agent-auto-router`；未设置 `CODEX_HOME` 时使用 `~/.codex/skills/agent-auto-router`。`-Backup` 会把旧版本保存到 `~/.codex/skill-backups/agent-auto-router`。
 
-安装脚本通过暂存目录替换旧副本，可以重复执行，不会产生嵌套的 `agent-auto-router/agent-auto-router`。安装后重新启动 Codex，使 Skill 元数据重新加载。
+安装脚本通过暂存目录替换旧副本，可以重复执行，不会产生嵌套的 `agent-auto-router/agent-auto-router`。其他宿主不需要识别 `.codex-plugin/plugin.json`，可以直接调用 `host_execution_plan.py`、`invoke_auto_task.ps1` 或 `invoke_orchestrated_task.ps1`；完整入口见 [entrypoints.md](skills/agent-auto-router/references/entrypoints.md)。各宿主必须独立提供模型可用性、登录状态和可信权限边界。
 
 ### 在 Codex 中使用
 
@@ -418,7 +437,10 @@ python -m unittest discover -s tests -p "test_*.py"
 python "./skills/agent-auto-router/scripts/validate_model_registry.py"
 python "./skills/agent-auto-router/scripts/evaluate_auto_router.py"
 python "./scripts/validate_skill.py"
-python -m compileall -q skills/agent-auto-router/scripts tests
+python "./scripts/validate_plugin.py"
+$pluginTestHome = Join-Path $env:TEMP "agent-auto-router-plugin-test"
+python "./scripts/install_personal_plugin.py" --home "$pluginTestHome" --skip-codex-install
+python -m compileall -q skills/agent-auto-router/scripts scripts tests
 ```
 
 仓库内的 `validate_skill.py` 不依赖 Codex 的个人安装路径，因此可用于普通开发机和 CI。若当前 Codex 环境安装了系统 `skill-creator`，还可以额外运行其官方校验：
@@ -430,30 +452,30 @@ python "$HOME/.codex/skills/.system/skill-creator/scripts/quick_validate.py" `
 
 CI 在 Windows 与 Ubuntu、Python 3.10 与 3.12 上运行核心测试；Windows 还验证 PowerShell 5.1、编排 DryRun 和重复安装。
 
-## Skill 结构
+## 插件与 Skill 结构
 
 ```text
-skills/agent-auto-router/
-├── SKILL.md                       # Codex 执行指令与引用路由
-├── agents/openai.yaml             # Skill UI 元数据
-├── references/
-│   ├── entrypoints.md             # 完整入口与宿主执行流程
-│   ├── router-contract.md         # 路由、权限、隐私和失败契约
-│   ├── benchmark-routing.md       # 评测先验更新规则
-│   └── guarded-auto-learning.md   # 受控自动学习协议
-└── scripts/
-    ├── invoke_auto_task.ps1       # Desktop/CLI 单任务入口
-    ├── invoke_orchestrated_task.ps1
-    ├── select_auto_model.py       # 本地选模
-    ├── routing_policy.py          # 特征和路由策略
-    ├── desktop_execution.py       # Desktop staged plan
-    ├── host_execution_plan.py     # 通用宿主计划
-    ├── model_registry.json        # 受信模型注册表
-    ├── orchestration_profiles.json
-    ├── policy_learning.py         # 人工审批学习
-    ├── guarded_auto.py            # canary/probation/rollback
-    ├── state_lock.py              # 跨进程控制面锁
-    └── install.ps1
+.
+├── .codex-plugin/plugin.json      # Codex 插件清单
+├── scripts/
+│   ├── install_personal_plugin.py # 个人 marketplace 安装
+│   ├── validate_plugin.py         # 便携插件校验
+│   └── validate_skill.py          # 便携 Skill 校验
+└── skills/agent-auto-router/
+    ├── SKILL.md                   # Codex 执行指令与引用路由
+    ├── agents/openai.yaml         # Skill UI 元数据
+    ├── references/
+    │   ├── entrypoints.md         # 完整入口与宿主执行流程
+    │   ├── router-contract.md     # 路由、权限、隐私和失败契约
+    │   ├── benchmark-routing.md   # 评测先验更新规则
+    │   └── guarded-auto-learning.md
+    └── scripts/
+        ├── invoke_auto_task.ps1   # Desktop/CLI 单任务入口
+        ├── invoke_orchestrated_task.ps1
+        ├── host_execution_plan.py # 通用宿主计划
+        ├── model_registry.json
+        ├── guarded_auto.py
+        └── install.ps1            # 独立 Skill 兼容安装
 ```
 
 `SKILL.md` 只保留另一个 Codex 实例执行任务所需的核心流程；面向用户的安装、示例和维护说明集中在本 README，详细协议按需放在 `references/`。
@@ -467,10 +489,19 @@ skills/agent-auto-router/
 | `guarded-auto-state-writable-by-child` | 子进程可修改学习证据；把状态移出可写根或切回 `manual` |
 | `failed_no_workspace_changes` | 写任务成功返回但 Git 状态未变化；核对任务或显式使用 `-AllowNoChanges` |
 | 安装后仍是旧行为 | 重启 Codex，并比较源码与安装副本；不要只修改仓库而忘记重新安装 |
+| 出现两个同名 Skill | 插件版和独立 Skill 版同时启用；保留一种安装方式，不要删除学习状态 |
 
 ## 卸载
 
-删除已安装的 Skill 目录：
+插件版使用安装器输出的 `marketplaceName` 移除；默认新建的个人 marketplace 名称是 `personal`：
+
+```powershell
+codex plugin remove agent-auto-router@personal
+```
+
+这会移除 Codex 的已安装配置和缓存，不会自动删除 `~/plugins/agent-auto-router` 或个人 marketplace 中的源条目，便于之后重新安装。若安装器输出的名称不是 `personal`，请替换为该实际名称。
+
+独立 Skill 版删除已安装的 Skill 目录：
 
 ```powershell
 Remove-Item -LiteralPath "$HOME/.codex/skills/agent-auto-router" -Recurse -Force

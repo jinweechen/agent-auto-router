@@ -23,7 +23,13 @@ jobs:
       - name: Run unit tests
         run: python -m unittest discover -s tests -p "test_*.py"
       - name: Validate Skill package
-        run: python ./scripts/validate_skill.py
+        run: |
+          python ./scripts/validate_skill.py
+          python ./scripts/validate_plugin.py
+      - name: Validate personal plugin installation
+        run: |
+          python ./scripts/install_personal_plugin.py --home "${{ runner.temp }}/plugin-home" --skip-codex-install
+          python ./scripts/validate_plugin.py "${{ runner.temp }}/plugin-home/plugins/agent-auto-router"
       - name: Validate registry and offline routes
         shell: pwsh
         run: |
@@ -31,7 +37,7 @@ jobs:
           $output = Join-Path $env:RUNNER_TEMP 'auto-router-eval.json'
           python './skills/agent-auto-router/scripts/evaluate_auto_router.py' --output $output
       - name: Compile Python sources
-        run: python -m compileall -q skills/agent-auto-router/scripts tests
+        run: python -m compileall -q skills/agent-auto-router/scripts scripts tests
       - name: Verify orchestrated dry run
         if: runner.os == 'Windows'
         shell: pwsh

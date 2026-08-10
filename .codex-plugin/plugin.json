@@ -1,0 +1,32 @@
+{
+  "name": "agent-auto-router",
+  "version": "0.7.0",
+  "description": "Deterministic model routing and bounded orchestration for Codex and compatible agent hosts.",
+  "author": {
+    "name": "jinweechen",
+    "url": "https://github.com/jinweechen"
+  },
+  "homepage": "https://github.com/jinweechen/agent-auto-router",
+  "repository": "https://github.com/jinweechen/agent-auto-router",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "model-routing",
+    "orchestration",
+    "skills"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Agent Auto Router",
+    "shortDescription": "Route trusted models and bounded workflows.",
+    "longDescription": "Choose trusted registered models deterministically, emit safe execution plans, and coordinate bounded single-writer Codex or CLI workflows.",
+    "developerName": "jinweechen",
+    "category": "Productivity",
+    "capabilities": [
+      "Local model routing",
+      "Bounded orchestration"
+    ],
+    "websiteURL": "https://github.com/jinweechen/agent-auto-router",
+    "defaultPrompt": "Use $agent-auto-router to select a trusted model and execute this task with bounded permissions."
+  }
+}
