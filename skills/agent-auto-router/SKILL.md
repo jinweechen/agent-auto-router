@@ -40,7 +40,7 @@ Treat Desktop execution as a host protocol, not a hidden CLI login:
 & "<skill-dir>/scripts/invoke_auto_task.ps1" `
   -Task "Implement the requested change" `
   -ExecutionBackend desktop `
-  -DesktopAvailableModels @('gpt-5.6-sol', 'gpt-5.6-terra') `
+  -DesktopAvailableModels @('<runtime-model-id>', '<another-runtime-model-id>') `
   -DesktopMaxParallelChildren 3 `
   -HostPermissionsJson $currentTurnPermissionsJson `
   -Workdir "C:/path/to/workspace"
@@ -100,5 +100,3 @@ When running inside Codex, Claude Code, or another host that can execute tasks i
 3. Act on the plan's `action.kind`: for `cli`, invoke the declared backend with the exact model and effort; for `host_execute`, the host runs the task with its own model and surfaces approximate model accuracy; for `orchestrate`, dispatch multi-role orchestration through the selected CLI backend.
 
 See `references/entrypoints.md` for the full command reference.
-
-Formerly known as codex-auto-router.

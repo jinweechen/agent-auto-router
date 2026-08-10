@@ -59,7 +59,3 @@ $report | ConvertTo-Json -Depth 12 |
 ```
 
 The report schema is `agent-auto-router.execution-report.v1`. It requires a unique `reportId`, a trusted short `host`, the exact route metadata emitted by the planner, and result status, duration, verification, validation configuration, escalation flag, and attempt count. Report IDs are idempotent. An incomplete prior recording fails closed for operator review.
-
-## Design provenance
-
-The restricted background-review pattern was informed by [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) commit `11dc61b45eb06718e121034b54184c81df251bfe`: provenance-bearing evidence, restricted background capabilities, protected user-owned surfaces, and user-visible summaries. This Skill implements an independent deterministic threshold controller. It does not copy Hermes code, run an auxiliary reviewing model, write skills from model output, or launch recursive background work.

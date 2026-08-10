@@ -43,8 +43,6 @@ Desktop v3 supports A-F and the Codex backend. A/E/F remain direct; B/C/D expand
 
 The route applies only to its declared child calls and does not mutate the current Desktop conversation's model.
 
-The staged control-plane design is informed by [Paperclip](https://github.com/paperclipai/paperclip) commit `19be4cf`: explicit run states, atomic task claims, hard call budgets, idempotent dispatch keys, dependency-aware waiting, and auditable mutations. This Skill implements those ideas independently as an in-memory one-task Desktop protocol; it does not import Paperclip code, services, database, scheduled heartbeats, or long-running company autonomy.
-
 `host_execution_plan.py` is product-neutral. It never launches a process, includes no task body, and accepts only backends declared by the trusted registry. Direct routes may produce `cli` or an explicitly approximate `host_execute` action. Orchestrated routes require the selected backend and never substitute another provider; their plan declares the complete read-only role set and the single final writer. Host plans use structured argv arrays where a local orchestration entrypoint is required.
 
 Inspect repository structure read-only before routing. Use tracked/non-ignored paths, aggregate counts, and deterministic candidate ranking only. Inject a compact repository map only when it has a candidate path or the repository is large enough to justify the map. Never persist task text in repository metadata.
