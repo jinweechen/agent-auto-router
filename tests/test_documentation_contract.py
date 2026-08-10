@@ -19,6 +19,7 @@ from routing_policy import FEATURE_SCHEMA_VERSION  # noqa: E402
 
 
 README = ROOT / "README.md"
+CHINESE_README = ROOT / "README.zh-CN.md"
 MODEL_REGISTRY = SCRIPT_DIR / "model_registry.json"
 
 
@@ -33,29 +34,41 @@ class DocumentationContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.readme = README.read_text(encoding="utf-8")
+        cls.chinese_readme = CHINESE_README.read_text(encoding="utf-8")
 
     def test_local_markdown_links_exist(self) -> None:
         missing: list[str] = []
-        for raw_target in re.findall(r"\[[^\]]+\]\(([^)]+)\)", self.readme):
-            target = raw_target.strip().split("#", 1)[0]
-            if not target or target.startswith(("#", "http://", "https://", "mailto:")):
-                continue
-            path = ROOT / unquote(target)
-            if not path.exists():
-                missing.append(raw_target)
+        for readme_name, readme in (
+            (README.name, self.readme),
+            (CHINESE_README.name, self.chinese_readme),
+        ):
+            for raw_target in re.findall(r"\[[^\]]+\]\(([^)]+)\)", readme):
+                target = raw_target.strip().split("#", 1)[0]
+                if not target or target.startswith(("#", "http://", "https://", "mailto:")):
+                    continue
+                path = ROOT / unquote(target)
+                if not path.exists():
+                    missing.append(f"{readme_name}: {raw_target}")
         self.assertEqual(missing, [], f"README has missing local links: {missing}")
 
+    def test_readmes_link_to_each_other(self) -> None:
+        self.assertIn("[简体中文](README.zh-CN.md)", self.readme)
+        self.assertIn("[English](README.md)", self.chinese_readme)
+
     def test_documented_schemas_match_source_constants(self) -> None:
-        self.assertIn(f"`{DESKTOP_PLAN_SCHEMA}`", self.readme)
-        self.assertIn(f"`{HOST_PLAN_SCHEMA}`", self.readme)
-        self.assertIn(f"`{HOST_PERMISSIONS_SCHEMA}`", self.readme)
-        self.assertIn(f"当前 v{FEATURE_SCHEMA_VERSION} 数据", self.readme)
+        for readme in (self.readme, self.chinese_readme):
+            self.assertIn(f"`{DESKTOP_PLAN_SCHEMA}`", readme)
+            self.assertIn(f"`{HOST_PLAN_SCHEMA}`", readme)
+            self.assertIn(f"`{HOST_PERMISSIONS_SCHEMA}`", readme)
+        self.assertIn(f"Current v{FEATURE_SCHEMA_VERSION} records", self.readme)
+        self.assertIn(f"当前 v{FEATURE_SCHEMA_VERSION} 数据", self.chinese_readme)
 
     def test_documented_project_version_matches_pyproject(self) -> None:
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.MULTILINE)
         self.assertIsNotNone(match)
-        self.assertIn(f"当前项目版本：`{match.group(1)}`", self.readme)
+        self.assertIn(f"Current project version: `{match.group(1)}`", self.readme)
+        self.assertIn(f"当前项目版本：`{match.group(1)}`", self.chinese_readme)
         plugin = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         self.assertEqual(plugin["version"], match.group(1))
 
