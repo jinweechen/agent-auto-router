@@ -1,0 +1,10 @@
+[
+  {
+    "id": "simple-record-normalization",
+    "prompt": "Extract and transform these records into a JSON array: 'A-01 | Alice | active' and 'B-02 | Bob | inactive'. Each object must contain id, name, and active, where active is a boolean. Return the JSON and a one-sentence validation summary.",
+    "acceptance_criteria": [
+      "Returns exactly two records with the original IDs and names.",
+      "Converts active and inactive into the correct boolean values."
+    ]
+  }
+]

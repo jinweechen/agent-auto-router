@@ -1,7 +1,17 @@
 .env
 .env.*
 /docs/
+# Unified repository-local evaluation output and imported legacy archives.
+/.artifacts/
+# Legacy output names retained only to prevent old tools from polluting the root.
 eval-results*/
+.router-*-benchmark-*/
+.router-self-opt-check-*/
+model-priority-eval/
+route-results*/
+auto-model-catalog-probe.json
+auto-router-eval-*.json
+auto-router-feedback-probe.jsonl
 __pycache__/
 *.py[cod]
 .pytest_cache/

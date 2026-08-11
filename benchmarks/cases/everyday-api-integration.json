@@ -1,0 +1,11 @@
+[
+  {
+    "id": "everyday-api-integration",
+    "prompt": "Implement an API integration function that accepts a customer ID, validates the input, calls a provider client, maps provider errors into a typed application error, and returns a normalized customer record. Provide Python code and focused unit tests.",
+    "acceptance_criteria": [
+      "Defines explicit request, response, and typed error behavior.",
+      "Validates empty customer IDs and maps provider failures without leaking provider details.",
+      "Provides focused tests for success, invalid input, and provider failure."
+    ]
+  }
+]

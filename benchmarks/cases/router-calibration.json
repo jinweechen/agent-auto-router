@@ -1,0 +1,32 @@
+[
+  {
+    "id": "repeatable-extraction",
+    "prompt": "Extract and classify the supplied records into the required JSON schema.",
+    "acceptance_criteria": ["Preserve every ID", "Return valid JSON"]
+  },
+  {
+    "id": "everyday-api",
+    "prompt": "Implement an API integration with validation and typed error handling. Provide code and focused tests.",
+    "acceptance_criteria": ["Define the request contract", "Map provider errors", "Provide unit tests"]
+  },
+  {
+    "id": "moderate-parallel",
+    "prompt": "Refactor multiple modules and provide API and tests as independent workstreams.",
+    "acceptance_criteria": ["Refactor the service", "Update the API", "Add tests", "Document compatibility"]
+  },
+  {
+    "id": "high-risk-single",
+    "prompt": "Review and redesign production authentication to prevent authorization bypass and privacy leakage.",
+    "acceptance_criteria": ["Identify trust boundaries", "Specify mitigations", "Define regression tests"]
+  },
+  {
+    "id": "complex-parallel",
+    "prompt": "Design a distributed payment architecture with security, concurrency, frontend and backend workstreams.",
+    "acceptance_criteria": ["Define architecture", "Specify authentication", "Handle concurrent writes", "Provide API contracts", "Provide tests"]
+  },
+  {
+    "id": "ambiguous-dependencies",
+    "prompt": "Explore the best approach to redesign the architecture for a distributed cross-system migration involving concurrency, performance debugging, refactoring, integration workflow dependency ordering, security, and parallel workstreams.",
+    "acceptance_criteria": ["Recommend a safe implementation plan"]
+  }
+]

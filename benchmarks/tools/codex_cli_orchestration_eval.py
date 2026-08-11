@@ -8,17 +8,26 @@ import sys
 import time
 from typing import Any
 
-ROOT = pathlib.Path(__file__).resolve().parent
-SKILL_SCRIPTS = ROOT.parent / "skills" / "agent-auto-router" / "scripts"
+TOOLS_ROOT = pathlib.Path(__file__).resolve().parent
+BENCHMARKS_ROOT = TOOLS_ROOT.parent
+PROJECT_ROOT = BENCHMARKS_ROOT.parent
+SKILL_SCRIPTS = PROJECT_ROOT / "skills" / "agent-auto-router" / "scripts"
 sys.path.insert(0, str(SKILL_SCRIPTS))
+sys.path.insert(0, str(TOOLS_ROOT))
 
 from auto_router import route_case
+from artifact_layout import (
+    create_run_directory,
+    default_evaluations_root,
+    prepare_explicit_run_directory,
+    write_manifest,
+)
 from cli_arguments import positive_int
 from codex_cli_adapter import CodexCliAdapter
 from orchestration_engine import run_variant
 
 
-DEFAULT_CASES = ROOT / "eval_cases.json"
+DEFAULT_CASES = BENCHMARKS_ROOT / "cases" / "eval_cases.json"
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,6 +41,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--workdir", type=pathlib.Path, default=pathlib.Path.cwd())
     parser.add_argument("--results-dir", type=pathlib.Path, default=None)
+    parser.add_argument(
+        "--artifacts-root",
+        type=pathlib.Path,
+        default=None,
+        help=(
+            "Root for a generated per-run directory. Defaults to "
+            "AGENT_AUTO_ROUTER_EVALUATIONS_DIR or the user-local state directory."
+        ),
+    )
     parser.add_argument(
         "--effort-override",
         choices=("low", "medium", "high", "xhigh", "max"),
@@ -69,6 +87,37 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def prepare_run(args: argparse.Namespace, kind: str, timestamp: str) -> tuple[str, pathlib.Path]:
+    if args.results_dir is not None and args.artifacts_root is not None:
+        raise ValueError("Use either --results-dir or --artifacts-root, not both")
+    if args.results_dir is not None:
+        return prepare_explicit_run_directory(args.results_dir)
+    root = args.artifacts_root or default_evaluations_root()
+    return create_run_directory(kind, root=root, timestamp=timestamp)
+
+
+def manifest_payload(
+    args: argparse.Namespace,
+    *,
+    run_id: str,
+    created_at: str,
+    kind: str,
+    status: str,
+    model_calls: int,
+) -> dict[str, Any]:
+    return {
+        "runId": run_id,
+        "kind": kind,
+        "createdAt": created_at,
+        "status": status,
+        "modelCalls": model_calls,
+        "cases": str(args.cases.expanduser().resolve()),
+        "workdir": str(args.workdir.expanduser().resolve()),
+        "routingMode": args.routing_mode,
+        "routeOnly": args.route_only,
+    }
+
+
 def main() -> int:
     args = parse_args()
     cases = json.loads(args.cases.read_text(encoding="utf-8"))
@@ -80,6 +129,18 @@ def main() -> int:
     if args.route_only:
         route_mode = "balance" if args.routing_mode == "off" else args.routing_mode
         timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        run_id, results_dir = prepare_run(args, "route-only", timestamp)
+        write_manifest(
+            results_dir,
+            manifest_payload(
+                args,
+                run_id=run_id,
+                created_at=timestamp,
+                kind="route-only",
+                status="running",
+                model_calls=0,
+            ),
+        )
         route_results = []
         for case in cases[: args.limit]:
             decision = route_case(case, route_mode, routing_effort)
@@ -91,9 +152,7 @@ def main() -> int:
                     + "; ".join(decision["reasons"]),
                     flush=True,
                 )
-        results_dir = args.results_dir or (args.workdir / "route-results")
-        results_dir.mkdir(parents=True, exist_ok=True)
-        output_path = results_dir / f"auto-route-report-{route_mode}-{timestamp}.json"
+        output_path = results_dir / "route-report.json"
         output_path.write_text(
             json.dumps(
                 {
@@ -107,6 +166,17 @@ def main() -> int:
                 indent=2,
             ),
             encoding="utf-8",
+        )
+        write_manifest(
+            results_dir,
+            manifest_payload(
+                args,
+                run_id=run_id,
+                created_at=timestamp,
+                kind="route-only",
+                status="completed",
+                model_calls=0,
+            ),
         )
         print(f"Route report: {output_path}", flush=True)
         return 0
@@ -123,10 +193,20 @@ def main() -> int:
         workdir=args.workdir,
     )
 
-    results_dir = args.results_dir or (args.workdir / "eval-results")
-    results_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    checkpoint_path = results_dir / f"codex-cli-eval-{checkpoint_timestamp}.partial.json"
+    run_id, results_dir = prepare_run(args, "codex-cli", checkpoint_timestamp)
+    write_manifest(
+        results_dir,
+        manifest_payload(
+            args,
+            run_id=run_id,
+            created_at=checkpoint_timestamp,
+            kind="codex-cli",
+            status="running",
+            model_calls=0,
+        ),
+    )
+    checkpoint_path = results_dir / "checkpoint.partial.json"
 
     def persist_checkpoint() -> None:
         checkpoint_path.write_text(
@@ -215,10 +295,8 @@ def main() -> int:
                 flush=True,
             )
 
-    results_dir = (args.results_dir or (args.workdir / "eval-results")).resolve()
-    results_dir.mkdir(parents=True, exist_ok=True)
     timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    output_path = results_dir / f"codex-cli-eval-{timestamp}.json"
+    output_path = results_dir / "results.json"
     output_path.write_text(
         json.dumps(
             {
@@ -233,6 +311,18 @@ def main() -> int:
             indent=2,
         ),
         encoding="utf-8",
+    )
+    model_calls = sum(len(result.get("calls", [])) for result in results)
+    write_manifest(
+        results_dir,
+        manifest_payload(
+            args,
+            run_id=run_id,
+            created_at=checkpoint_timestamp,
+            kind="codex-cli",
+            status="completed",
+            model_calls=model_calls,
+        ),
     )
     print(f"Results: {output_path}")
     return 0

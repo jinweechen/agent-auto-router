@@ -93,7 +93,10 @@ class CliAdapterBaseTests(unittest.TestCase):
         self.assertFalse((SCRIPTS / "eval_cases.json").exists())
         runtime = (SCRIPTS / "invoke_orchestrated_task.py").read_text(encoding="utf-8")
         self.assertNotIn("codex_cli_orchestration_eval", runtime)
-        self.assertTrue((ROOT / "benchmarks" / "codex_cli_orchestration_eval.py").is_file())
+        self.assertTrue(
+            (ROOT / "benchmarks" / "tools" / "codex_cli_orchestration_eval.py").is_file()
+        )
+        self.assertTrue((ROOT / "benchmarks" / "cases" / "eval_cases.json").is_file())
 
 
 if __name__ == "__main__":

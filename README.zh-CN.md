@@ -432,7 +432,7 @@ python "./skills/agent-auto-router/scripts/evaluate_development_routes.py" `
 
 输入只能包含 case ID、configuration、可选 model/effort、外部验收结果、可选 Token、耗时和重试次数，不能包含提示词或输出。工具先比较验收通过率，只在同一用例双方都通过且 Token 完整时计算差异。
 
-需要真实 CLI 模型调用的开发评测已移出安装包，位于 [benchmarks/](benchmarks/README.md)。它不是 Skill 运行依赖；运行前必须明确模型调用预算并使用隔离工作区。`--route-only` 只生成路由报告，不调用模型。
+需要真实 CLI 模型调用的开发评测已移出安装包，位于 [benchmarks/](benchmarks/README.md)。可复现用例放在 `benchmarks/cases/`，工具放在 `benchmarks/tools/`；生成结果默认统一写入用户级 `agent-auto-router/evaluations/<kind>/<run-id>/`，也可由 `AGENT_AUTO_ROUTER_EVALUATIONS_DIR` 覆盖。它不是 Skill 运行依赖；运行前必须明确模型调用预算并使用隔离工作区。`--route-only` 只生成路由报告，不调用模型。
 
 ### 测试与 Skill 校验
 
@@ -461,7 +461,9 @@ CI 在 Windows 与 Ubuntu、Python 3.10 与 3.12 上运行核心测试；Windows
 ```text
 .
 ├── .codex-plugin/plugin.json      # Codex 插件清单
-├── benchmarks/                    # 不随 Skill 安装的开发评测工具
+├── benchmarks/                    # 不随 Skill 安装的开发评测资产
+│   ├── cases/                     # 可复现输入
+│   └── tools/                     # 评测与模拟工具
 ├── scripts/
 │   ├── install_personal_plugin.py # 个人 marketplace 安装
 │   ├── validate_plugin.py         # 便携插件校验

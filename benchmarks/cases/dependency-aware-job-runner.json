@@ -1,0 +1,13 @@
+[
+  {
+    "id": "dependency-aware-job-runner",
+    "prompt": "Produce an implementation-ready Python 3.11 design for a dependency-aware in-memory job runner. Define a small public API for jobs and results, validate duplicate IDs, unknown dependencies and cycles, execute only dependency-ready jobs with bounded parallelism, propagate failed-dependency skips, and provide pytest test cases. The deliverable must be concrete enough for another engineer to implement without making architecture decisions.",
+    "acceptance_criteria": [
+      "Defines explicit Job, JobResult and runner public interfaces with typed fields and status values.",
+      "Specifies deterministic validation for duplicate IDs, unknown dependencies, self-dependencies and dependency cycles.",
+      "Uses topological execution waves so only ready jobs run concurrently and max_workers is enforced.",
+      "Defines failure and skipped-dependent behavior without allowing blocked jobs to execute.",
+      "Provides concrete pytest cases covering success, bounded concurrency, unknown dependency, cycle, failure propagation and deterministic result ordering."
+    ]
+  }
+]

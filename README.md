@@ -434,7 +434,7 @@ python "./skills/agent-auto-router/scripts/evaluate_development_routes.py" `
 
 Input may contain only case ID, configuration, optional model and effort, external acceptance, optional tokens, duration, and retries. It must not contain prompts or outputs. The tool compares acceptance first and calculates a token delta only for matched cases where both configurations passed and both token counts are complete.
 
-Development benchmarks that make real CLI model calls live outside the installed package under [benchmarks/](benchmarks/README.md). They are not Skill runtime dependencies; set an explicit model-call budget and use an isolated workspace before running them. `--route-only` emits a routing report without a model call.
+Development benchmarks that make real CLI model calls live outside the installed package under [benchmarks/](benchmarks/README.md). Reproducible inputs live in `benchmarks/cases/`, tools live in `benchmarks/tools/`, and generated output defaults to the user-state path `agent-auto-router/evaluations/<kind>/<run-id>/`; `AGENT_AUTO_ROUTER_EVALUATIONS_DIR` can override that root. They are not Skill runtime dependencies; set an explicit model-call budget and use an isolated workspace before running them. `--route-only` emits a routing report without a model call.
 
 ### Tests and validation
 
@@ -463,7 +463,9 @@ CI runs the core suite on Windows and Ubuntu with Python 3.10 and 3.12. Windows 
 ```text
 .
 ├── .codex-plugin/plugin.json      # Codex plugin manifest
-├── benchmarks/                    # Development evaluation tools excluded from the Skill
+├── benchmarks/                    # Development evaluation assets excluded from the Skill
+│   ├── cases/                     # Reproducible inputs
+│   └── tools/                     # Evaluation and simulation programs
 ├── scripts/
 │   ├── install_personal_plugin.py # Personal marketplace installer
 │   ├── validate_plugin.py         # Portable plugin validator

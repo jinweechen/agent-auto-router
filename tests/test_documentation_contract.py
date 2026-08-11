@@ -81,6 +81,9 @@ class DocumentationContractTests(unittest.TestCase):
         for readme in (self.readme, self.chinese_readme):
             self.assertIn("[benchmarks/](benchmarks/README.md)", readme)
             self.assertIn("`--route-only`", readme)
+            self.assertIn("`benchmarks/cases/`", readme)
+            self.assertIn("`benchmarks/tools/`", readme)
+            self.assertIn("`AGENT_AUTO_ROUTER_EVALUATIONS_DIR`", readme)
         self.assertFalse((SCRIPT_DIR / "codex_cli_orchestration_eval.py").exists())
         self.assertFalse((SCRIPT_DIR / "eval_cases.json").exists())
 
