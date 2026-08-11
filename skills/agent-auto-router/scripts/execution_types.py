@@ -15,6 +15,7 @@ class CallRecord:
     response_id: str
     cached_input_tokens: int = 0
     reasoning_output_tokens: int = 0
+    cache_write_input_tokens: int = 0
 
 
 @dataclass
@@ -51,6 +52,10 @@ class RunContext:
     @property
     def total_uncached_input_tokens(self) -> int:
         return max(0, self.total_input_tokens - self.total_cached_input_tokens)
+
+    @property
+    def total_cache_write_input_tokens(self) -> int:
+        return sum(record.cache_write_input_tokens for record in self.records)
 
     @property
     def total_reasoning_output_tokens(self) -> int:

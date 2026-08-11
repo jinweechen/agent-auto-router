@@ -133,6 +133,19 @@ class DesktopExecutionTests(unittest.TestCase):
         )
         self.assertNotIn("private task", json.dumps(plan))
 
+    def test_no_feedback_disables_desktop_execution_report_submission(self) -> None:
+        route = route_for("Implement a routine change")
+        plan = build_desktop_plan(
+            route,
+            [_bare(route["selectedModel"])],
+            host_permissions=host_permissions(),
+            workdir=SCRIPTS.parents[2],
+            max_parallel_children=3,
+            feedback_enabled=False,
+        )
+        self.assertEqual(plan["learning"]["mode"], "off")
+        self.assertFalse(plan["learning"]["submitAfterExecution"])
+
     def test_desktop_plan_declares_bounded_terminal_cleanup(self) -> None:
         route = route_for("Implement a routine change")
         plan = build_desktop_plan(
@@ -325,6 +338,15 @@ class DesktopExecutionTests(unittest.TestCase):
             sum(1 for agent in plan["agents"] if agent["writer"]),
             1,
         )
+        self.assertEqual(
+            {agent["model"] for agent in plan["agents"]},
+            {route["selectedModel"]},
+        )
+        self.assertEqual(
+            plan["modelSwitching"]["roleModelPolicy"],
+            "selected-model-preferred",
+        )
+        self.assertEqual(plan["modelSwitching"]["plannedModelSwitches"], 0)
         self.assertLessEqual(plan["plannedAgentCalls"], plan["callBudget"]["maximum"])
 
     def test_multi_role_route_explicitly_upgrades_unavailable_worker_model(self) -> None:
@@ -343,7 +365,32 @@ class DesktopExecutionTests(unittest.TestCase):
         worker = agent_for(plan, "worker")
         self.assertEqual(worker["preferredModel"], "codex:gpt-5.6-luna")
         self.assertEqual(worker["model"], "codex:gpt-5.6-terra")
-        self.assertEqual(worker["modelResolution"], "runtime-tier-upgrade")
+        self.assertEqual(worker["modelResolution"], "selected-model-affinity")
+
+    def test_profile_policy_restores_declared_role_models_and_switches(self) -> None:
+        route = route_for(
+            "Implement API and tests for several independent components",
+            criteria=["API", "tests", "docs", "rollback"],
+        )
+        route["executionPlan"]["roleModelPolicy"] = "profile"
+        plan = build_desktop_plan(
+            route,
+            all_desktop_models(),
+            host_permissions=host_permissions(),
+            workdir=SCRIPTS.parents[2],
+            max_parallel_children=3,
+        )
+        self.assertEqual(plan["status"], "ready")
+        self.assertEqual(
+            [agent["model"] for agent in plan["agents"]],
+            [
+                "codex:gpt-5.6-terra",
+                "codex:gpt-5.6-luna",
+                "codex:gpt-5.6-terra",
+            ],
+        )
+        self.assertEqual(plan["modelSwitching"]["roleModelPolicy"], "profile")
+        self.assertEqual(plan["modelSwitching"]["plannedModelSwitches"], 2)
 
     def test_runtime_capacity_bounds_parallel_workers(self) -> None:
         route = route_for(

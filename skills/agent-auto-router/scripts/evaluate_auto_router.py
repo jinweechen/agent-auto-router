@@ -43,6 +43,21 @@ def evaluate(policy: RoutingPolicy | None = None) -> dict[str, object]:
         "acceptance_criteria": ["API", "tests", "docs", "rollback"],
     }
     checks.append(check("variant:d-reachable", route_case(parallel_case, "balance", policy=policy)["variant"], "D"))
+    marginal_parallel_case = {
+        "prompt": "Handle independent components in parallel. " + ("detail " * 140),
+        "acceptance_criteria": [],
+    }
+    marginal_result = route_case(marginal_parallel_case, "balance", policy=policy)
+    checks.append(check(
+        "variant:marginal-utility-stays-direct",
+        {
+            "variant": marginal_result["variant"],
+            "blocked": marginal_result["execution_plan"]["orchestrationRecommendation"][
+                "blockedByUtilityGate"
+            ],
+        },
+        {"variant": "E", "blocked": True},
+    ))
     chinese_parallel_case = {
         "prompt": "并行审查多个独立模块，覆盖调试、长上下文和多文件任务，最后统一审查",
     }
@@ -65,6 +80,15 @@ def evaluate(policy: RoutingPolicy | None = None) -> dict[str, object]:
             "Migrate tokenizer configuration documentation.", "balance", policy=policy
         ).high_risk,
         False,
+    ))
+    checks.append(check(
+        "lexical-boundary:plain-output-token-not-sensitive",
+        select_model(
+            "For architecture validation, return exactly the single token OK.",
+            "balance",
+            policy=policy,
+        ).high_risk_hits,
+        0,
     ))
     checks.append(check(
         "lexical-boundary:reproduction-not-production",

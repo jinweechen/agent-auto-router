@@ -52,8 +52,10 @@ class BaseCliAdapter:
         self.usage_events_observed = 0
         self.observed_input_tokens = 0
         self.observed_cached_input_tokens = 0
+        self.observed_cache_write_input_tokens = 0
         self.observed_output_tokens = 0
         self.observed_reasoning_output_tokens = 0
+        self._observed_usage_by_model: dict[str, dict[str, int]] = {}
 
     def observed_usage(self) -> dict[str, int] | None:
         with self._token_lock:
@@ -61,27 +63,61 @@ class BaseCliAdapter:
                 return None
             input_tokens = self.observed_input_tokens
             cached_input_tokens = self.observed_cached_input_tokens
+            cache_write_input_tokens = self.observed_cache_write_input_tokens
             output_tokens = self.observed_output_tokens
             reasoning_output_tokens = self.observed_reasoning_output_tokens
         return {
             "input_tokens": input_tokens,
             "cached_input_tokens": cached_input_tokens,
+            "cache_write_input_tokens": cache_write_input_tokens,
             "output_tokens": output_tokens,
             "reasoning_output_tokens": reasoning_output_tokens,
             "total_tokens": input_tokens + output_tokens,
         }
 
-    def record_usage(self, usage: dict[str, int], *, event_count: int = 1) -> int:
+    def observed_usage_by_model(self) -> dict[str, dict[str, int]]:
+        with self._token_lock:
+            return {
+                model: {
+                    **counts,
+                    "total_tokens": counts["input_tokens"] + counts["output_tokens"],
+                }
+                for model, counts in self._observed_usage_by_model.items()
+            }
+
+    def record_usage(
+        self,
+        usage: dict[str, int],
+        *,
+        event_count: int = 1,
+        model: str | None = None,
+    ) -> int:
         with self._token_lock:
             self.usage_events_observed += max(0, event_count)
             self.observed_input_tokens += int(usage.get("input_tokens", 0))
             self.observed_cached_input_tokens += int(
                 usage.get("cached_input_tokens", 0)
             )
+            self.observed_cache_write_input_tokens += int(
+                usage.get("cache_write_input_tokens", 0)
+            )
             self.observed_output_tokens += int(usage.get("output_tokens", 0))
             self.observed_reasoning_output_tokens += int(
                 usage.get("reasoning_output_tokens", 0)
             )
+            if model is not None:
+                counts = self._observed_usage_by_model.setdefault(
+                    model,
+                    {
+                        "input_tokens": 0,
+                        "cached_input_tokens": 0,
+                        "cache_write_input_tokens": 0,
+                        "output_tokens": 0,
+                        "reasoning_output_tokens": 0,
+                    },
+                )
+                for key in counts:
+                    counts[key] += int(usage.get(key, 0))
             return self.observed_input_tokens + self.observed_output_tokens
 
     def sandbox_for_role(self, role: str) -> str:

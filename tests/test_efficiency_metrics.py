@@ -22,6 +22,7 @@ def route(route_id: str, model: str, total: int, outcome: str | None = None):
         "observedTokens": {
             "input": total - 10,
             "cached_input": 5,
+            "cache_write": 3,
             "output": 10,
             "reasoning_output": 2,
             "total": total,
@@ -71,6 +72,24 @@ class EfficiencyMetricsTests(unittest.TestCase):
             )
             self.assertNotEqual(completed.returncode, 0)
             self.assertIn("unsupported fields", completed.stderr)
+
+    def test_benchmark_cli_accepts_cache_write_telemetry(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = pathlib.Path(temp) / "results.json"
+            path.write_text(json.dumps([{
+                "caseId": "a", "configuration": "auto", "accepted": True,
+                "durationMs": 10,
+                "tokens": {
+                    "input": 90, "cached_input": 10, "cache_write": 20,
+                    "output": 10, "reasoning_output": 2, "total": 100,
+                },
+            }]), encoding="utf-8")
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPTS / "evaluate_development_routes.py"), "--results", str(path)],
+                capture_output=True, text=True, encoding="utf-8",
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn('"totalObservedTokens": 100', completed.stdout)
 
 
 if __name__ == "__main__":

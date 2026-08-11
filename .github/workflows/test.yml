@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest, macos-latest]
         python-version: ['3.10', '3.12']
     steps:
       - uses: actions/checkout@v4
@@ -31,11 +31,11 @@ jobs:
           python ./scripts/install_personal_plugin.py --home "${{ runner.temp }}/plugin-home" --skip-codex-install
           python ./scripts/validate_plugin.py "${{ runner.temp }}/plugin-home/plugins/agent-auto-router"
       - name: Validate registry and offline routes
-        shell: pwsh
         run: |
-          python './skills/agent-auto-router/scripts/validate_model_registry.py'
-          $output = Join-Path $env:RUNNER_TEMP 'auto-router-eval.json'
-          python './skills/agent-auto-router/scripts/evaluate_auto_router.py' --output $output
+          python ./skills/agent-auto-router/scripts/validate_model_registry.py --fail-on-stale
+          python ./skills/agent-auto-router/scripts/evaluate_auto_router.py --output "${{ runner.temp }}/auto-router-eval.json"
+      - name: Run zero-call diagnostics
+        run: python ./skills/agent-auto-router/scripts/doctor.py
       - name: Compile Python sources
         run: python -m compileall -q skills/agent-auto-router/scripts scripts benchmarks tests
       - name: Verify orchestrated dry run

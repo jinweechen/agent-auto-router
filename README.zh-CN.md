@@ -6,7 +6,7 @@
 
 它在执行前根据任务复杂度、风险、约束程度、仓库规模和 reasoning effort 选择受信模型，并生成直接执行或有界多角色编排计划。路由过程本身不调用模型，不修改 Codex 全局配置，也不读取或转发登录凭据。
 
-当前项目版本：`0.7.0+codex.20260811022119`。
+当前项目版本：`0.15.0+codex.20260811`。
 
 ## 先看结论
 
@@ -14,7 +14,7 @@
 - 默认 `balance` 策略在 `fast / balanced / frontier` 三个能力层之间选择模型。
 - Codex Desktop 通过原生子代理协议执行；CLI 模式使用用户已经登录的官方 CLI。
 - Desktop 计划不包含任务正文，所有执行都受当前宿主权限、调用预算和单写入者规则约束。
-- 默认学习模式是 `manual`。普通成功、低延迟或更少 Token 都不是阈值学习标签。
+- 默认学习模式是 `observe`：自动记录隐私最小化路由结果，但只有显式启用 `guarded` 后才可能自动调整阈值。
 - 新模型可以先显式试用，验证后再进入 Auto；模型不可用时明确失败，不静默回退。
 
 ## 能做什么
@@ -22,13 +22,14 @@
 | 能力 | 说明 |
 | --- | --- |
 | 自动选模 | 从版本化受信注册表选择模型、effort、能力层和上下文预算 |
+| 统一路由协议 | Python 与 PowerShell 入口统一消费带任务及工作区绑定的严格 `agent-auto-router.route-decision.v2` |
 | Desktop 执行计划 | 输出 `agent-auto-router.desktop-plan.v3`，由当前主代理执行有界 DAG |
 | CLI 执行 | 通过 UTF-8 stdin 调用已登录的 Codex CLI 或编排后端 |
 | 多角色编排 | 支持 planner、dispatcher、worker、reviewer、grader，并保证只有一个写入者 |
-| 通用宿主协议 | 输出 `agent-auto-router.host-plan.v2`，供其他宿主决定本地 CLI 或宿主原生执行 |
+| 通用宿主协议 | 输出带 stdin 执行信封模板的 `agent-auto-router.host-plan.v3` |
 | 模型注册表 | 分离 `enabled` 与 `autoEligible`，支持受控扩展和显式试用 |
 | 隐私最小化反馈 | 只保存路由元数据、验证状态、耗时和可观测 Token，不保存任务与回复 |
-| 受控学习 | 支持人工审批候选，以及默认关闭的 canary、probation 和自动回滚 |
+| 受控学习 | 使用明确的 `off / observe / guarded` 模式，并提供 canary、probation 和自动回滚 |
 | Codex 插件 | 通过标准插件清单分发现有 Skill，不改变跨宿主核心 |
 
 ## 不会做什么
@@ -42,7 +43,7 @@
 - 不依据一次成功调用自动改变活动阈值。
 - 不通过学习降低高风险任务的 `frontier + high-risk-primary` 边界。
 
-完整安全契约见 [router-contract.md](skills/agent-auto-router/references/router-contract.md)。
+完整运行时契约见 [router-contract.md](skills/agent-auto-router/references/router-contract.md)；逐项问题判断、修复证据和剩余限制见 [SECURITY.md](SECURITY.md)。
 
 ## 工作流程
 
@@ -54,8 +55,8 @@
   -> 校验宿主权限、模型可用性、调用预算和工作区边界
   -> Desktop：输出无任务正文的 staged plan
      CLI：调用对应已登录 CLI
-  -> 记录隐私最小化结果
-  -> 可选：人工标注或 guarded-auto 学习
+  -> 在 observe/guarded 模式记录隐私最小化结果
+  -> 可选：人工标注或 guarded 学习
 ```
 
 路由与执行是两个阶段：路由只做本地计算；只有执行阶段才可能产生模型调用。
@@ -64,12 +65,39 @@
 
 ### 环境要求
 
-- Windows PowerShell 5.1 或 PowerShell 7
 - Python 3.10 或更高版本
+- PowerShell 包装脚本：Windows 可用 Windows PowerShell 5.1；Windows、Linux、macOS 可用 PowerShell 7
 - Desktop 模式：当前 Codex Desktop runtime 提供子代理能力
 - CLI 模式：目标 CLI 已安装并独立登录
 
 Python 路由器仅使用标准库，没有第三方运行时依赖。
+
+### 本地三步路径
+
+大多数已登录 CLI 的用户只需要使用精简入口 `aar.ps1`。首先运行一屏式零调用诊断：
+
+```powershell
+& "./skills/agent-auto-router/scripts/aar.ps1" doctor
+```
+
+先做不调用模型的路由预览：
+
+```powershell
+& "./skills/agent-auto-router/scripts/aar.ps1" run `
+  "重命名配置字段并更新测试" -DryRun
+```
+
+确认路由后再执行：
+
+```powershell
+& "./skills/agent-auto-router/scripts/aar.ps1" run `
+  "重命名配置字段并更新测试" `
+  -Workdir "D:/path/to/project"
+```
+
+默认 `standard` 预设只允许写入 `Workdir`，全局默认 `observe` 会记录隐私最小化路由元数据并启用模型黏性；`-Profile safe` 是只读模式，同时关闭反馈记录和跨任务模型黏性。这两个预设是经过校验的固定安全组合，不是可任意改写权限的捷径。普通本地使用到这里即可；只有 Desktop 宿主集成、显式模型、多角色编排、验证升级或学习管理才需要下面的完整入口。
+
+诊断默认只输出简洁摘要。通过 `aar.ps1 -Json`，或运行 `doctor.py --json`，可获得机器可读详情；它不读取任务、不打印环境变量值、不检查凭据，也不会调用模型。`--verbose-paths` 是额外的显式排障选项。
 
 ### Codex 插件安装
 
@@ -99,7 +127,7 @@ cd agent-auto-router
 
 对 Codex 传统安装，目标是 `$CODEX_HOME/skills/agent-auto-router`；未设置 `CODEX_HOME` 时使用 `~/.codex/skills/agent-auto-router`。`-Backup` 会把旧版本保存到 `~/.codex/skill-backups/agent-auto-router`。
 
-安装脚本通过暂存目录替换旧副本，可以重复执行，不会产生嵌套的 `agent-auto-router/agent-auto-router`。其他宿主不需要识别 `.codex-plugin/plugin.json`，可以直接调用 `host_execution_plan.py`、`invoke_auto_task.ps1` 或 `invoke_orchestrated_task.ps1`；完整入口见 [entrypoints.md](skills/agent-auto-router/references/entrypoints.md)。各宿主必须独立提供模型可用性、登录状态和可信权限边界。
+安装脚本通过暂存目录替换旧副本，可以重复执行，不会产生嵌套的 `agent-auto-router/agent-auto-router`。其他宿主不需要识别 `.codex-plugin/plugin.json`：普通已登录 CLI 用户使用 `aar.ps1`，宿主集成再调用 `host_execution_plan.py`、`invoke_auto_task.ps1` 或 `invoke_orchestrated_task.ps1`；专家入口见 [entrypoints.md](skills/agent-auto-router/references/entrypoints.md)。各宿主必须独立提供模型可用性、登录状态和可信权限边界。
 
 ### 在 Codex 中使用
 
@@ -139,7 +167,7 @@ $agent-auto-router 对“重命名配置字段并更新文档”执行 DryRun，
 - `claude:haiku`：`fast`，允许 Auto。
 - `claude:opus`：`frontier`，默认仅允许显式试用。
 
-注册表是信任与能力声明，不代表当前账号一定能访问对应模型。实际可用性仍由当前 Desktop runtime 或 CLI provider 验证。
+注册表是信任与能力声明，不代表当前账号一定能访问对应模型。实际可用性仍由当前 Desktop runtime 或 CLI provider 验证。`reviewedAt` 记录最近一次人工复核日期，CI 会拒绝超过配置新鲜度窗口的注册表。
 
 ### 策略
 
@@ -161,7 +189,7 @@ $agent-auto-router 对“重命名配置字段并更新文档”执行 DryRun，
 - 验收条件数量和仓库规模
 - 是否存在确定性验证命令
 
-ASCII 关键词按词法边界匹配，避免 `tokenizer`/`token`、`information`/`format` 等子串误判；中文短语继续按子串匹配。
+ASCII 关键词按词法边界匹配，避免 `tokenizer`/`token`、`information`/`format` 等子串误判；中文短语继续按子串匹配。`-Explain` 只报告命中的内置规则词，不回显完整任务文本，因此既能追踪决策，也不会复制敏感内容。
 
 [benchmark_priors.json](skills/agent-auto-router/scripts/benchmark_priors.json) 是版本化离线快照，运行时不联网。它只提供能力层下限，不替代当前仓库的真实验收。更新证据前阅读 [benchmark-routing.md](skills/agent-auto-router/references/benchmark-routing.md)。
 
@@ -176,7 +204,9 @@ ASCII 关键词按词法边界匹配，避免 `tokenizer`/`token`、`information
 | E | direct | `balanced` direct |
 | F | direct | `fast` direct |
 
-A/E/F 是直接执行；B/C/D 只有在任务同时具有足够规模和可并行信号时才会自动启用。低风险 A/E/F 和 D 默认不额外调用 grader；B/C 与高风险任务保留独立验收。
+A/E/F 是直接执行。默认 `auto` 编排策略只会在低风险任务同时具有明确并行信号、足够规模，并且扣除模型调用与模型层切换开销后确定性收益分仍为正时选择 B/C/D。计划会给出评分、门槛、各项得分、预计额外调用和层切换次数，但不会回显任务。`recommended=true` 表示收益门和当前策略支持编排；在 `auto` 下计划可能已经是编排拓扑，`requiresExplicitOptIn=true` 则只用于 `recommend` 模式或高风险确认门。`direct` 会同时关闭这两个标志。边缘任务保持直连。高风险任务保持直接执行，只把多角色拓扑作为建议，专家调用者必须传入 `-ConfirmHighRiskOrchestration` 才能授权展开。专家入口可选择 `direct`、`recommend` 或 `auto`。低风险 A/E/F 和 D 默认不额外调用 grader；B/C 与高风险任务保留独立验收。
+
+模型黏性默认开启。单次编排中，只要本次路由选中的模型受信、支持对应角色且不弱于角色配置要求，所有角色就优先复用它；否则使用配置中的精确角色模型。跨任务时，Auto 可以在同一工作区摘要、同一策略下保留最近 30 分钟内成功使用的模型。同 tier 可直接保留；保留高一个 tier 的模型要求归属于该选中模型自身的 cached-input 与 cache-write 遥测形成至少 15% 的缓存信号，其他角色模型的聚合遥测不能充当证据。系统绝不会保留更弱模型，也不允许跨越一个以上 tier；连续三个有效样本的缓存信号低于 5% 时，角色分配回到 profile 策略。这些比例只用于路由，不是供应商账单估算。
 
 角色默认值来自 [orchestration_profiles.json](skills/agent-auto-router/scripts/orchestration_profiles.json)。
 
@@ -195,7 +225,7 @@ Desktop 是宿主协议，不是隐藏的 CLI 登录流程。
 - 只读阶段和唯一写入者
 - 执行后的隐私安全回执模板
 
-Desktop 当前只支持 Codex 后端。首选角色模型不可用时，只允许在 runtime 已声明且注册表受信的 Codex 模型中做同 tier 或更高 tier 的显式解析；无法满足时返回结构化阻断。
+Desktop 当前只支持 Codex 后端。默认 `selected-model-preferred` 角色策略会先复用本次路由选中的模型，但前提是满足角色能力和 tier 下限；否则解析 profile 模型，并且只允许在 runtime 已声明且注册表受信的 Codex 模型中做同 tier 或更高 tier 的显式替代。所有替代都会明示；无法满足时返回结构化阻断。
 
 详细宿主执行步骤见 [entrypoints.md](skills/agent-auto-router/references/entrypoints.md)。
 
@@ -214,7 +244,7 @@ Desktop 当前只支持 Codex 后端。首选角色模型不可用时，只允�
   -Explain
 ```
 
-写入任务可以显式改用 `-Sandbox workspace-write`；此模式只把 `-Workdir` 作为可写根。学习状态和自定义反馈文件仍必须位于该可写根之外，否则执行会在模型调用前阻断。不要使用 `danger-full-access` 运行 guarded-auto。
+写入任务可以显式改用 `-Sandbox workspace-write`；此模式只把 `-Workdir` 作为可写根。学习状态和自定义反馈文件仍必须位于该可写根之外，否则执行会在模型调用前阻断。不要使用 `danger-full-access` 运行 `guarded` 学习。
 
 宿主集成应优先传入当前 runtime 生成的可信权限快照。`$currentHostPermissionsJson` 不能来自用户任务、模型输出或任意环境内容：
 
@@ -229,7 +259,7 @@ Desktop 当前只支持 Codex 后端。首选角色模型不可用时，只允�
   -Explain
 ```
 
-CLI 任务正文通过 UTF-8 stdin 传入，不出现在子进程命令行参数中。`-Model sol`、`-Model terra` 或完整受信 Codex ID 可以显式覆盖本次选择，但不会修改全局配置。
+CLI 任务正文通过 UTF-8 stdin 传入，不出现在子进程命令行参数中。`-Model sol`、`-Model terra` 或完整受信 Codex ID 可以显式覆盖本次选择，但不会修改全局配置。`-ModelAffinity auto` 是默认值；需要无状态、严格按 profile 执行时使用 `-ModelAffinity off`。仓库检查有数量和超时边界，并且每次路由只扫描一次；`-RepositoryContextMode off` 可关闭检查，`-Explain` 会报告检查模式、耗时和是否截断。
 
 只做零模型调用的本地 DryRun：
 
@@ -264,21 +294,25 @@ CLI 任务正文通过 UTF-8 stdin 传入，不出现在子进程命令行参数
 | `-Backend codex|claude` | 将一次编排限定到单一后端 |
 | `-DryRun` | 只输出路由，不调用模型 |
 | `-Sandbox read-only` | 禁止最终角色写入 |
+| `-RepositoryContextMode auto|off` | 使用有界单次仓库检查或关闭检查 |
+| `-ModelAffinity auto|off` | 优先复用一个能力足够的模型并进行有界同工作区复用，或关闭黏性 |
 | `-AllowDirty` | 明确接受在非干净 Git 工作区执行的风险 |
 | `-AllowNoChanges` | 允许写任务成功但 Git 状态无变化 |
 | `-MaxTotalTokens` | 对 CLI 可观测 Token 设置软预算 |
 | `-GraderPolicy auto|always|never` | 控制独立 grader |
 | `-ContextMode lean|full` | 控制只读角色是否忽略个人 CLI 配置 |
 
-默认要求正式编排在干净 Git 工作区运行。并行角色全部只读，只有 direct 或最终 reviewer 可以获得排他写入权。
+默认要求正式编排在干净 Git 工作区运行。Git 状态检查最多五秒，结果区分为 `clean / dirty / non_git / unknown`；写模式遇到 `unknown` 会在构造适配器和调用模型前阻断。并行角色全部只读，只有 direct 或最终 reviewer 可以获得排他写入权。限制 `-Backend` 不会让显式试用模型取得 Auto 资格；只有用户显式选择具体模型时才能使用它。
+
+`-ResultsDir` 必须位于所有子进程可写根目录之外，`danger-full-access` 下不可使用。报告采用带随机 UUID 的名称、排他创建和 POSIX 所有者权限，并默认移除任务、prompt、输出、rationale、错误、工具结果、工作区路径和 response ID 等字段。`-IncludeOutputInReport` 必须与 `-ResultsDir` 同时使用；Windows 会在写入内容前验证 DACL 仅允许当前用户、System 和 Administrators。该文件应按敏感数据保护和保留。
 
 ### 通用宿主
 
-`host_execution_plan.py` 从 route JSON 和可信权限快照生成 `agent-auto-router.host-plan.v2`，但不启动任何进程。宿主根据 `action.kind` 决定：
+`host_execution_plan.py` 从包含当前任务及其绑定路由的 v1 宿主请求和可信权限快照生成 `agent-auto-router.host-plan.v3`，但不启动任何进程，也不会在输出中返回任务正文。宿主根据 `action.kind` 决定：
 
 - `cli`：调用声明的后端和模型。
 - `host_execute`：由宿主原生模型近似执行，并明确标记准确度边界。
-- `orchestrate`：调用本地多角色编排入口。
+- `orchestrate`：用当前任务实例化声明的 `execution-envelope.v1` stdin 模板，再调用本地多角色编排入口。路由和权限快照不再进入进程 argv；入口校验任务及工作区绑定，不再二次路由。
 
 通用宿主不得把连接器、登录会话或凭据复制到独立 CLI。
 
@@ -306,19 +340,47 @@ Desktop 多角色计划遵守以下规则：
 
 ### 保存什么
 
-CLI 执行默认把隐私最小化结果写入 `~/.codex/auto-router/feedback.jsonl`：
+默认 `observe` 模式会把 CLI 的隐私最小化结果写入 `~/.codex/auto-router/feedback.jsonl`：
 
 - route ID、策略、effort、能力层和模型
+- SHA-256 工作区标识、拓扑、变体、角色模型策略和预计角色层切换次数
 - 数值/布尔路由特征
 - policy、registry 和 feature schema 摘要
 - 退出码、耗时、验证状态和尝试次数
-- CLI 实际暴露的 input、cached input、output 和 reasoning output Token
+- CLI 实际暴露的聚合 input、cached input、cache-write、output 和 reasoning output Token，以及单独归属于最终选中模型、仅供黏性判断使用的 Token 切片
 
-无法观测的 Token 保持 `null`。反馈不保存任务正文、模型回复、工具输出或凭据。使用 `-NoFeedback` 关闭本次记录，使用 `-StateDir` 或 `-FeedbackFile` 隔离状态。
+无法观测的 Token 保持 `null`。反馈不保存原始工作区路径、任务正文、模型回复、工具输出或凭据。工作区摘要与近期缓存遥测只用于有界模型黏性，Token 仍不能作为质量标签。默认黏性在 `observe` 和 `guarded` 下都会读取这份证据，因此启用黏性时，状态目录和反馈文件必须位于所有子进程可写根之外。在 `observe` 和 `guarded` 下，每次学习循环都会原子保留最近 90 天、最多 5000 个路由的最后结果与人工标签。`status.feedbackStorage` 会显示事件数、字节数和待清理数量。可以先只读检查，再显式应用自定义窗口：
 
-### 人工审批模式
+```powershell
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" feedback
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" feedback --maximum-routes 2000 --retention-days 30 --apply
+```
 
-默认模式是 `manual`：
+第一条命令不会写文件。压缩过程使用反馈追加锁和原子替换，保留 route/label 配对，结果仍明确返回 `storesTaskText=false` 与 `modelCalls=0`。使用 `-NoFeedback` 关闭本次记录，使用 `configure --mode off` 全局关闭持久化，使用 `-StateDir` 或 `-FeedbackFile` 隔离状态。
+
+Desktop 执行报告 ID 使用独立的无正文幂等标记。已完成标记同样默认保留 90 天、最多 5000 个；pending/incomplete 标记永不自动删除，并明确提示需要人工检查。由于这是有界精确窗口，标记过期后再次提交相同报告会按新报告处理。可以先检查，再显式应用自定义窗口：
+
+```powershell
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" reports
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" reports --maximum-markers 2000 --retention-days 30 --apply
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" recover-report --report-id REPORT_ID
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" recover-report --report-id REPORT_ID --action release-for-retry --confirm-report-id REPORT_ID --resolved-by OPERATOR
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" recover-report --report-id REPORT_ID --action acknowledge-recorded --confirm-report-id REPORT_ID --resolved-by OPERATOR
+```
+
+恢复流程必须先检查。只有标记阶段和匹配反馈都为空时，`release-for-retry` 才会先归档标记、再释放报告 ID；`acknowledge-recorded` 要求恰好一条匹配的路由结果及预期标签证据，不删除也不重写反馈，未完成的学习周期会留给显式 `cycle` 命令。两种变更都要求报告 ID 精确确认与操作人标识，模型调用数为零，也没有策略激活权限。
+
+### 学习模式
+
+配置只接受以下三种模式；旧 `manual` 和 `guarded-auto` 值会明确报错，不做静默迁移：
+
+| 模式 | 保存路由结果 | 自动调整阈值 |
+| --- | --- | --- |
+| `off` | 否 | 否 |
+| `observe` | 是，默认 | 否 |
+| `guarded` | 是 | 仅通过有界 canary 生命周期 |
+
+所有模式都保留人工审批候选命令：
 
 ```powershell
 python "$HOME/.codex/skills/agent-auto-router/scripts/policy_learning.py" status
@@ -345,9 +407,9 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/policy_learning.py" rollba
   --approved-by "reviewer-name"
 ```
 
-### Guarded-auto
+### Guarded 学习
 
-`guarded-auto` 默认关闭。启用后也只接受两类强信号：
+默认 `observe` 不会自动调整阈值。显式启用 `guarded` 后也只接受两类强信号：
 
 1. 用户明确选择了更合适的模型。
 2. 初始层确定性验证失败，相邻更强层验证通过，且任务非高风险、非显式覆盖。
@@ -356,16 +418,20 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/policy_learning.py" rollba
 
 ```powershell
 python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" status
-python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" configure --mode guarded-auto
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" configure --mode guarded
 python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" cycle --dry-run
-python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" configure --mode manual
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" shadow
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" configure --mode observe
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" configure --mode off
 ```
 
-自动候选对每个被调整的阈值最多向更强能力层移动一步，并依次经过 held-out 验证、确定性 canary、probation 和回滚门禁。状态、配置、审批和回滚使用有界 OS 文件锁；JSONL 流使用独立追加锁。
+较激进的 guarded 默认值在 12 个强信号后评估，使用 20% canary，canary 与 baseline 各要求 6 个确定性验证报告，probation 要求 12 个报告。自动候选对每个阈值仍最多向更强能力层移动一步，并依次经过 held-out 验证、确定性 canary、probation 和回滚门禁。重新评估改用最新强证据时间，而不是只增不减的事件总数，因此达到反馈保留上限后不会让学习永久停滞。状态、配置、审批和回滚使用有界 OS 文件锁；JSONL 流使用独立追加锁。
 
-学习状态和反馈属于受保护控制面，必须位于所有子进程可写根之外。`danger-full-access`、不可验证的外部沙箱或子进程可写学习证据时，guarded-auto 会阻断执行。
+`shadow` 是当前 canary/probation 候选（或显式 `--candidate` 文件）的只读 A/B 预览。它使用同一批保留证据和确定性 holdout 比较 baseline/candidate，并增加 Wilson 准确率区间、配对精确符号检验、最小效应门槛，以及按策略、风险、标签来源划分的隐私安全统计；少于 3 个样本的分层会被抑制。结果区分证据不足、回归、有改善迹象但置信度不足，以及具有统计支持的候选优势。它不返回 route ID，并始终返回 `activationAuthorized=false`、`modelCalls=0`；影子结果绝不会激活策略。
 
-特征语义使用 `featureSchemaVersion` 版本化。当前 v2 数据可以参与学习；缺失版本的历史记录按 legacy v1 保留审计，但不能进入新候选、canary 或 probation 统计。
+学习状态和反馈属于受保护控制面，必须位于所有子进程可写根之外。`danger-full-access`、不可验证的外部沙箱或子进程可写学习证据时，`guarded` 会阻断执行。
+
+特征语义使用 `featureSchemaVersion` 版本化。当前 v3 数据可以参与学习；缺失版本的历史记录在反馈保留窗口内仍可按 legacy v1 读取，v2 等旧版本也仅保留审计可读性，不能进入新候选、canary 或 probation 统计。
 
 完整协议见 [guarded-auto-learning.md](skills/agent-auto-router/references/guarded-auto-learning.md)。
 
@@ -393,6 +459,7 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" configure
 | --- | --- |
 | `enabled` | 允许用户显式选择 |
 | `autoEligible` | 允许 Auto 能力层解析器选择 |
+| `reviewedAt` | 新鲜度门禁使用的 ISO 复核日期 |
 | `tier` | `fast`、`balanced` 或 `frontier` |
 | `priority` | 同层同角色的选择优先级，数值越小越优先 |
 | `capabilities` | 模型可承担的能力 |
@@ -408,7 +475,7 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" configure
 6. 运行完整测试、离线评测和 DryRun，人工审核后安装。
 
 ```powershell
-python "./skills/agent-auto-router/scripts/validate_model_registry.py"
+python "./skills/agent-auto-router/scripts/validate_model_registry.py" --fail-on-stale
 ```
 
 ## 评测与开发
@@ -438,7 +505,8 @@ python "./skills/agent-auto-router/scripts/evaluate_development_routes.py" `
 
 ```powershell
 python -m unittest discover -s tests -p "test_*.py"
-python "./skills/agent-auto-router/scripts/validate_model_registry.py"
+python "./skills/agent-auto-router/scripts/validate_model_registry.py" --fail-on-stale
+python "./skills/agent-auto-router/scripts/doctor.py"
 python "./skills/agent-auto-router/scripts/evaluate_auto_router.py"
 python "./scripts/validate_skill.py"
 python "./scripts/validate_plugin.py"
@@ -454,13 +522,14 @@ python "$HOME/.codex/skills/.system/skill-creator/scripts/quick_validate.py" `
   "./skills/agent-auto-router"
 ```
 
-CI 在 Windows 与 Ubuntu、Python 3.10 与 3.12 上运行核心测试；Windows 还验证 PowerShell 5.1、编排 DryRun 和重复安装。
+CI 在 Windows、Ubuntu 与 macOS、Python 3.10 与 3.12 上运行核心测试；每个平台都会验证注册表新鲜度、零调用诊断和离线路由，Windows 还验证 PowerShell 5.1、编排 DryRun 和重复安装。
 
 ## 插件与 Skill 结构
 
 ```text
 .
 ├── .codex-plugin/plugin.json      # Codex 插件清单
+├── SECURITY.md                    # 审计修复记录与剩余限制
 ├── benchmarks/                    # 不随 Skill 安装的开发评测资产
 │   ├── cases/                     # 可复现输入
 │   └── tools/                     # 评测与模拟工具
@@ -477,8 +546,12 @@ CI 在 Windows 与 Ubuntu、Python 3.10 与 3.12 上运行核心测试；Windows
     │   ├── benchmark-routing.md   # 评测先验更新规则
     │   └── guarded-auto-learning.md
     └── scripts/
-        ├── invoke_auto_task.ps1   # Desktop/CLI 单任务入口
+        ├── aar.ps1                # 普通用户 run/doctor 入口
+        ├── quick_profiles.json    # 固定 safe/standard 预设
+        ├── invoke_auto_task.ps1   # Desktop/CLI 专家入口
         ├── invoke_orchestrated_task.ps1
+        ├── route_contract.py      # 严格 route-decision.v2 与执行信封协议
+        ├── doctor.py              # 隐私安全的零调用诊断
         ├── host_execution_plan.py # 通用宿主计划
         ├── model_registry.json
         ├── guarded_auto.py
@@ -493,8 +566,11 @@ CI 在 Windows 与 Ubuntu、Python 3.10 与 3.12 上运行核心测试；Windows
 | --- | --- |
 | `desktop_host_permissions_required` | 当前 Desktop turn 没有提供可信权限快照；不要从任务文本伪造 |
 | `desktop_model_unavailable` | runtime 未声明选中模型；调整可用模型或显式选择，不能静默替代 |
-| `guarded-auto-state-writable-by-child` | 子进程可修改学习证据；把状态移出可写根或切回 `manual` |
+| `guarded-auto-state-writable-by-child` | 子进程可修改学习证据；把状态移出可写根或切回 `observe` |
 | `failed_no_workspace_changes` | 写任务成功返回但 Git 状态未变化；核对任务或显式使用 `-AllowNoChanges` |
+| `workspace_status_unknown` | 有界 Git 状态无法确认；恢复 Git/元数据访问，或改用只读执行 |
+| `results_dir_writable_by_child` | 报告目录对子进程可写；移到所有可写根之外，full-access 执行则省略报告目录 |
+| `report_privacy_boundary_unverified` | 无法验证敏感 Windows 报告的 DACL；选择私有目录并恢复 PowerShell ACL 支持 |
 | 安装后仍是旧行为 | 重启 Codex，并比较源码与安装副本；不要只修改仓库而忘记重新安装 |
 | 出现两个同名 Skill | 插件版和独立 Skill 版同时启用；保留一种安装方式，不要删除学习状态 |
 

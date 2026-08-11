@@ -5,6 +5,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 import unittest
 
@@ -18,10 +19,13 @@ from policy_learning import (  # noqa: E402
     approve_candidate,
     build_candidate,
     labeled_samples,
+    maintain_feedback,
     predict_sample,
     read_feedback,
     rollback_policy,
+    shadow_policy_comparison,
 )
+from guarded_auto import configure  # noqa: E402
 from model_registry import DEFAULT_REGISTRY_PATH, registry_from_dict  # noqa: E402
 from routing_policy import (  # noqa: E402
     FEATURE_SCHEMA_VERSION,
@@ -73,6 +77,130 @@ def labeled_sample(route_id: str) -> dict[str, object]:
 
 
 class PolicyLearningTests(unittest.TestCase):
+    def test_shadow_comparison_detects_holdout_improvement_without_route_ids(self) -> None:
+        baseline = RoutingPolicy()
+        candidate = RoutingPolicy(
+            policy_version="shadow-candidate",
+            intelligence_frontier_threshold=baseline.intelligence_frontier_threshold,
+            balance_frontier_threshold=baseline.balance_frontier_threshold - 1,
+            cost_balanced_threshold=baseline.cost_balanced_threshold,
+        )
+        complexity = baseline.balance_frontier_threshold - 1
+        samples = [
+            {
+                "routeId": f"private-route-{index}",
+                "featureSchemaVersion": FEATURE_SCHEMA_VERSION,
+                "strategy": "balance",
+                "effort": "medium",
+                "features": {"complexity_score": complexity, "high_risk": False},
+                "preferredModel": "codex:gpt-5.6-sol",
+                "preferredTier": "frontier",
+            }
+            for index in range(8)
+        ]
+
+        result = shadow_policy_comparison(samples, baseline, candidate)
+
+        self.assertEqual(result["assessment"], "candidate-favorable")
+        self.assertEqual(result["dataset"]["changedRoutes"], 8)
+        self.assertGreater(result["delta"]["holdoutAccuracy"], 0)
+        self.assertTrue(result["confidence"]["minimumEffectMet"])
+        self.assertTrue(result["confidence"]["statisticallySupported"])
+        self.assertLessEqual(
+            result["confidence"]["allEvidence"]["twoSidedExactPValue"], 0.10
+        )
+        self.assertEqual(result["strata"]["minimumStratumSize"], 3)
+        self.assertFalse(result["activationAuthorized"])
+        self.assertNotIn("private-route", json.dumps(result))
+        self.assertEqual(result["modelCalls"], 0)
+
+    def test_shadow_comparison_separates_effect_from_confidence_and_suppresses_small_strata(self) -> None:
+        baseline = RoutingPolicy()
+        candidate = RoutingPolicy(
+            policy_version="shadow-promising",
+            intelligence_frontier_threshold=baseline.intelligence_frontier_threshold,
+            balance_frontier_threshold=baseline.balance_frontier_threshold - 1,
+            cost_balanced_threshold=baseline.cost_balanced_threshold,
+        )
+        boundary = baseline.balance_frontier_threshold - 1
+        samples = []
+        for index in range(8):
+            changed = index == 0
+            samples.append(
+                {
+                    "routeId": f"suppressed-route-{index}",
+                    "featureSchemaVersion": FEATURE_SCHEMA_VERSION,
+                    "strategy": "balance",
+                    "effort": "medium",
+                    "features": {
+                        "complexity_score": boundary if changed else 0,
+                        "high_risk": False,
+                    },
+                    "preferredModel": (
+                        "codex:gpt-5.6-sol" if changed else "codex:gpt-5.6-terra"
+                    ),
+                    "preferredTier": "frontier" if changed else "balanced",
+                    "labelSource": "verified-tier-escalation" if changed else "human",
+                }
+            )
+
+        result = shadow_policy_comparison(samples, baseline, candidate)
+
+        self.assertEqual(result["assessment"], "promising-unconfirmed")
+        self.assertTrue(result["confidence"]["minimumEffectMet"])
+        self.assertFalse(result["confidence"]["statisticallySupported"])
+        self.assertEqual(result["confidence"]["allEvidence"]["discordantPairs"], 1)
+        self.assertEqual(result["strata"]["suppressedStrata"]["labelSource"], 1)
+        self.assertNotIn("suppressed-route", json.dumps(result))
+        self.assertFalse(result["activationAuthorized"])
+
+    def test_record_command_respects_off_and_observe_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            state_dir = pathlib.Path(temp)
+            feedback = state_dir / "feedback.jsonl"
+            command = [
+                sys.executable,
+                str(SCRIPTS / "policy_learning.py"),
+                "record",
+                "--state-dir",
+                str(state_dir),
+                "--feedback-file",
+                str(feedback),
+                "--stdin",
+            ]
+            configure(state_dir, mode="off")
+            disabled = subprocess.run(
+                command,
+                input=json.dumps(route_payload("off-route")),
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            self.assertFalse(json.loads(disabled.stdout)["recorded"])
+            self.assertFalse(feedback.exists())
+
+            private_payload = route_payload("private-off-route")
+            private_payload["task"] = "must still be rejected"
+            rejected = subprocess.run(
+                command,
+                input=json.dumps(private_payload),
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("may not store field", rejected.stderr)
+
+            configure(state_dir, mode="observe")
+            observed = subprocess.run(
+                command,
+                input=json.dumps(route_payload("observe-route")),
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            self.assertTrue(json.loads(observed.stdout)["recorded"])
+            self.assertEqual(len(read_feedback(feedback)), 1)
+
     def test_feedback_never_accepts_task_text(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             payload = route_payload("route-1")
@@ -125,6 +253,51 @@ class PolicyLearningTests(unittest.TestCase):
                 {f"route-concurrent-{index}" for index in range(24)},
             )
 
+    def test_feedback_retention_is_dry_run_first_and_preserves_route_label_pairs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = pathlib.Path(temp) / "feedback.jsonl"
+            for route_id in ("old", "recent-a", "recent-b"):
+                append_route_event(route_payload(route_id), path)
+                append_label_event(
+                    route_id, "codex:gpt-5.6-terra", "pass", path
+                )
+            append_route_event(route_payload("recent-c"), path)
+            events = read_feedback(path)
+            timestamps = {
+                "old": "2025-01-01T00:00:00+00:00",
+                "recent-a": "2026-01-08T00:00:00+00:00",
+                "recent-b": "2026-01-09T00:00:00+00:00",
+                "recent-c": "2026-01-10T00:00:00+00:00",
+            }
+            for event in events:
+                event["recordedAt"] = timestamps[event["routeId"]]
+            path.write_text(
+                "".join(json.dumps(event) + "\n" for event in events),
+                encoding="utf-8",
+            )
+            now = datetime(2026, 1, 10, tzinfo=timezone.utc)
+
+            preview = maintain_feedback(
+                path, maximum_routes=2, retention_days=7, apply=False, now=now
+            )
+            self.assertTrue(preview["wouldChange"])
+            self.assertFalse(preview["applied"])
+            self.assertEqual(len(read_feedback(path)), 7)
+
+            applied = maintain_feedback(
+                path, maximum_routes=2, retention_days=7, apply=True, now=now
+            )
+            retained = read_feedback(path)
+            self.assertTrue(applied["applied"])
+            self.assertEqual(applied["routesRemovedByAge"], 1)
+            self.assertEqual(applied["routesRemovedByLimit"], 1)
+            self.assertEqual(
+                [event["routeId"] for event in retained],
+                ["recent-b", "recent-b", "recent-c"],
+            )
+            self.assertFalse(applied["storesTaskText"])
+            self.assertEqual(applied["modelCalls"], 0)
+
     def test_feedback_preserves_cached_and_reasoning_token_details(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             path = pathlib.Path(temp) / "feedback.jsonl"
@@ -136,12 +309,21 @@ class PolicyLearningTests(unittest.TestCase):
                 "reasoning_output": 5,
                 "total": 120,
             }
+            payload["selected_model_observed_tokens"] = {
+                "input": 40,
+                "cached_input": 20,
+                "output": 10,
+                "reasoning_output": 2,
+                "total": 50,
+            }
             append_route_event(payload, path)
             stored = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(stored["schemaVersion"], 3)
+            self.assertEqual(stored["schemaVersion"], 5)
             self.assertEqual(stored["featureSchemaVersion"], FEATURE_SCHEMA_VERSION)
             self.assertEqual(stored["observedTokens"]["cached_input"], 60)
             self.assertEqual(stored["observedTokens"]["reasoning_output"], 5)
+            self.assertEqual(stored["selectedModelObservedTokens"]["input"], 40)
+            self.assertEqual(stored["selectedModelObservedTokens"]["cached_input"], 20)
 
     def test_feedback_rejects_inconsistent_token_details(self) -> None:
         payload = route_payload("route-bad-token-details")

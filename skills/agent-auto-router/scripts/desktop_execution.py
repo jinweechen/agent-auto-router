@@ -11,7 +11,7 @@ from typing import Any, Iterable
 
 from host_permissions import HostPermissions, parse_host_permissions, workdir_is_writable
 from model_registry import TIER_RANK, load_model_registry, registry_digest, strip_backend_prefix
-from orchestration_profiles import load_orchestration_profiles
+from orchestration_profiles import load_orchestration_profiles, resolve_role_with_affinity
 from policy_learning import ROUTE_FEATURES
 
 
@@ -153,6 +153,7 @@ def build_desktop_plan(
     max_parallel_children: int,
     requested_sandbox: str = "inherit",
     dry_run: bool = False,
+    feedback_enabled: bool = True,
 ) -> dict[str, Any]:
     """Return a host-consumable plan; never executes a process or handles credentials."""
     execution_plan = route.get("executionPlan")
@@ -201,6 +202,8 @@ def build_desktop_plan(
         "effort": effort,
         "topology": topology,
         "variant": variant,
+        "workspaceKey": route.get("workspaceKey"),
+        "modelAffinity": execution_plan.get("modelAffinity", {}),
         "context": context if isinstance(context, dict) else None,
         "modelCalls": 0,
         "modelCallsScope": "routing",
@@ -437,6 +440,7 @@ def build_desktop_plan(
             max_model_calls - fixed_calls,
         )
     profiles = load_orchestration_profiles()
+    role_model_policy = str(execution_plan.get("roleModelPolicy") or "profile")
 
     agents: list[dict[str, Any]] = []
     for role in roles:
@@ -444,27 +448,35 @@ def build_desktop_plan(
             model_id = selected_model
             role_effort = effort
         else:
-            assignment = profiles.assignment(str(variant), role)
             final_requirements = required_capabilities if role == final_role else ()
             try:
-                preferred_spec = assignment.resolve(
-                    registry,
-                    role,
-                    required_capabilities=final_requirements,
-                    required_tier="frontier" if final_requirements else None,
-                    backends=("codex",),
+                preferred_spec, affinity_spec, affinity_resolution, role_effort = (
+                    resolve_role_with_affinity(
+                        profiles,
+                        registry,
+                        str(variant),
+                        role,
+                        selected_model=selected_model,
+                        role_model_policy=role_model_policy,
+                        required_capabilities=final_requirements,
+                        required_tier="frontier" if final_requirements else None,
+                        backends=("codex",),
+                    )
                 )
-                spec, model_resolution = _runtime_role_model(
-                    registry,
-                    preferred_spec,
-                    available,
-                    role=role,
-                    required_capabilities=final_requirements,
-                )
+                if affinity_resolution == "selected-model-affinity":
+                    spec = affinity_spec
+                    model_resolution = affinity_resolution
+                else:
+                    spec, model_resolution = _runtime_role_model(
+                        registry,
+                        preferred_spec,
+                        available,
+                        role=role,
+                        required_capabilities=final_requirements,
+                    )
             except ValueError as exc:
                 return _blocked(plan, "desktop_role_resolution_failed", str(exc))
             model_id = spec.model_id
-            role_effort = assignment.effort
         if role == "direct":
             preferred_model_id = model_id
             model_resolution = "selected-exact"
@@ -507,6 +519,21 @@ def build_desktop_plan(
             "timeoutMs": _stage_timeout_ms(role_effort),
         })
 
+    planned_models = [agent["model"] for agent in agents]
+    plan["modelSwitching"] = {
+        "roleModelPolicy": role_model_policy,
+        "plannedModelSwitches": sum(
+            left != right for left, right in zip(planned_models, planned_models[1:])
+        ),
+        "profileEstimatedTierSwitches": execution_plan.get(
+            "orchestrationRecommendation", {}
+        ).get("utility", {}).get("estimatedProfileTierSwitches", 0),
+        "cacheSignalRatio": execution_plan.get("modelAffinity", {}).get(
+            "evidence", {}
+        ).get("cacheSignalRatio"),
+        "billingCostEstimated": False,
+    }
+
     minimum_calls = len(agents)
     maximum_calls = sum(agent["maximumInstances"] for agent in agents)
     maximum_parallel = max(agent["maximumInstances"] for agent in agents)
@@ -544,9 +571,11 @@ def build_desktop_plan(
             if key in ROUTE_FEATURES and isinstance(value, (int, bool)):
                 report_features[key] = value
     plan["learning"] = {
-        "mode": "host-reported-guarded-auto",
+        "mode": "feedback-report" if feedback_enabled else "off",
+        "persistenceControlledBy": "configured-learning-mode",
+        "disabledByInvocation": not feedback_enabled,
         "reportSchema": EXECUTION_REPORT_SCHEMA,
-        "submitAfterExecution": not dry_run,
+        "submitAfterExecution": feedback_enabled and not dry_run,
         "submitWith": "python guarded_auto.py report --stdin",
         "route": {
             "routeId": route_id,
@@ -562,6 +591,11 @@ def build_desktop_plan(
             "modelRegistryDigest": registry_payload.get("digest"),
             "featureSchemaVersion": decision.get("feature_schema_version", 1),
             "explicitOverride": bool(route.get("explicitOverride", False)),
+            "workspaceKey": route.get("workspaceKey"),
+            "topology": topology,
+            "variant": variant,
+            "roleModelPolicy": role_model_policy,
+            "estimatedRoleTierSwitches": plan["modelSwitching"]["plannedModelSwitches"],
         },
         "resultRequired": [
             "status",
@@ -582,6 +616,7 @@ def main() -> int:
     parser.add_argument("--workdir", type=pathlib.Path, required=True)
     parser.add_argument("--max-parallel-children", type=int, required=True)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--no-feedback", action="store_true")
     parser.add_argument(
         "--sandbox",
         choices=("inherit", "read-only", "workspace-write", "danger-full-access"),
@@ -601,6 +636,7 @@ def main() -> int:
             max_parallel_children=args.max_parallel_children,
             requested_sandbox=args.sandbox,
             dry_run=args.dry_run,
+            feedback_enabled=not args.no_feedback,
         )
     except (json.JSONDecodeError, OSError, ValueError) as exc:
         parser.error(str(exc))

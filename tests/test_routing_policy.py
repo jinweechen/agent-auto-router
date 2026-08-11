@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import pathlib
+import json
 import sys
 import unittest
+from datetime import datetime, timezone
 
 SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "skills" / "agent-auto-router" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -10,6 +12,7 @@ sys.path.insert(0, str(SCRIPTS))
 from auto_router import route_case  # noqa: E402
 from routing_policy import (  # noqa: E402
     RoutingPolicy,
+    matched_signal_terms,
     policy_from_dict,
     policy_to_dict,
     select_model,
@@ -17,6 +20,20 @@ from routing_policy import (  # noqa: E402
 
 
 class RoutingPolicyTests(unittest.TestCase):
+    def test_explanation_reports_packaged_terms_without_echoing_prompt(self) -> None:
+        matches = matched_signal_terms(
+            "Diagnose a failing test in the authentication workflow"
+        )
+        self.assertEqual(matches["debugging"], ["diagnose", "failing test"])
+        self.assertIn("authentication", matches["risk"])
+        self.assertNotIn("the authentication workflow", json.dumps(matches))
+
+    def test_broad_code_bug_and_risk_words_do_not_trigger_rules(self) -> None:
+        self.assertEqual(matched_signal_terms("Chat about code, bugs, and risk."), {})
+        decision = select_model("Chat about code, bugs, and risk.", "balance")
+        self.assertEqual(decision.target_tier, "balanced")
+        self.assertFalse(decision.orchestration_eligible)
+
     def test_large_scope_rename_is_not_misclassified_as_constrained(self) -> None:
         decision = select_model(
             "Rename a public API across 200 packages and preserve backward compatibility",
@@ -49,6 +66,87 @@ class RoutingPolicyTests(unittest.TestCase):
         result = route_case(case, "balance")
         self.assertEqual(result["selected_model"], "codex:gpt-5.6-terra")
         self.assertEqual(result["variant"], "D")
+        utility = result["execution_plan"]["orchestrationRecommendation"]["utility"]
+        recommendation = result["execution_plan"]["orchestrationRecommendation"]
+        self.assertTrue(utility["passes"])
+        self.assertGreaterEqual(utility["score"], utility["minimumScore"])
+        self.assertTrue(recommendation["recommended"])
+        self.assertFalse(recommendation["requiresExplicitOptIn"])
+
+    def test_recommend_policy_reports_orchestration_without_executing_it(self) -> None:
+        case = {
+            "prompt": "Implement API and tests for several independent components",
+            "acceptance_criteria": ["API", "tests", "docs", "rollback"],
+        }
+        result = route_case(case, "balance", orchestration_policy="recommend")
+        recommendation = result["execution_plan"]["orchestrationRecommendation"]
+        self.assertEqual(result["variant"], "E")
+        self.assertEqual(result["recommended_variant"], "D")
+        self.assertTrue(recommendation["recommended"])
+        self.assertTrue(recommendation["requiresExplicitOptIn"])
+        self.assertEqual(recommendation["estimatedMaximumModelCalls"], 5)
+        self.assertEqual(recommendation["utility"]["estimatedRoleTierSwitches"], 0)
+        self.assertEqual(recommendation["utility"]["estimatedProfileTierSwitches"], 2)
+        self.assertEqual(
+            recommendation["utility"]["roleModelPolicy"], "selected-model-preferred"
+        )
+
+    def test_direct_policy_suppresses_eligible_orchestration(self) -> None:
+        case = {
+            "prompt": "Implement API and tests for several independent components",
+            "acceptance_criteria": ["API", "tests", "docs", "rollback"],
+        }
+        result = route_case(case, "balance", orchestration_policy="direct")
+        recommendation = result["execution_plan"]["orchestrationRecommendation"]
+        self.assertEqual(result["variant"], "E")
+        self.assertFalse(recommendation["recommended"])
+        self.assertTrue(recommendation["eligible"])
+        self.assertFalse(recommendation["requiresExplicitOptIn"])
+
+    def test_high_risk_auto_orchestration_requires_explicit_confirmation(self) -> None:
+        case = {
+            "prompt": (
+                "Parallelize independent security vulnerability fixes across multiple "
+                "production authentication modules"
+            ),
+            "acceptance_criteria": ["auth", "audit", "tests", "rollback"],
+        }
+        result = route_case(case, "balance", orchestration_policy="auto")
+        recommendation = result["execution_plan"]["orchestrationRecommendation"]
+        self.assertEqual(result["variant"], "A")
+        self.assertTrue(recommendation["blockedByRiskGate"])
+        self.assertTrue(recommendation["requiresExplicitOptIn"])
+        self.assertEqual(recommendation["reason"], "high-risk-confirmation-required")
+
+        confirmed = route_case(
+            case,
+            "balance",
+            orchestration_policy="auto",
+            confirm_high_risk_orchestration=True,
+        )
+        confirmed_recommendation = confirmed["execution_plan"][
+            "orchestrationRecommendation"
+        ]
+        self.assertIn(confirmed["variant"], {"B", "C"})
+        self.assertFalse(confirmed_recommendation["blockedByRiskGate"])
+        self.assertTrue(
+            confirmed_recommendation["highRiskConfirmationProvided"]
+        )
+
+    def test_marginal_scale_is_kept_direct_when_coordination_cost_wins(self) -> None:
+        case = {
+            "prompt": "Handle independent components in parallel. " + ("detail " * 140),
+            "acceptance_criteria": [],
+        }
+        result = route_case(case, "balance")
+        recommendation = result["execution_plan"]["orchestrationRecommendation"]
+        self.assertTrue(result["features"]["orchestration_eligible"])
+        self.assertEqual(result["variant"], "E")
+        self.assertTrue(recommendation["blockedByUtilityGate"])
+        self.assertFalse(recommendation["utility"]["passes"])
+        self.assertEqual(
+            recommendation["reason"], "orchestration-overhead-exceeds-benefit"
+        )
 
     def test_small_parallel_task_does_not_trigger_orchestration(self) -> None:
         case = {
@@ -59,6 +157,34 @@ class RoutingPolicyTests(unittest.TestCase):
         self.assertTrue(result["features"]["parallelizable"])
         self.assertFalse(result["features"]["orchestration_eligible"])
         self.assertEqual(result["variant"], "E")
+
+    def test_affinity_can_retain_stronger_model_without_changing_task_topology(self) -> None:
+        case = {
+            "prompt": "Implement API and tests for several independent components",
+            "acceptance_criteria": ["API", "tests", "docs", "rollback"],
+            "workspace_key": "a" * 64,
+        }
+        affinity_event = {
+            "eventType": "route_outcome",
+            "recordedAt": datetime.now(timezone.utc).isoformat(),
+            "workspaceKey": "a" * 64,
+            "selectedModel": "codex:gpt-5.6-sol",
+            "strategy": "balance",
+            "executionSucceeded": True,
+            "explicitOverride": False,
+            "observedTokens": {"input": 100, "cached_input": 30, "cache_write": 0},
+            "selectedModelObservedTokens": {
+                "input": 100,
+                "cached_input": 30,
+                "cache_write": 0,
+            },
+        }
+        result = route_case(case, "balance", affinity_events=[affinity_event])
+        self.assertEqual(result["selector_model"], "codex:gpt-5.6-terra")
+        self.assertEqual(result["selected_model"], "codex:gpt-5.6-sol")
+        self.assertEqual(result["target_tier"], "balanced")
+        self.assertEqual(result["variant"], "D")
+        self.assertFalse(result["execution_plan"]["escalation"]["eligible"])
 
     def test_chinese_parallel_benchmark_signals_trigger_orchestration(self) -> None:
         case = {
@@ -99,6 +225,29 @@ class RoutingPolicyTests(unittest.TestCase):
         self.assertFalse(tokenizer.high_risk)
         self.assertEqual(tokenizer.target_tier, "balanced")
         self.assertEqual(reproduction.high_risk_hits, 0)
+
+    def test_plain_output_token_is_not_a_sensitive_domain(self) -> None:
+        prompt = "For architecture validation, return exactly the single token OK."
+        decision = select_model(prompt, "balance")
+        matches = matched_signal_terms(prompt)
+        self.assertEqual(decision.high_risk_hits, 0)
+        self.assertNotIn("risk", matches)
+        self.assertNotIn("sensitiveDomain", matches)
+
+    def test_access_token_rotation_remains_high_risk(self) -> None:
+        decision = select_model("Rotate the production access token", "balance")
+        self.assertTrue(decision.high_risk)
+        self.assertEqual(decision.target_tier, "frontier")
+
+    def test_route_labels_are_backend_neutral(self) -> None:
+        result = route_case(
+            {"prompt": "Reply with exactly OK"},
+            "balance",
+            backends=["claude"],
+        )
+        self.assertEqual(result["selected_model"], "claude:haiku")
+        self.assertEqual(result["route"], "variant-f-direct")
+        self.assertNotIn("luna", result["route"])
 
     def test_complex_signal_prevents_incidental_simple_classification(self) -> None:
         decision = select_model(

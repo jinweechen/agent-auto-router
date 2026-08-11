@@ -124,6 +124,7 @@ class ClaudeExecutionTests(unittest.TestCase):
         instance.usage_events_observed = 0
         instance.observed_input_tokens = 0
         instance.observed_cached_input_tokens = 0
+        instance.observed_cache_write_input_tokens = 0
         instance.observed_output_tokens = 0
         instance.observed_reasoning_output_tokens = 0
         instance.workdir = pathlib.Path.cwd()
@@ -190,12 +191,14 @@ class ClaudeExecutionTests(unittest.TestCase):
                 "input_tokens": 100,
                 "output_tokens": 50,
                 "cache_read_input_tokens": 30,
+                "cache_creation_input_tokens": 20,
                 "reasoning_tokens": 20,
             }
         }
         usage = extract_claude_usage(payload)  # type: ignore[arg-type]
-        self.assertEqual(usage["input_tokens"], 100)
+        self.assertEqual(usage["input_tokens"], 150)
         self.assertEqual(usage["cached_input_tokens"], 30)
+        self.assertEqual(usage["cache_write_input_tokens"], 20)
         self.assertEqual(usage["output_tokens"], 50)
         self.assertEqual(usage["reasoning_output_tokens"], 20)
 
@@ -203,6 +206,7 @@ class ClaudeExecutionTests(unittest.TestCase):
         empty_usage = extract_claude_usage({})
         self.assertEqual(empty_usage["input_tokens"], 0)
         self.assertEqual(empty_usage["cached_input_tokens"], 0)
+        self.assertEqual(empty_usage["cache_write_input_tokens"], 0)
         self.assertEqual(empty_usage["output_tokens"], 0)
         self.assertEqual(empty_usage["reasoning_output_tokens"], 0)
 
@@ -211,11 +215,13 @@ class ClaudeExecutionTests(unittest.TestCase):
             "input_tokens": None,
             "output_tokens": None,
             "cache_read_input_tokens": None,
+            "cache_creation_input_tokens": None,
             "reasoning_tokens": None,
         }}
         nulled_usage = extract_claude_usage(nulled)  # type: ignore[arg-type]
         self.assertEqual(nulled_usage["input_tokens"], 0)
         self.assertEqual(nulled_usage["cached_input_tokens"], 0)
+        self.assertEqual(nulled_usage["cache_write_input_tokens"], 0)
         self.assertEqual(nulled_usage["output_tokens"], 0)
         self.assertEqual(nulled_usage["reasoning_output_tokens"], 0)
 
@@ -243,6 +249,7 @@ class ClaudeExecutionTests(unittest.TestCase):
         instance.usage_events_observed = 0
         instance.observed_input_tokens = 0
         instance.observed_cached_input_tokens = 0
+        instance.observed_cache_write_input_tokens = 0
         instance.observed_output_tokens = 0
         instance.observed_reasoning_output_tokens = 0
         instance.workdir = pathlib.Path.cwd()

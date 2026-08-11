@@ -40,6 +40,29 @@ def usage_is_available(events: list[dict[str, Any]]) -> bool:
     return any(isinstance(event.get("usage"), dict) for event in events)
 
 
+def parse_runner_input(
+    raw_input: str, input_format: str
+) -> tuple[str, str | None, dict[str, Any] | None]:
+    if input_format == "task":
+        return raw_input, None, None
+    try:
+        payload = json.loads(raw_input)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"runner envelope must be valid JSON: {exc.msg}") from exc
+    if not isinstance(payload, dict) or payload.get("schema") != "agent-auto-router.runner-input.v1":
+        raise ValueError("runner envelope schema must be agent-auto-router.runner-input.v1")
+    task = payload.get("task")
+    repository_context = payload.get("repositoryContext")
+    repository_metadata = payload.get("repositoryMetadata")
+    if not isinstance(task, str):
+        raise ValueError("runner envelope task must be a string")
+    if repository_context is not None and not isinstance(repository_context, str):
+        raise ValueError("runner envelope repositoryContext must be a string or null")
+    if repository_metadata is not None and not isinstance(repository_metadata, dict):
+        raise ValueError("runner envelope repositoryMetadata must be an object or null")
+    return task, repository_context, repository_metadata
+
+
 def write_result(path: pathlib.Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -62,12 +85,20 @@ def main() -> int:
     parser.add_argument("--context-mode", choices=("lean", "full"), default="lean")
     parser.add_argument("--workdir", type=pathlib.Path, required=True)
     parser.add_argument("--result-file", type=pathlib.Path, required=True)
+    parser.add_argument(
+        "--input-format", choices=("task", "route-envelope"), default="task"
+    )
     parser.add_argument("--emit-json", action="store_true")
     parser.add_argument("--repo-map-tokens", type=int, default=0)
     parser.add_argument("--max-candidate-files", type=int, default=0)
     args = parser.parse_args()
 
-    task = sys.stdin.read()
+    try:
+        task, precomputed_context, precomputed_metadata = parse_runner_input(
+            sys.stdin.read(), args.input_format
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     if not task.strip():
         parser.error("task stdin must not be empty")
     workdir = args.workdir.resolve()
@@ -97,7 +128,11 @@ def main() -> int:
 
     repository_metadata: dict[str, Any] | None = None
     effective_task = task
-    if args.repo_map_tokens > 0 and args.max_candidate_files > 0:
+    if precomputed_metadata is not None:
+        repository_metadata = precomputed_metadata
+        if precomputed_context and repository_metadata.get("context_useful"):
+            effective_task = f"{precomputed_context}\n\nUSER TASK:\n{task}"
+    elif args.repo_map_tokens > 0 and args.max_candidate_files > 0:
         repository_context, repository_metadata = build_repository_context(
             workdir,
             task,
@@ -156,6 +191,7 @@ def main() -> int:
         observed_tokens = {
             "input": usage["input_tokens"],
             "cached_input": usage["cached_input_tokens"],
+            "cache_write": usage["cache_write_input_tokens"],
             "output": usage["output_tokens"],
             "reasoning_output": usage["reasoning_output_tokens"],
             "total": usage["input_tokens"] + usage["output_tokens"],

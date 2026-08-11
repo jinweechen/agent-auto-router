@@ -12,6 +12,13 @@ param(
     [string]$Sandbox = 'inherit',
     [ValidateSet('lean', 'full')]
     [string]$ContextMode = 'lean',
+    [ValidateSet('auto', 'off')]
+    [string]$RepositoryContextMode = 'auto',
+    [ValidateSet('direct', 'recommend', 'auto')]
+    [string]$OrchestrationPolicy = 'auto',
+    [ValidateSet('auto', 'off')]
+    [string]$ModelAffinity = 'auto',
+    [switch]$ConfirmHighRiskOrchestration,
     [ValidateSet('cli', 'desktop')]
     [string]$ExecutionBackend = 'cli',
     [string[]]$DesktopAvailableModels = @(),
@@ -70,10 +77,15 @@ $routeEffort = if ($Effort) { $Effort } else { 'auto' }
 $selectorArguments = @(
     $selectorPath, '--strategy', $Strategy, '--stdin', '--effort', $routeEffort,
     '--state-dir', $StateDir, '--model-choice', $ModelChoice,
-    '--workdir', $resolvedWorkdir
+    '--workdir', $resolvedWorkdir, '--repository-context', $RepositoryContextMode,
+    '--orchestration-policy', $OrchestrationPolicy, '--model-affinity', $ModelAffinity
 )
+if ($FeedbackFile) { $selectorArguments += @('--feedback-file', $FeedbackFile) }
 if ($ValidationCommand.Count -gt 0) {
     $selectorArguments += '--validation-configured'
+}
+if ($ConfirmHighRiskOrchestration) {
+    $selectorArguments += '--confirm-high-risk-orchestration'
 }
 if (-not $DryRun -and -not $HostPermissionsJson -and $Sandbox -eq 'inherit') {
     throw 'Automatic permission inheritance requires -HostPermissionsJson from the current host runtime.'
@@ -101,7 +113,7 @@ if (-not $DryRun) {
     $boundaryArguments = @(
         $guardedPath, 'check-boundary', '--state-dir', $StateDir,
         '--host-permissions-json', $boundaryPermissionsJson,
-        '--requested-sandbox', $Sandbox
+        '--requested-sandbox', $Sandbox, '--model-affinity', $ModelAffinity
     )
     if ($FeedbackFile) { $boundaryArguments += @('--feedback-file', $FeedbackFile) }
     $boundaryResult = & $python.Source @boundaryArguments 2>&1
@@ -120,38 +132,44 @@ try {
 if ($routeExitCode -ne 0) { throw 'Auto model selection failed.' }
 
 $route = $routeRaw | ConvertFrom-Json
-$routeId = [string]$route.routeId
-$selectorModel = [string]$route.decision.model
-$model = [string]$route.selectedModel
+$routeDecision = $route.routeDecision
+if (-not $routeDecision -or $routeDecision.schema -ne 'agent-auto-router.route-decision.v2') {
+    throw 'Auto model selection returned an unsupported route-decision schema.'
+}
+$routeId = [string]$routeDecision.routeId
+$selectorModel = [string]$routeDecision.selectorModel
+$model = [string]$routeDecision.selectedModel
 $resolvedEffort = $Effort
 if (-not $resolvedEffort) {
-    $resolvedEffort = if ($ModelChoice -eq 'auto') {
-        [string]$route.executionPlan.effort
-    } else {
-        [string]$route.selectedDefaultEffort
-    }
+    $resolvedEffort = [string]$routeDecision.executionPlan.effort
 }
 $explanation = [pscustomobject]@{
     executionBackend = $ExecutionBackend
     strategy = $Strategy
     model = $model
     effort = $resolvedEffort
-    reason = if ($ModelChoice -eq 'auto') { $route.decision.reason } else { 'explicit_model' }
+    reason = [string]$routeDecision.reasonCode
     selectorModel = $selectorModel
-    targetTier = [string]$route.decision.target_tier
-    selectedTier = [string]$route.selectedTier
+    targetTier = [string]$routeDecision.targetTier
+    selectedTier = [string]$routeDecision.selectedTier
     features = [pscustomobject]@{
-        promptChars = $route.decision.prompt_chars
-        highRiskHits = $route.decision.high_risk_hits
-        complexHits = $route.decision.complex_hits
-        simpleHits = $route.decision.simple_hits
+        promptChars = $routeDecision.features.prompt_chars
+        highRiskHits = $routeDecision.features.high_risk_hits
+        complexHits = $routeDecision.features.complex_hits
+        simpleHits = $routeDecision.features.simple_hits
+    }
+    matchedSignals = $routeDecision.matchedSignals
+    repositoryInspection = [pscustomobject]@{
+        mode = $RepositoryContextMode
+        durationMs = $routeDecision.repository.metadata.scan_duration_ms
+        truncated = $routeDecision.repository.metadata.scan_truncated
     }
     routeId = $routeId
-    policyVersion = [string]$route.policy.version
-    policyDigest = [string]$route.policy.digest
-    policySource = [string]$route.policy.source
-    registryDigest = [string]$route.registry.digest
-    executionPlan = $route.executionPlan
+    policyVersion = [string]$routeDecision.policy.version
+    policyDigest = [string]$routeDecision.policy.digest
+    policySource = [string]$routeDecision.policy.source
+    registryDigest = [string]$routeDecision.registry.digest
+    executionPlan = $routeDecision.executionPlan
     modifiesCodexConfig = $false
     localProxyReceivesCredential = $false
     routeModelCalls = 0
@@ -169,6 +187,7 @@ if ($ExecutionBackend -eq 'desktop') {
         $desktopArguments += @('--available-model', $availableModel)
     }
     if ($DryRun) { $desktopArguments += '--dry-run' }
+    if ($NoFeedback) { $desktopArguments += '--no-feedback' }
     $previousOutputEncoding = $OutputEncoding
     $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
     try {
@@ -188,17 +207,28 @@ $runnerArguments = @(
     '--sandbox', $Sandbox, '--context-mode', $ContextMode,
     '--workdir', $resolvedWorkdir,
     '--result-file', $runnerResultPath,
-    '--repo-map-tokens', [int]$route.executionPlan.context.repoMapTokens,
-    '--max-candidate-files', [int]$route.executionPlan.context.maxCandidateFiles
+    '--input-format', 'route-envelope',
+    '--repo-map-tokens', [int]$routeDecision.executionPlan.context.repoMapTokens,
+    '--max-candidate-files', [int]$routeDecision.executionPlan.context.maxCandidateFiles
 )
 if ($HostPermissionsJson) { $runnerArguments += @('--host-permissions-json', $HostPermissionsJson) }
 if ($Json) { $runnerArguments += '--emit-json' }
+
+function New-RunnerInputEnvelope {
+    param([string]$TaskText)
+    return [ordered]@{
+        schema = 'agent-auto-router.runner-input.v1'
+        task = $TaskText
+        repositoryContext = [string]$route.repositoryContext.text
+        repositoryMetadata = $route.repositoryContext.metadata
+    } | ConvertTo-Json -Depth 8 -Compress
+}
 
 $previousOutputEncoding = $OutputEncoding
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 try {
-    $Task | & $python.Source @runnerArguments
+    (New-RunnerInputEnvelope -TaskText $Task) | & $python.Source @runnerArguments
     $codexExitCode = $LASTEXITCODE
 } finally {
     $stopwatch.Stop()
@@ -249,9 +279,9 @@ $needsEscalation = $EscalateOnValidationFailure -and (
     $null -ne $validationExitCode -and
     $validationExitCode -ne 0
 )
-if ($needsEscalation -and [bool]$route.executionPlan.escalation.eligible) {
-    $nextModel = [string]$route.executionPlan.escalation.nextModel
-    $nextEffort = [string]$route.executionPlan.escalation.nextEffort
+if ($needsEscalation -and [bool]$routeDecision.executionPlan.escalation.eligible) {
+    $nextModel = [string]$routeDecision.executionPlan.escalation.nextModel
+    $nextEffort = [string]$routeDecision.executionPlan.escalation.nextEffort
     Write-Warning "Validation failed; explicitly enabled escalation is starting model=$nextModel effort=$nextEffort."
     $escalated = $true
     $attemptCount = 2
@@ -263,13 +293,14 @@ if ($needsEscalation -and [bool]$route.executionPlan.escalation.eligible) {
         '--sandbox', $Sandbox, '--context-mode', $ContextMode,
         '--workdir', (Resolve-Path -LiteralPath $Workdir).Path,
         '--result-file', $escalationResultPath,
-        '--repo-map-tokens', [int]$route.executionPlan.context.repoMapTokens,
-        '--max-candidate-files', [int]$route.executionPlan.context.maxCandidateFiles
+        '--input-format', 'route-envelope',
+        '--repo-map-tokens', [int]$routeDecision.executionPlan.context.repoMapTokens,
+        '--max-candidate-files', [int]$routeDecision.executionPlan.context.maxCandidateFiles
     )
     if ($HostPermissionsJson) { $escalationArguments += @('--host-permissions-json', $HostPermissionsJson) }
     if ($Json) { $escalationArguments += '--emit-json' }
     $escalationTask = "$Task`n`nA previous lower-tier attempt did not pass the user-provided deterministic validation. Inspect the current workspace state, fix the remaining issue, and run relevant validation."
-    $escalationTask | & $python.Source @escalationArguments
+    (New-RunnerInputEnvelope -TaskText $escalationTask) | & $python.Source @escalationArguments
     $codexExitCode = $LASTEXITCODE
     $escalationResult = $null
     if (Test-Path -LiteralPath $escalationResultPath -PathType Leaf) {
@@ -291,6 +322,7 @@ if ($finalExitCode -eq 0 -and $null -ne $validationExitCode) {
 }
 $observedInput = 0L
 $observedCached = 0L
+$observedCacheWrite = 0L
 $observedOutput = 0L
 $observedReasoning = 0L
 $usageAvailable = $false
@@ -299,8 +331,23 @@ foreach ($attempt in $attemptResults) {
         $usageAvailable = $true
         $observedInput += [int64]$attempt.observedTokens.input
         $observedCached += [int64]$attempt.observedTokens.cached_input
+        $observedCacheWrite += [int64]$attempt.observedTokens.cache_write
         $observedOutput += [int64]$attempt.observedTokens.output
         $observedReasoning += [int64]$attempt.observedTokens.reasoning_output
+    }
+}
+$selectedModelObservedTokens = $null
+if ($attemptResults.Count -gt 0) {
+    $selectedAttempt = $attemptResults[$attemptResults.Count - 1]
+    if ($selectedAttempt.usageAvailable) {
+        $selectedModelObservedTokens = [ordered]@{
+            input = [int64]$selectedAttempt.observedTokens.input
+            cached_input = [int64]$selectedAttempt.observedTokens.cached_input
+            cache_write = [int64]$selectedAttempt.observedTokens.cache_write
+            output = [int64]$selectedAttempt.observedTokens.output
+            reasoning_output = [int64]$selectedAttempt.observedTokens.reasoning_output
+            total = [int64]$selectedAttempt.observedTokens.total
+        }
     }
 }
 
@@ -312,45 +359,50 @@ if (-not $NoFeedback) {
         effort = $finalEffort
         selector_model = $selectorModel
         selected_model = $finalModel
-        target_tier = [string]$route.decision.target_tier
-        reason = if ($ModelChoice -eq 'auto') { [string]$route.decision.reason } else { 'explicit_model' }
+        target_tier = [string]$routeDecision.targetTier
+        reason = [string]$routeDecision.reasonCode
         features = [ordered]@{
-            prompt_chars = [int]$route.decision.prompt_chars
-            criteria_count = [int]$route.decision.criteria_count
-            complexity_score = [int]$route.decision.complexity_score
-            risk_score = [int]$route.decision.risk_score
-            clarity_score = [int]$route.decision.clarity_score
-            high_risk = [bool]$route.decision.high_risk
-            constrained = [bool]$route.decision.constrained
-            parallelizable = [bool]$route.decision.parallelizable
-            dependency_ambiguity = [bool]$route.decision.dependency_ambiguity
-            orchestration_eligible = [bool]$route.decision.orchestration_eligible
-            complex_debugging = [bool]$route.decision.complex_debugging
-            long_context = [bool]$route.decision.long_context
-            multi_file = [bool]$route.decision.multi_file
-            computer_use = [bool]$route.decision.computer_use
-            validated_bounded = [bool]$route.decision.validated_bounded
-            scope_hits = [int]$route.decision.scope_hits
-            algorithm_hits = [int]$route.decision.algorithm_hits
-            repo_files = [int]$route.repository.repo_files
-            source_files = [int]$route.repository.source_files
-            test_files = [int]$route.repository.test_files
-            language_count = [int]$route.repository.language_count
-            manifest_count = [int]$route.repository.manifest_count
-            large_repo = [bool]$route.repository.large_repo
-            monorepo = [bool]$route.repository.monorepo
-            dirty_worktree = [bool]$route.repository.dirty_worktree
-            is_git_repo = [bool]$route.repository.is_git_repo
-            task_has_path_hint = [bool]$route.repository.task_has_path_hint
+            prompt_chars = [int]$routeDecision.features.prompt_chars
+            criteria_count = [int]$routeDecision.features.criteria_count
+            complexity_score = [int]$routeDecision.features.complexity_score
+            risk_score = [int]$routeDecision.features.risk_score
+            clarity_score = [int]$routeDecision.features.clarity_score
+            high_risk = [bool]$routeDecision.features.high_risk
+            constrained = [bool]$routeDecision.features.constrained
+            parallelizable = [bool]$routeDecision.features.parallelizable
+            dependency_ambiguity = [bool]$routeDecision.features.dependency_ambiguity
+            orchestration_eligible = [bool]$routeDecision.features.orchestration_eligible
+            complex_debugging = [bool]$routeDecision.features.complex_debugging
+            long_context = [bool]$routeDecision.features.long_context
+            multi_file = [bool]$routeDecision.features.multi_file
+            computer_use = [bool]$routeDecision.features.computer_use
+            validated_bounded = [bool]$routeDecision.features.validated_bounded
+            scope_hits = [int]$routeDecision.features.scope_hits
+            algorithm_hits = [int]$routeDecision.features.algorithm_hits
+            repo_files = [int]$routeDecision.repository.metadata.repo_files
+            source_files = [int]$routeDecision.repository.metadata.source_files
+            test_files = [int]$routeDecision.repository.metadata.test_files
+            language_count = [int]$routeDecision.repository.metadata.language_count
+            manifest_count = [int]$routeDecision.repository.metadata.manifest_count
+            large_repo = [bool]$routeDecision.repository.metadata.large_repo
+            monorepo = [bool]$routeDecision.repository.metadata.monorepo
+            dirty_worktree = [bool]$routeDecision.repository.metadata.dirty_worktree
+            is_git_repo = [bool]$routeDecision.repository.metadata.is_git_repo
+            task_has_path_hint = [bool]$routeDecision.repository.metadata.task_has_path_hint
             validation_configured = ($ValidationCommand.Count -gt 0)
             validation_passed = ($null -ne $validationExitCode -and $validationExitCode -eq 0)
             escalated = $escalated
         }
-        policy_version = [string]$route.policy.version
-        policy_digest = [string]$route.policy.digest
-        registry_digest = [string]$route.registry.digest
-        feature_schema_version = [int]$route.decision.feature_schema_version
-        explicit_override = ($ModelChoice -ne 'auto')
+        policy_version = [string]$routeDecision.policy.version
+        policy_digest = [string]$routeDecision.policy.digest
+        registry_digest = [string]$routeDecision.registry.digest
+        feature_schema_version = [int]$routeDecision.featureSchemaVersion
+        explicit_override = [bool]$routeDecision.explicitOverride
+        workspace_key = [string]$routeDecision.workspaceKey
+        topology = [string]$routeDecision.executionPlan.topology
+        variant = [string]$routeDecision.executionPlan.variant
+        role_model_policy = [string]$routeDecision.executionPlan.roleModelPolicy
+        estimated_role_tier_switches = [int]$routeDecision.executionPlan.orchestrationRecommendation.utility.estimatedRoleTierSwitches
         exit_code = [int]$finalExitCode
         validation_configured = ($ValidationCommand.Count -gt 0)
         validation_passed = if ($null -eq $validationExitCode) { $null } else { $validationExitCode -eq 0 }
@@ -361,11 +413,13 @@ if (-not $NoFeedback) {
             [ordered]@{
                 input = $observedInput
                 cached_input = $observedCached
+                cache_write = $observedCacheWrite
                 output = $observedOutput
                 reasoning_output = $observedReasoning
                 total = $observedInput + $observedOutput
             }
         } else { $null }
+        selected_model_observed_tokens = $selectedModelObservedTokens
     }
     $feedbackJson = $feedbackPayload | ConvertTo-Json -Depth 8 -Compress
     $previousOutputEncoding = $OutputEncoding
@@ -388,7 +442,11 @@ if (-not $NoFeedback) {
                 Write-Warning "Route feedback was recorded, but its learning summary could not be parsed. Route ID: $routeId"
             }
         }
-        if ($null -ne $guardedStatus -and $guardedStatus.status -eq 'error') {
+        if ($null -ne $recordResult -and $recordResult.recorded -eq $false) {
+            if ($Explain) {
+                Write-Host "Route feedback not persisted. Learning mode: $($recordResult.learningMode)."
+            }
+        } elseif ($null -ne $guardedStatus -and $guardedStatus.status -eq 'error') {
             Write-Warning "Route feedback was recorded, but guarded automatic learning did not advance. Error: $($guardedStatus.errorType)"
         } elseif ($Explain) {
             $learningSummary = if ($null -ne $guardedStatus) {

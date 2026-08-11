@@ -15,6 +15,13 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from desktop_execution import SCHEMA as DESKTOP_PLAN_SCHEMA  # noqa: E402
 from host_execution_plan import SCHEMA as HOST_PLAN_SCHEMA  # noqa: E402
 from host_permissions import SCHEMA as HOST_PERMISSIONS_SCHEMA  # noqa: E402
+from model_affinity import (  # noqa: E402
+    AFFINITY_TTL_SECONDS,
+    MINIMUM_STRONGER_TIER_CACHE_SIGNAL,
+    PROFILE_PREFERRED_MAXIMUM_CACHE_SIGNAL,
+    PROFILE_PREFERRED_MINIMUM_SAMPLES,
+    ROLE_MODEL_POLICY_AFFINITY,
+)
 from routing_policy import FEATURE_SCHEMA_VERSION  # noqa: E402
 
 
@@ -76,6 +83,61 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertIn('python "./scripts/install_personal_plugin.py"', self.readme)
         self.assertIn("~/.agents/plugins/marketplace.json", self.readme)
         self.assertIn("codex plugin remove agent-auto-router@personal", self.readme)
+
+    def test_beginner_path_is_small_and_precedes_expert_entrypoints(self) -> None:
+        quick = SCRIPT_DIR / "aar.ps1"
+        parameter_block = quick.read_text(encoding="utf-8-sig").split(
+            "$ErrorActionPreference", 1
+        )[0]
+        parameters = set(
+            re.findall(
+                r"(?m)^\s*\[(?:string|switch)\]\$([A-Za-z][A-Za-z0-9]*)",
+                parameter_block,
+            )
+        )
+        self.assertLessEqual(len(parameters), 8)
+        self.assertEqual(
+            parameters
+            & {
+                "ModelChoice", "Sandbox", "HostPermissionsJson", "ResultsDir",
+                "StateDir", "FeedbackFile", "Variant", "MaxModelCalls",
+                "OrchestrationPolicy", "ConfirmHighRiskOrchestration",
+            },
+            set(),
+        )
+        for readme in (self.readme, self.chinese_readme):
+            self.assertIn("aar.ps1", readme)
+            self.assertIn("-Profile safe", readme)
+            self.assertIn("doctor.py --json", readme)
+            self.assertLess(readme.index("aar.ps1"), readme.index("invoke_auto_task.ps1"))
+
+    def test_learning_and_orchestration_defaults_are_explicit(self) -> None:
+        for readme in (self.readme, self.chinese_readme):
+            for mode in ("`off`", "`observe`", "`guarded`"):
+                self.assertIn(mode, readme)
+            for policy in ("`direct`", "`recommend`", "`auto`"):
+                self.assertIn(policy, readme)
+            self.assertIn("12", readme)
+            self.assertIn("20%", readme)
+        self.assertNotIn("configure --mode manual", self.readme)
+        self.assertNotIn("configure --mode guarded-auto", self.readme)
+        self.assertNotIn("configure --mode manual", self.chinese_readme)
+        self.assertNotIn("configure --mode guarded-auto", self.chinese_readme)
+
+    def test_model_affinity_contract_is_documented(self) -> None:
+        contract = (
+            ROOT / "skills" / "agent-auto-router" / "references" / "router-contract.md"
+        ).read_text(encoding="utf-8")
+        for readme in (self.readme, self.chinese_readme):
+            self.assertIn("-ModelAffinity auto", readme)
+            self.assertIn("-ModelAffinity off", readme)
+            self.assertIn(ROLE_MODEL_POLICY_AFFINITY, readme)
+        self.assertIn(str(AFFINITY_TTL_SECONDS // 60), contract)
+        self.assertIn(f"`{MINIMUM_STRONGER_TIER_CACHE_SIGNAL}`", contract)
+        self.assertIn(f"`{PROFILE_PREFERRED_MAXIMUM_CACHE_SIGNAL}`", contract)
+        self.assertIn(str(PROFILE_PREFERRED_MINIMUM_SAMPLES), contract)
+        self.assertIn("never stores the path itself", contract)
+        self.assertIn("not a quality label or billing estimate", contract)
 
     def test_model_consuming_benchmarks_are_separate_from_the_skill(self) -> None:
         for readme in (self.readme, self.chinese_readme):

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import pathlib
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 
 SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "skills" / "agent-auto-router" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -17,6 +19,9 @@ from guarded_auto import (  # noqa: E402
     learning_boundary_issue,
     load_config,
     load_state,
+    maintain_execution_reports,
+    policy_shadow,
+    recover_execution_report,
     run_cycle,
 )
 from policy_learning import append_route_event, default_feedback_path, read_feedback  # noqa: E402
@@ -83,7 +88,7 @@ def route_payload(
 def enable_for_test(state_dir: pathlib.Path) -> None:
     configure(
         state_dir,
-        mode="guarded-auto",
+        mode="guarded",
         minimum_signals=4,
         minimum_validation_accuracy_gain=0,
         canary_percent=50,
@@ -104,16 +109,39 @@ def seed_candidate(state_dir: pathlib.Path, feedback: pathlib.Path) -> dict[str,
 
 
 class GuardedAutoTests(unittest.TestCase):
-    def test_default_mode_is_manual(self) -> None:
+    def test_default_mode_is_observe(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            self.assertEqual(load_config(pathlib.Path(temp))["mode"], "manual")
+            config = load_config(pathlib.Path(temp))
+            self.assertEqual(config["mode"], "observe")
+            self.assertEqual(config["minimumSignals"], 12)
+            self.assertEqual(config["canaryPercent"], 20)
+
+    def test_legacy_learning_config_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            state_dir = pathlib.Path(temp)
+            config_path = state_dir / "guarded-auto-config.json"
+            legacy = {
+                "schemaVersion": 1,
+                "mode": "manual",
+                "minimumSignals": 20,
+                "minimumValidationAccuracyGain": 0.05,
+                "maximumThresholdStep": 1,
+                "canaryPercent": 10,
+                "minimumCanaryReports": 10,
+                "minimumBaselineReports": 10,
+                "minimumProbationReports": 20,
+                "maximumFailureRateIncrease": 0.05,
+            }
+            config_path.write_text(json.dumps(legacy), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "schemaVersion"):
+                load_config(state_dir)
 
     def test_stale_lock_file_does_not_block_cycle(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             state_dir = pathlib.Path(temp)
             (state_dir / ".guarded-auto.lock").write_text("stale-pid", encoding="utf-8")
             result = run_cycle(state_dir)
-            self.assertEqual(result["status"], "manual")
+            self.assertEqual(result["status"], "observe")
 
     def test_active_control_plane_lock_returns_busy(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -134,13 +162,13 @@ class GuardedAutoTests(unittest.TestCase):
                 writable_roots=(str(root / "workspace"),),
                 can_request_permissions=False,
             )
-            configure(state_dir, mode="guarded-auto")
+            configure(state_dir, mode="guarded")
             issue = learning_boundary_issue(
                 state_dir, None, permissions, "workspace-write"
             )
             self.assertIn("outside child writable roots", str(issue))
 
-    def test_guarded_state_rejects_full_access_but_manual_mode_does_not(self) -> None:
+    def test_guarded_state_rejects_full_access_but_off_mode_does_not(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             state_dir = pathlib.Path(temp) / "state"
             permissions = HostPermissions(
@@ -154,7 +182,7 @@ class GuardedAutoTests(unittest.TestCase):
             self.assertIsNone(
                 learning_boundary_issue(state_dir, None, permissions)
             )
-            configure(state_dir, mode="guarded-auto")
+            configure(state_dir, mode="guarded")
             self.assertIn(
                 "requires protected state",
                 str(learning_boundary_issue(state_dir, None, permissions)),
@@ -172,7 +200,7 @@ class GuardedAutoTests(unittest.TestCase):
                 writable_roots=(str(root / "workspace"),),
                 can_request_permissions=False,
             )
-            configure(state_dir, mode="guarded-auto")
+            configure(state_dir, mode="guarded")
             self.assertIsNone(
                 learning_boundary_issue(
                     state_dir, None, permissions, "workspace-write"
@@ -320,6 +348,7 @@ class GuardedAutoTests(unittest.TestCase):
     def test_execution_report_is_idempotent_and_rejects_task_text(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             state_dir = pathlib.Path(temp)
+            configure(state_dir, mode="observe")
             route = {
                 "routeId": "desktop-route-1",
                 "strategy": "balance",
@@ -361,6 +390,264 @@ class GuardedAutoTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unsupported fields"):
                 ingest_execution_report(report, state_dir)
 
+    def test_execution_report_is_not_persisted_when_learning_is_off(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            state_dir = pathlib.Path(temp)
+            configure(state_dir, mode="off")
+            from model_registry import load_model_registry, registry_digest
+
+            report = {
+                "schema": EXECUTION_REPORT_SCHEMA,
+                "reportId": "off-report",
+                "host": "codex-desktop",
+                "route": {
+                    "routeId": "off-route",
+                    "strategy": "balance",
+                    "effort": "medium",
+                    "selectorModel": "codex:gpt-5.6-terra",
+                    "selectedModel": "codex:gpt-5.6-terra",
+                    "targetTier": "balanced",
+                    "reason": "balance_default",
+                    "featureSchemaVersion": FEATURE_SCHEMA_VERSION,
+                    "features": route_payload("template")["features"],
+                    "policyVersion": "unit-test",
+                    "policyDigest": policy_digest(RoutingPolicy()),
+                    "modelRegistryDigest": registry_digest(load_model_registry()),
+                    "explicitOverride": False,
+                },
+                "result": {
+                    "status": "succeeded",
+                    "durationMs": 100,
+                    "verification": "not-run",
+                    "validationConfigured": False,
+                    "escalated": False,
+                    "attemptCount": 1,
+                },
+            }
+            result = ingest_execution_report(report, state_dir)
+            self.assertEqual(result["status"], "ignored")
+            self.assertEqual(result["reason"], "feedback-disabled")
+            self.assertFalse(default_feedback_path(state_dir).exists())
+
+    def test_execution_report_retention_preserves_nonterminal_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            state_dir = pathlib.Path(temp)
+            reports = state_dir / "reports"
+            reports.mkdir()
+            markers = [
+                ("old-recorded", "recorded", "2025-01-01T00:00:00+00:00"),
+                ("recent-a", "recorded", "2026-01-09T00:00:00+00:00"),
+                ("recent-b", "recorded", "2026-01-10T00:00:00+00:00"),
+                ("pending", "pending", "2025-01-01T00:00:00+00:00"),
+                ("incomplete", "incomplete", "2025-01-01T00:00:00+00:00"),
+            ]
+            for report_id, state, timestamp in markers:
+                payload = {
+                    "schema": EXECUTION_REPORT_SCHEMA,
+                    "reportId": report_id,
+                    "recordedAt": timestamp,
+                    "host": "unit-test",
+                    "routeId": f"route-{report_id}",
+                    "state": state,
+                    "storesTaskText": False,
+                    "labelExpected": False,
+                    "routeRecorded": state == "recorded",
+                    "labelRecorded": False,
+                    "cycleProcessed": state == "recorded",
+                    "cycleDeferred": False,
+                }
+                if state == "recorded":
+                    payload["completedAt"] = timestamp
+                marker_name = hashlib.sha256(report_id.encode("utf-8")).hexdigest()
+                (reports / f"{marker_name}.json").write_text(
+                    json.dumps(payload), encoding="utf-8"
+                )
+            now = datetime(2026, 1, 10, tzinfo=timezone.utc)
+
+            preview = maintain_execution_reports(
+                state_dir,
+                maximum_markers=1,
+                retention_days=7,
+                apply=False,
+                now=now,
+            )
+            self.assertTrue(preview["wouldChange"])
+            self.assertFalse(preview["applied"])
+            self.assertEqual(len(list(reports.glob("*.json"))), 5)
+
+            applied = maintain_execution_reports(
+                state_dir,
+                maximum_markers=1,
+                retention_days=7,
+                apply=True,
+                now=now,
+            )
+            retained = {
+                json.loads(path.read_text(encoding="utf-8"))["reportId"]
+                for path in reports.glob("*.json")
+            }
+            self.assertEqual(retained, {"recent-b", "pending", "incomplete"})
+            self.assertEqual(applied["markersRemovedByAge"], 1)
+            self.assertEqual(applied["markersRemovedByLimit"], 1)
+            self.assertTrue(applied["idempotencyWindowBounded"])
+            self.assertFalse(applied["storesTaskText"])
+            self.assertEqual(applied["modelCalls"], 0)
+
+    def test_execution_report_recovery_releases_only_empty_marker_with_exact_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            state_dir = pathlib.Path(temp)
+            configure(state_dir, mode="observe")
+            reports = state_dir / "reports"
+            reports.mkdir()
+            report_id = "recovery-empty"
+            marker = reports / (hashlib.sha256(report_id.encode("utf-8")).hexdigest() + ".json")
+            marker.write_text(
+                json.dumps(
+                    {
+                        "schema": EXECUTION_REPORT_SCHEMA,
+                        "reportId": report_id,
+                        "recordedAt": "2026-01-10T00:00:00+00:00",
+                        "host": "unit-test",
+                        "routeId": "recovery-empty-route",
+                        "state": "pending",
+                        "storesTaskText": False,
+                        "labelExpected": False,
+                        "routeRecorded": False,
+                        "labelRecorded": False,
+                        "cycleProcessed": False,
+                        "cycleDeferred": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            inspected = recover_execution_report(state_dir, report_id)
+            self.assertTrue(inspected["allowedActions"]["releaseForRetry"])
+            self.assertFalse(inspected["allowedActions"]["acknowledgeRecorded"])
+            with self.assertRaisesRegex(ValueError, "exact --confirm-report-id"):
+                recover_execution_report(
+                    state_dir,
+                    report_id,
+                    action="release-for-retry",
+                    confirm_report_id="wrong",
+                    resolved_by="operator",
+                )
+
+            released = recover_execution_report(
+                state_dir,
+                report_id,
+                action="release-for-retry",
+                confirm_report_id=report_id,
+                resolved_by="operator",
+            )
+            self.assertEqual(released["status"], "released-for-retry")
+            self.assertTrue(released["retryAuthorized"])
+            self.assertFalse(marker.exists())
+            self.assertTrue((reports / "resolved" / marker.name).is_file())
+            self.assertFalse(released["policyMutationAuthorized"])
+            self.assertEqual(released["modelCalls"], 0)
+
+    def test_execution_report_recovery_acknowledges_existing_evidence_without_mutating_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            state_dir = pathlib.Path(temp)
+            configure(state_dir, mode="observe")
+            feedback = default_feedback_path(state_dir)
+            append_route_event(route_payload("recovery-recorded-route"), feedback)
+            feedback_before = feedback.read_bytes()
+            reports = state_dir / "reports"
+            reports.mkdir()
+            report_id = "recovery-recorded"
+            marker = reports / (hashlib.sha256(report_id.encode("utf-8")).hexdigest() + ".json")
+            marker.write_text(
+                json.dumps(
+                    {
+                        "schema": EXECUTION_REPORT_SCHEMA,
+                        "reportId": report_id,
+                        "recordedAt": "2026-01-10T00:00:00+00:00",
+                        "host": "unit-test",
+                        "routeId": "recovery-recorded-route",
+                        "state": "incomplete",
+                        "storesTaskText": False,
+                        "labelExpected": False,
+                        "routeRecorded": True,
+                        "labelRecorded": False,
+                        "cycleProcessed": False,
+                        "cycleDeferred": False,
+                        "errorType": "RuntimeError",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            inspected = recover_execution_report(state_dir, report_id, feedback)
+            self.assertFalse(inspected["allowedActions"]["releaseForRetry"])
+            self.assertTrue(inspected["allowedActions"]["acknowledgeRecorded"])
+            acknowledged = recover_execution_report(
+                state_dir,
+                report_id,
+                feedback,
+                action="acknowledge-recorded",
+                confirm_report_id=report_id,
+                resolved_by="operator",
+            )
+            self.assertTrue(acknowledged["learningCycleRequired"])
+            self.assertEqual(acknowledged["nextCommand"], "cycle")
+            self.assertEqual(feedback.read_bytes(), feedback_before)
+            stored = json.loads(marker.read_text(encoding="utf-8"))
+            self.assertEqual(stored["state"], "recorded")
+            self.assertTrue(stored["cycleDeferred"])
+            self.assertNotIn("errorType", stored)
+            self.assertFalse(acknowledged["policyMutationAuthorized"])
+
+    def test_policy_shadow_is_read_only_and_omits_route_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            state_dir = pathlib.Path(temp)
+            feedback = default_feedback_path(state_dir)
+            enable_for_test(state_dir)
+            seed_candidate(state_dir, feedback)
+            state_before = (state_dir / "guarded-auto-state.json").read_bytes()
+            feedback_before = feedback.read_bytes()
+
+            result = policy_shadow(state_dir, feedback)
+
+            self.assertEqual(result["schema"], "agent-auto-router.policy-shadow.v1")
+            self.assertFalse(result["activationAuthorized"])
+            self.assertFalse(result["dataset"]["storesRouteIds"])
+            self.assertFalse(result["dataset"]["storesTaskText"])
+            self.assertEqual(result["modelCalls"], 0)
+            self.assertNotIn("signal-", json.dumps(result))
+            self.assertEqual(
+                (state_dir / "guarded-auto-state.json").read_bytes(), state_before
+            )
+            self.assertEqual(feedback.read_bytes(), feedback_before)
+
+    def test_execution_report_retention_fails_closed_on_corrupt_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            state_dir = pathlib.Path(temp)
+            reports = state_dir / "reports"
+            reports.mkdir()
+            report_id = "corrupt-report"
+            marker = reports / (
+                hashlib.sha256(report_id.encode("utf-8")).hexdigest() + ".json"
+            )
+            marker.write_text(
+                json.dumps(
+                    {
+                        "schema": EXECUTION_REPORT_SCHEMA,
+                        "reportId": report_id,
+                        "recordedAt": "not-a-time",
+                        "host": "unit-test",
+                        "routeId": "corrupt-route",
+                        "state": "recorded",
+                        "storesTaskText": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "recordedAt is invalid"):
+                maintain_execution_reports(state_dir, apply=True)
+            self.assertTrue(marker.exists())
+
     def test_disabling_during_probation_restores_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             state_dir = pathlib.Path(temp)
@@ -392,7 +679,7 @@ class GuardedAutoTests(unittest.TestCase):
                     feedback,
                 )
             self.assertEqual(run_cycle(state_dir, feedback)["action"], "promoted")
-            configure(state_dir, mode="manual")
+            configure(state_dir, mode="off")
             self.assertEqual(policy_digest(load_active_policy(state_dir)[0]), base_digest)
             self.assertEqual(load_state(state_dir)["status"], "idle")
 
@@ -409,7 +696,8 @@ class GuardedAutoTests(unittest.TestCase):
             second = run_cycle(state_dir, feedback)
             self.assertEqual(first["action"], "rejected")
             self.assertEqual(second["status"], "waiting-for-new-signals")
-            self.assertEqual(second["nextEvaluationAt"], 12)
+            self.assertEqual(second["newSignals"], 0)
+            self.assertEqual(second["minimumNewSignals"], 4)
 
 
 if __name__ == "__main__":

@@ -31,7 +31,7 @@ DEFAULT_REGISTRY = load_model_registry()
 STRATEGIES = ("intelligence", "balance", "cost")
 POLICY_SCHEMA_VERSION = 2
 LEGACY_POLICY_SCHEMA_VERSION = 1
-FEATURE_SCHEMA_VERSION = 2
+FEATURE_SCHEMA_VERSION = 3
 DEFAULT_POLICY_VERSION = "builtin-v3"
 DEFAULT_STATE_DIR = Path.home() / ".codex" / "auto-router"
 
@@ -46,7 +46,9 @@ COMPLEXITY_TERMS = (
 )
 RISK_TERMS = (
     "security", "authentication", "authorization", "credential", "secret",
-    "token", "production", "data loss", "delete", "drop", "irreversible",
+    "access token", "auth token", "authentication token", "api token", "bearer token",
+    "refresh token", "rotate token", "revoke token", "production", "data loss",
+    "delete", "drop", "irreversible",
     "payment", "billing", "permission", "migration", "compliance", "privacy",
     "vulnerability", "exploit", "incident", "安全", "认证", "鉴权", "授权",
     "凭据", "密钥", "令牌", "生产", "数据丢失", "删除", "支付", "权限",
@@ -54,13 +56,15 @@ RISK_TERMS = (
 )
 RISK_ACTION_TERMS = (
     "implement authentication", "change authentication", "configure security",
-    "deploy", "migrate", "rotate secret", "rotate token", "revoke", "remediate",
+    "deploy", "migrate", "rotate", "rotate secret", "rotate token", "revoke", "remediate",
     "fix vulnerability", "delete production", "drop database", "实施认证",
     "修改认证", "配置安全", "部署", "迁移", "轮换密钥", "轮换令牌", "撤销",
     "修复漏洞", "删除生产", "删除数据库",
 )
 SENSITIVE_DOMAIN_TERMS = (
-    "authentication", "authorization", "credential", "secret", "token",
+    "authentication", "authorization", "credential", "secret", "access token",
+    "auth token", "authentication token", "api token", "bearer token",
+    "refresh token", "rotate token", "revoke token",
     "production", "database", "schema", "payment", "billing", "permission",
     "compliance", "privacy", "security", "认证", "鉴权", "授权", "凭据",
     "密钥", "令牌", "生产", "数据库", "表结构", "支付", "权限", "合规",
@@ -341,7 +345,7 @@ def load_policy_for_route(
     state = json.loads(state_path.read_text(encoding="utf-8"))
     if not isinstance(config, dict) or not isinstance(state, dict):
         raise ValueError("guarded-auto configuration and state must be objects")
-    if config.get("mode") != "guarded-auto" or state.get("status") != "canary":
+    if config.get("mode") != "guarded" or state.get("status") != "canary":
         return stable_result(active, source)
     if state.get("basePolicyDigest") != policy_digest(active):
         raise ValueError("active policy changed during guarded-auto canary")
@@ -400,6 +404,33 @@ def _contains_term(text: str, term: str) -> bool:
 
 def _count_hits(text: str, terms: Sequence[str]) -> int:
     return sum(1 for term in terms if _contains_term(text, term))
+
+
+def matched_signal_terms(prompt: str) -> dict[str, list[str]]:
+    """Return only packaged rule terms that matched; never echo user text."""
+    text = prompt.lower()
+    groups = (
+        ("complexity", COMPLEXITY_TERMS),
+        ("risk", RISK_TERMS),
+        ("riskAction", RISK_ACTION_TERMS),
+        ("sensitiveDomain", SENSITIVE_DOMAIN_TERMS),
+        ("inherentHighRisk", INHERENT_HIGH_RISK_TERMS),
+        ("parallel", PARALLEL_TERMS),
+        ("ambiguity", AMBIGUITY_TERMS),
+        ("simple", SIMPLE_TERMS),
+        ("scope", SCOPE_TERMS),
+        ("algorithm", ALGORITHM_TERMS),
+        ("debugging", DEBUGGING_TERMS),
+        ("longContext", LONG_CONTEXT_TERMS),
+        ("multiFile", MULTI_FILE_TERMS),
+        ("computerUse", COMPUTER_USE_TERMS),
+    )
+    matched: dict[str, list[str]] = {}
+    for name, terms in groups:
+        hits = [term for term in terms if _contains_term(text, term)]
+        if hits:
+            matched[name] = hits
+    return matched
 
 
 def analyze_task(

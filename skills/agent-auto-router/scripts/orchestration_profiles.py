@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from model_registry import EFFORTS, ROLES, TIERS, ModelRegistry, ModelSpec
+from model_affinity import ROLE_MODEL_POLICY_AFFINITY, ROLE_MODEL_POLICY_PROFILE
+from model_registry import EFFORTS, ROLES, TIERS, TIER_RANK, ModelRegistry, ModelSpec
 
 PROFILE_SCHEMA_VERSION = 1
 DEFAULT_PROFILES_PATH = Path(__file__).resolve().with_name("orchestration_profiles.json")
@@ -133,3 +134,47 @@ def load_orchestration_profiles(path: Path | None = None) -> OrchestrationProfil
     if not isinstance(payload, dict):
         raise ValueError("orchestration profiles must contain an object")
     return profiles_from_dict(payload, str(profiles_path))
+
+
+def resolve_role_with_affinity(
+    profiles: OrchestrationProfiles,
+    registry: ModelRegistry,
+    variant: str,
+    role: str,
+    *,
+    selected_model: str | None,
+    role_model_policy: str,
+    required_capabilities: Iterable[str] = (),
+    required_tier: str | None = None,
+    backends: Iterable[str] | None = None,
+    allow_explicit_only: bool = False,
+) -> tuple[ModelSpec, ModelSpec, str, str]:
+    """Resolve the profile model, preferring the selected model only when it is no weaker."""
+    if role_model_policy not in {ROLE_MODEL_POLICY_AFFINITY, ROLE_MODEL_POLICY_PROFILE}:
+        raise ValueError("unsupported role model policy")
+    assignment = profiles.assignment(variant, role)
+    preferred = assignment.resolve(
+        registry,
+        role,
+        required_capabilities=required_capabilities,
+        required_tier=required_tier,
+        backends=backends,
+        allow_explicit_only=allow_explicit_only,
+    )
+    if role_model_policy == ROLE_MODEL_POLICY_AFFINITY and selected_model:
+        try:
+            selected = registry.get(selected_model, role=role)
+        except ValueError:
+            selected = None
+        allowed_backends = frozenset(backends) if backends is not None else None
+        required = frozenset(required_capabilities)
+        if (
+            selected is not None
+            and selected.auto_eligible
+            and (allowed_backends is None or selected.backend in allowed_backends)
+            and required.issubset(selected.capabilities)
+            and TIER_RANK[selected.tier] >= TIER_RANK[preferred.tier]
+            and (required_tier is None or selected.tier == required_tier)
+        ):
+            return preferred, selected, "selected-model-affinity", assignment.effort
+    return preferred, preferred, "profile-exact", assignment.effort

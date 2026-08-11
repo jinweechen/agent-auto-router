@@ -6,7 +6,7 @@ A local, deterministic model-routing plugin and Skill for Codex, Claude Code, an
 
 Before execution, it selects a trusted model from task complexity, risk, constraint level, repository size, and reasoning effort, then produces either a direct-execution plan or a bounded multi-role orchestration plan. Routing itself makes no model call, does not change global Codex configuration, and never reads or forwards login credentials.
 
-Current project version: `0.7.0+codex.20260811022119`.
+Current project version: `0.15.0+codex.20260811`.
 
 ## At a glance
 
@@ -14,7 +14,7 @@ Current project version: `0.7.0+codex.20260811022119`.
 - The default `balance` strategy selects among the `fast`, `balanced`, and `frontier` capability tiers.
 - Codex Desktop executes through the native child-agent protocol; CLI mode uses an official CLI in which the user is already signed in.
 - Desktop plans omit the task body, and every execution is constrained by current host permissions, a call budget, and the single-writer rule.
-- The default learning mode is `manual`. An ordinary success, lower latency, or fewer tokens is not a threshold-learning label.
+- The default learning mode is `observe`: privacy-minimized route outcomes are recorded, but thresholds never change automatically until `guarded` is explicitly enabled.
 - New models can be tested explicitly before entering Auto. An unavailable model fails explicitly instead of silently falling back.
 
 ## Capabilities
@@ -22,13 +22,14 @@ Current project version: `0.7.0+codex.20260811022119`.
 | Capability | Description |
 | --- | --- |
 | Automatic model selection | Selects a model, effort, capability tier, and context budget from a versioned trusted registry |
+| Canonical route decisions | Emits strict `agent-auto-router.route-decision.v2` objects with task and workspace bindings |
 | Desktop execution plans | Emits `agent-auto-router.desktop-plan.v3`, which the current primary agent executes as a bounded DAG |
 | CLI execution | Invokes a signed-in Codex CLI or orchestration backend through UTF-8 stdin |
 | Multi-role orchestration | Supports planner, dispatcher, worker, reviewer, and grader roles while enforcing a single writer |
-| Generic host protocol | Emits `agent-auto-router.host-plan.v2` so another host can choose a local CLI or native host execution |
+| Generic host protocol | Emits `agent-auto-router.host-plan.v3` with stdin execution-envelope templates |
 | Model registry | Separates `enabled` from `autoEligible` for controlled extensions and explicit trials |
 | Privacy-minimized feedback | Stores routing metadata, validation status, duration, and observable tokens, but not tasks or responses |
-| Guarded learning | Supports human-approved candidates and an opt-in canary, probation, and automatic rollback loop |
+| Guarded learning | Uses explicit `off / observe / guarded` modes with canary, probation, and automatic rollback |
 | Codex plugin | Distributes the existing Skill through a standard plugin manifest without coupling the cross-host core to Codex |
 
 ## Non-goals
@@ -42,7 +43,7 @@ Current project version: `0.7.0+codex.20260811022119`.
 - It does not change active thresholds because of one successful call.
 - Learning cannot weaken the `frontier + high-risk-primary` boundary for high-risk tasks.
 
-See [router-contract.md](skills/agent-auto-router/references/router-contract.md) for the complete security contract.
+See [router-contract.md](skills/agent-auto-router/references/router-contract.md) for the complete runtime contract and [SECURITY.md](SECURITY.md) for the finding-by-finding remediation record and residual limitations.
 
 ## Workflow
 
@@ -54,8 +55,8 @@ Task
   -> host-permission, model-availability, call-budget, and workspace checks
   -> Desktop: emit a staged plan without the task body
      CLI: invoke the corresponding signed-in CLI
-  -> record a privacy-minimized result
-  -> optional human labeling or guarded-auto learning
+  -> record a privacy-minimized result in observe/guarded mode
+  -> optional human labeling or guarded learning
 ```
 
 Routing and execution are separate phases. Routing is entirely local; only execution can produce a model call.
@@ -64,12 +65,39 @@ Routing and execution are separate phases. Routing is entirely local; only execu
 
 ### Requirements
 
-- Windows PowerShell 5.1 or PowerShell 7
 - Python 3.10 or later
+- PowerShell wrappers: Windows PowerShell 5.1 on Windows, or PowerShell 7 on Windows, Linux, and macOS
 - Desktop mode: a current Codex Desktop runtime with child-agent support
 - CLI mode: the target CLI installed and independently signed in
 
 The Python router uses only the standard library and has no third-party runtime dependency.
+
+### Three-command local path
+
+Most signed-in CLI users need only the small `aar.ps1` wrapper. First run the one-screen, zero-call diagnostic:
+
+```powershell
+& "./skills/agent-auto-router/scripts/aar.ps1" doctor
+```
+
+Preview a route without a model call:
+
+```powershell
+& "./skills/agent-auto-router/scripts/aar.ps1" run `
+  "Rename the configuration field and update its tests" -DryRun
+```
+
+Run it after reviewing the route:
+
+```powershell
+& "./skills/agent-auto-router/scripts/aar.ps1" run `
+  "Rename the configuration field and update its tests" `
+  -Workdir "D:/path/to/project"
+```
+
+`standard` is the default profile and limits writes to `Workdir`; the default global `observe` mode records privacy-minimized routing metadata and enables model affinity. Use `-Profile safe` for read-only inspection with both feedback and cross-run model affinity disabled. These are fixed, validated presets rather than user-editable permission shortcuts. Stop here for ordinary local use; use the full entrypoints only for Desktop host integration, explicit models, orchestration, validation escalation, or learning administration.
+
+The diagnostic prints a concise summary by default. Add `-Json` through `aar.ps1`, or run `doctor.py --json`, for machine-readable details. It never reads tasks, prints environment values, inspects credentials, or calls a model. `--verbose-paths` is an additional explicit troubleshooting option.
 
 ### Install as a Codex plugin
 
@@ -101,7 +129,7 @@ cd agent-auto-router
 
 For a traditional Codex Skill installation, the target is `$CODEX_HOME/skills/agent-auto-router`, or `~/.codex/skills/agent-auto-router` when `CODEX_HOME` is unset. `-Backup` stores an older version under `~/.codex/skill-backups/agent-auto-router`.
 
-The installer replaces an existing copy through a staging directory, so it is safe to rerun and does not create a nested `agent-auto-router/agent-auto-router`. Other hosts do not need to understand `.codex-plugin/plugin.json`; they can call `host_execution_plan.py`, `invoke_auto_task.ps1`, or `invoke_orchestrated_task.ps1` directly. See [entrypoints.md](skills/agent-auto-router/references/entrypoints.md) for all entrypoints. Each host must independently supply model availability, login state, and a trusted permission boundary.
+The installer replaces an existing copy through a staging directory, so it is safe to rerun and does not create a nested `agent-auto-router/agent-auto-router`. Other hosts do not need to understand `.codex-plugin/plugin.json`; ordinary signed-in CLI users can call `aar.ps1`, while host integrations can call `host_execution_plan.py`, `invoke_auto_task.ps1`, or `invoke_orchestrated_task.ps1`. See [entrypoints.md](skills/agent-auto-router/references/entrypoints.md) for expert entrypoints. Each host must independently supply model availability, login state, and a trusted permission boundary.
 
 ### Use it in Codex
 
@@ -141,7 +169,7 @@ Model IDs use `{backend}:{model}`. The registry also includes:
 - `claude:haiku`: `fast`, eligible for Auto.
 - `claude:opus`: `frontier`, explicit trial only by default.
 
-The registry is a trust and capability declaration; it does not prove that the current account can access a model. The current Desktop runtime or CLI provider still verifies actual availability.
+The registry is a trust and capability declaration; it does not prove that the current account can access a model. The current Desktop runtime or CLI provider still verifies actual availability. `reviewedAt` records the last human review date; CI rejects a registry older than the configured freshness window.
 
 ### Strategies
 
@@ -163,7 +191,7 @@ Routing uses deterministic features, including:
 - acceptance-criteria count and repository size
 - whether a deterministic validation command is configured
 
-ASCII keywords use lexical-boundary matching to avoid false positives such as `tokenizer`/`token` or `information`/`format`. Chinese phrases continue to use substring matching.
+ASCII keywords use lexical-boundary matching to avoid false positives such as `tokenizer`/`token` or `information`/`format`. Chinese phrases continue to use substring matching. `-Explain` reports only the packaged rule terms that matched, never the full task text, so a decision can be traced without duplicating sensitive content.
 
 [benchmark_priors.json](skills/agent-auto-router/scripts/benchmark_priors.json) is a versioned offline snapshot and is never refreshed at runtime. It provides only capability-tier floors and does not replace acceptance testing in the current repository. Read [benchmark-routing.md](skills/agent-auto-router/references/benchmark-routing.md) before updating its evidence.
 
@@ -178,7 +206,9 @@ ASCII keywords use lexical-boundary matching to avoid false positives such as `t
 | E | direct | `balanced` direct |
 | F | direct | `fast` direct |
 
-A, E, and F are direct variants. B, C, and D are selected automatically only when a task has both enough scale and enough parallel signals. Low-risk A/E/F and D omit a grader by default; B/C and high-risk tasks retain independent validation.
+A, E, and F are direct variants. The default `auto` orchestration policy selects B, C, or D only when a low-risk task has explicit parallel signals, enough scale, and a positive deterministic utility score after model-call and model-tier-switch overhead. The plan exposes the score, threshold, component points, estimated additional calls, and estimated tier switches without echoing the task. `recommended=true` means the utility and selected policy favor orchestration; under `auto` the plan may already be orchestrated, while `requiresExplicitOptIn=true` is reserved for `recommend` mode or a high-risk confirmation gate. `direct` suppresses both flags. Marginal cases stay direct. High-risk tasks stay direct and expose the worker topology only as a recommendation; expert callers must pass `-ConfirmHighRiskOrchestration` to authorize it. Expert callers can select `direct`, `recommend`, or `auto`. Low-risk A/E/F and D omit a grader by default; B/C and high-risk tasks retain independent validation.
+
+Model affinity is enabled by default. Within one orchestration, every role prefers the already selected model when that model is trusted, role-capable, and no weaker than the profile requirement; otherwise the exact profile model is used. Across runs, Auto may retain the most recent successful model for the same hashed workspace and strategy for up to 30 minutes. Same-tier retention is immediate; retaining a model one tier stronger requires at least a 15% observed cache signal from cached-input plus cache-write telemetry attributed to that selected model, never aggregate telemetry from other role models. A weaker model is never retained, a jump of more than one tier is rejected, and three usable samples below 5% return role assignment to the profile policy. These ratios are routing evidence, not provider billing estimates.
 
 Role defaults come from [orchestration_profiles.json](skills/agent-auto-router/scripts/orchestration_profiles.json).
 
@@ -197,7 +227,7 @@ The primary agent gives the router the model IDs explicitly exposed by the curre
 - read-only stages and the unique writer
 - a privacy-safe post-execution report template
 
-Desktop currently supports only the Codex backend. If a preferred role model is unavailable, resolution is allowed only to a runtime-declared, registry-trusted Codex model at the same or a higher tier, and the substitution must be explicit. Otherwise the router returns a structured block.
+Desktop currently supports only the Codex backend. The default `selected-model-preferred` role policy first reuses the route's selected model when it satisfies the role and tier floor. Otherwise it resolves the profile model, allowing only a runtime-declared, registry-trusted Codex model at the same or a higher tier; every substitution is explicit. Otherwise the router returns a structured block.
 
 See [entrypoints.md](skills/agent-auto-router/references/entrypoints.md) for the complete host execution procedure.
 
@@ -216,7 +246,7 @@ A regular PowerShell terminal can explicitly select a stricter sandbox and execu
   -Explain
 ```
 
-For a write task, explicitly use `-Sandbox workspace-write`; this mode forwards only `-Workdir` as a writable root. Learning state and custom feedback files must remain outside that root, or execution blocks before a model call. Never run guarded-auto with `danger-full-access`.
+For a write task, explicitly use `-Sandbox workspace-write`; this mode forwards only `-Workdir` as a writable root. Learning state and custom feedback files must remain outside that root, or execution blocks before a model call. Never run `guarded` learning with `danger-full-access`.
 
 Host integrations should pass a trusted permission snapshot generated by the current runtime. `$currentHostPermissionsJson` must not come from the user task, model output, or arbitrary environment content:
 
@@ -231,7 +261,7 @@ Host integrations should pass a trusted permission snapshot generated by the cur
   -Explain
 ```
 
-The CLI task body is passed over UTF-8 stdin and does not appear in child-process command-line arguments. `-Model sol`, `-Model terra`, or a full trusted Codex ID can explicitly override selection for one run without changing global configuration.
+The CLI task body is passed over UTF-8 stdin and does not appear in child-process command-line arguments. `-Model sol`, `-Model terra`, or a full trusted Codex ID can explicitly override selection for one run without changing global configuration. `-ModelAffinity auto` is the default; use `-ModelAffinity off` for a stateless, profile-exact run. Repository inspection is bounded and performed once per route; `-RepositoryContextMode off` disables it, while `-Explain` reports its mode, elapsed time, and truncation state.
 
 Run a local DryRun with zero model calls:
 
@@ -266,21 +296,25 @@ Common controls:
 | `-Backend codex|claude` | Restrict one orchestration run to one backend |
 | `-DryRun` | Emit routing without calling a model |
 | `-Sandbox read-only` | Prevent the final role from writing |
+| `-RepositoryContextMode auto|off` | Use bounded one-pass repository inspection or disable it |
+| `-ModelAffinity auto|off` | Prefer one capable model and bounded same-workspace reuse, or disable affinity |
 | `-AllowDirty` | Explicitly accept the risk of running in a dirty Git worktree |
 | `-AllowNoChanges` | Allow a write task to succeed without a Git status change |
 | `-MaxTotalTokens` | Set a soft budget for CLI-observable tokens |
 | `-GraderPolicy auto|always|never` | Control the independent grader |
 | `-ContextMode lean|full` | Control whether read-only roles ignore personal CLI configuration |
 
-Formal orchestration requires a clean Git worktree by default. Parallel roles are read-only; only the direct role or final reviewer can receive the exclusive writer claim.
+Formal orchestration requires a clean Git worktree by default. Git status is bounded to five seconds and classified as `clean`, `dirty`, `non_git`, or `unknown`; write-capable execution blocks on `unknown` before any adapter or model call. Parallel roles are read-only; only the direct role or final reviewer can receive the exclusive writer claim. Restricting `-Backend` never makes explicit-trial models Auto-eligible; only an explicit user model choice may select one.
+
+`-ResultsDir` must be outside every child-writable root; it is unavailable with `danger-full-access`. Reports use unpredictable UUID-suffixed names, exclusive creation, owner-only POSIX permissions, and remove task, prompt, output, rationale, error, tool, workspace-path, and response-ID fields by default. `-IncludeOutputInReport` requires `-ResultsDir`; on Windows, a protected DACL limited to the current user, System, and Administrators is verified before content is written. Protect and retain that file as sensitive data.
 
 ### Generic hosts
 
-`host_execution_plan.py` builds `agent-auto-router.host-plan.v2` from a route and a trusted permission snapshot without starting a process. The host acts on `action.kind`:
+`host_execution_plan.py` builds `agent-auto-router.host-plan.v3` from a v1 host request containing the current task and its bound route plus a trusted permission snapshot, without starting a process or returning the task body. The host acts on `action.kind`:
 
 - `cli`: invoke the declared backend and model.
 - `host_execute`: execute through the host's native model and disclose the approximate-model boundary.
-- `orchestrate`: invoke the local multi-role orchestration entrypoint.
+- `orchestrate`: materialize the declared `execution-envelope.v1` stdin template with the current task, then invoke the local multi-role entrypoint. The route and permission snapshot never travel in process argv, and the entrypoint verifies the task and workspace bindings instead of routing again.
 
 A generic host must not copy connectors, signed-in sessions, or credentials into an independent CLI.
 
@@ -308,19 +342,47 @@ Desktop multi-role plans enforce these rules:
 
 ### Stored data
 
-CLI execution writes privacy-minimized results to `~/.codex/auto-router/feedback.jsonl` by default:
+The default `observe` mode writes privacy-minimized CLI results to `~/.codex/auto-router/feedback.jsonl`:
 
 - route ID, strategy, effort, capability tier, and model
+- a SHA-256 workspace identity, topology, variant, role-model policy, and estimated role-tier switches
 - numeric and boolean routing features
 - policy, registry, and feature-schema digests
 - exit code, duration, validation status, and attempt count
-- input, cached-input, output, and reasoning-output tokens actually exposed by the CLI
+- aggregate input, cached-input, cache-write, output, and reasoning-output tokens actually exposed by the CLI, plus the final selected model's separately attributed token slice for affinity
 
-Unobservable token counts remain `null`. Feedback never stores task text, model responses, tool output, or credentials. Use `-NoFeedback` to disable recording for one run, and `-StateDir` or `-FeedbackFile` to isolate state.
+Unobservable token counts remain `null`. Feedback never stores the raw workspace path, task text, model responses, tool output, or credentials. The workspace digest and recent cache telemetry support the bounded affinity policy even though tokens remain ineligible as quality labels. Because default affinity reads this evidence in `observe` as well as `guarded`, the state directory and feedback file must stay outside every child-writable root whenever affinity is enabled. In `observe` and `guarded`, each learning cycle atomically keeps the latest outcome and label for routes seen in the last 90 days, capped at 5,000 routes. `status.feedbackStorage` previews counts, bytes, and pending removals. Inspect or explicitly apply a custom retention window with:
 
-### Human-approved mode
+```powershell
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" feedback
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" feedback --maximum-routes 2000 --retention-days 30 --apply
+```
 
-The default mode is `manual`:
+The first command is read-only. Compaction uses the feedback append lock and an atomic replacement, preserves route/label pairs, and still reports `storesTaskText=false` and `modelCalls=0`. Use `-NoFeedback` to disable recording for one run, configure `--mode off` to disable persistence globally, and use `-StateDir` or `-FeedbackFile` to isolate state.
+
+Desktop execution-report IDs use separate content-free idempotency markers. Completed markers have the same default 90-day / 5,000-marker window; pending and incomplete markers are never removed automatically and are surfaced for operator review. Because this is a bounded exact window, a report repeated after its marker expires is treated as new. Inspect or explicitly apply a custom window with:
+
+```powershell
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" reports
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" reports --maximum-markers 2000 --retention-days 30 --apply
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" recover-report --report-id REPORT_ID
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" recover-report --report-id REPORT_ID --action release-for-retry --confirm-report-id REPORT_ID --resolved-by OPERATOR
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" recover-report --report-id REPORT_ID --action acknowledge-recorded --confirm-report-id REPORT_ID --resolved-by OPERATOR
+```
+
+Recovery is inspection-first. `release-for-retry` is permitted only when neither marker progress nor matching feedback exists; it archives the marker before freeing the ID. `acknowledge-recorded` requires exactly one matching route outcome and the expected label evidence, never deletes or rewrites feedback, and defers an unfinished learning cycle to an explicit `cycle` command. Both mutations require an exact report-ID confirmation and resolver identity, make zero model calls, and cannot activate a policy.
+
+### Learning modes
+
+The configuration schema accepts only these modes; old `manual` and `guarded-auto` values are rejected instead of being silently migrated:
+
+| Mode | Persist route outcomes | Automatic threshold changes |
+| --- | --- | --- |
+| `off` | No | No |
+| `observe` | Yes, default | No |
+| `guarded` | Yes | Only through the bounded canary lifecycle |
+
+Human-approved candidate commands remain available in every mode:
 
 ```powershell
 python "$HOME/.codex/skills/agent-auto-router/scripts/policy_learning.py" status
@@ -347,9 +409,9 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/policy_learning.py" rollba
   --approved-by "reviewer-name"
 ```
 
-### Guarded-auto
+### Guarded learning
 
-`guarded-auto` is disabled by default. When enabled, it still accepts only two strong signals:
+Automatic threshold changes are disabled in the default `observe` mode. Explicitly enabling `guarded` accepts only two strong signals:
 
 1. The user explicitly selected a more appropriate model.
 2. Deterministic validation failed on the initial tier and passed on the adjacent stronger tier, with no high-risk task or explicit override.
@@ -358,16 +420,20 @@ An ordinary success, exit code 0, low latency, or fewer tokens is not a quality 
 
 ```powershell
 python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" status
-python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" configure --mode guarded-auto
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" configure --mode guarded
 python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" cycle --dry-run
-python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" configure --mode manual
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" shadow
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" configure --mode observe
+python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" configure --mode off
 ```
 
-For each threshold it changes, an automatic candidate may move at most one step toward a stronger capability tier. It must then pass held-out validation, a deterministic canary, probation, and rollback gates. State, configuration, approval, and rollback mutations use bounded OS file locks; JSONL streams use separate append locks.
+The aggressive guarded defaults evaluate after 12 strong signals, use a 20% canary, require six verified reports on both canary and baseline, and require twelve probation reports. For each threshold it changes, a candidate may still move at most one step toward a stronger capability tier. It must pass held-out validation, deterministic canary, probation, and rollback gates. Re-evaluation uses the latest strong-evidence timestamp instead of an ever-growing event count, so bounded retention cannot freeze learning at the route cap. State, configuration, approval, and rollback mutations use bounded OS file locks; JSONL streams use separate append locks.
+
+`shadow` is a read-only A/B preview for the current canary/probation candidate, or for an explicit `--candidate` file. It scores baseline and candidate on the same retained evidence and deterministic holdout, adds Wilson accuracy intervals, an exact paired sign test, minimum-effect gates, and privacy-safe strategy/risk/label-source strata. Strata with fewer than three samples are suppressed. The assessment distinguishes insufficient evidence, regression, promising-but-unconfirmed effects, and statistically supported favorable candidates. It never returns route IDs and always returns `activationAuthorized=false` with `modelCalls=0`; shadow results can never activate a policy.
 
 Learning state and feedback form a protected control plane and must remain outside every child-writable root. Guarded-auto blocks under `danger-full-access`, an unverifiable external sandbox, or any boundary that lets a child modify learning evidence.
 
-Feature semantics are versioned by `featureSchemaVersion`. Current v2 records may participate in learning. Historical records without a version are retained as legacy v1 audit evidence but cannot enter new candidate, canary, or probation statistics.
+Feature semantics are versioned by `featureSchemaVersion`. Current v3 records may participate in learning. Historical records without a version remain readable as legacy v1 evidence during the feedback retention window, while v2 and other stale records remain audit-readable but cannot enter new candidate, canary, or probation statistics.
 
 See [guarded-auto-learning.md](skills/agent-auto-router/references/guarded-auto-learning.md) for the complete protocol.
 
@@ -395,6 +461,7 @@ Models are defined in [model_registry.json](skills/agent-auto-router/scripts/mod
 | --- | --- |
 | `enabled` | Allows explicit user selection |
 | `autoEligible` | Allows the Auto tier resolver to select the model |
+| `reviewedAt` | ISO review date used by the freshness gate |
 | `tier` | `fast`, `balanced`, or `frontier` |
 | `priority` | Selection order within the same tier and role; lower values win |
 | `capabilities` | Capabilities the model may provide |
@@ -410,7 +477,7 @@ Recommended rollout sequence for a new model:
 6. Run the full tests, offline evaluation, and DryRuns; install only after human review.
 
 ```powershell
-python "./skills/agent-auto-router/scripts/validate_model_registry.py"
+python "./skills/agent-auto-router/scripts/validate_model_registry.py" --fail-on-stale
 ```
 
 ## Evaluation and development
@@ -440,7 +507,8 @@ Development benchmarks that make real CLI model calls live outside the installed
 
 ```powershell
 python -m unittest discover -s tests -p "test_*.py"
-python "./skills/agent-auto-router/scripts/validate_model_registry.py"
+python "./skills/agent-auto-router/scripts/validate_model_registry.py" --fail-on-stale
+python "./skills/agent-auto-router/scripts/doctor.py"
 python "./skills/agent-auto-router/scripts/evaluate_auto_router.py"
 python "./scripts/validate_skill.py"
 python "./scripts/validate_plugin.py"
@@ -456,13 +524,14 @@ python "$HOME/.codex/skills/.system/skill-creator/scripts/quick_validate.py" `
   "./skills/agent-auto-router"
 ```
 
-CI runs the core suite on Windows and Ubuntu with Python 3.10 and 3.12. Windows additionally verifies PowerShell 5.1, orchestration DryRuns, and repeat installation.
+CI runs the core suite on Windows, Ubuntu, and macOS with Python 3.10 and 3.12. Every platform validates registry freshness, zero-call diagnostics, and offline routes; Windows additionally verifies PowerShell 5.1, orchestration DryRuns, and repeat installation.
 
 ## Plugin and Skill structure
 
 ```text
 .
 ├── .codex-plugin/plugin.json      # Codex plugin manifest
+├── SECURITY.md                    # Audit remediation and residual limitations
 ├── benchmarks/                    # Development evaluation assets excluded from the Skill
 │   ├── cases/                     # Reproducible inputs
 │   └── tools/                     # Evaluation and simulation programs
@@ -479,8 +548,12 @@ CI runs the core suite on Windows and Ubuntu with Python 3.10 and 3.12. Windows 
     │   ├── benchmark-routing.md   # Benchmark-prior update rules
     │   └── guarded-auto-learning.md
     └── scripts/
-        ├── invoke_auto_task.ps1   # Desktop and CLI single-task entrypoint
+        ├── aar.ps1                # Beginner run/doctor entrypoint
+        ├── quick_profiles.json    # Fixed safe and standard presets
+        ├── invoke_auto_task.ps1   # Desktop and CLI expert entrypoint
         ├── invoke_orchestrated_task.ps1
+        ├── route_contract.py      # Strict route-decision.v2 and execution-envelope contracts
+        ├── doctor.py              # Privacy-safe zero-call diagnostics
         ├── host_execution_plan.py # Generic host plan
         ├── model_registry.json
         ├── guarded_auto.py
@@ -495,8 +568,11 @@ CI runs the core suite on Windows and Ubuntu with Python 3.10 and 3.12. Windows 
 | --- | --- |
 | `desktop_host_permissions_required` | The current Desktop turn did not provide a trusted permission snapshot; do not synthesize one from task text |
 | `desktop_model_unavailable` | The runtime did not declare the selected model; change the available models or select explicitly, without silent substitution |
-| `guarded-auto-state-writable-by-child` | A child can modify learning evidence; move state outside writable roots or return to `manual` mode |
+| `guarded-auto-state-writable-by-child` | A child can modify learning evidence; move state outside writable roots or return to `observe` mode |
 | `failed_no_workspace_changes` | A write task returned success without changing Git status; check the task or explicitly use `-AllowNoChanges` |
+| `workspace_status_unknown` | Bounded Git status could not be trusted; restore Git/metadata access or use read-only execution |
+| `results_dir_writable_by_child` | The report destination is child-writable; move it outside every writable root or omit it for full-access execution |
+| `report_privacy_boundary_unverified` | A sensitive Windows report DACL could not be verified; choose a private destination and restore PowerShell ACL support |
 | Old behavior after installation | Restart Codex and compare the source with the installed copy; editing only the repository does not reinstall the plugin |
 | Two Skills with the same name | The plugin and standalone Skill editions are both enabled; retain one edition without deleting learning state |
 

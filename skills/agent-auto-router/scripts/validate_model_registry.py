@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 from pathlib import Path
 from typing import Any
@@ -21,8 +22,30 @@ def validate_registry_and_profiles(
     registry: ModelRegistry,
     profiles: OrchestrationProfiles,
     priors: BenchmarkPriors | None = None,
+    *,
+    today: dt.date | None = None,
+    max_review_age_days: int = 90,
 ) -> dict[str, Any]:
+    if max_review_age_days < 1:
+        raise ValueError("max_review_age_days must be at least 1")
     active_priors = priors or load_benchmark_priors(registry=registry)
+    current_date = today or dt.date.today()
+    reviewed_at = (
+        dt.date.fromisoformat(registry.reviewed_at)
+        if registry.reviewed_at is not None
+        else None
+    )
+    review_age_days = (
+        (current_date - reviewed_at).days if reviewed_at is not None else None
+    )
+    if review_age_days is None:
+        review_status = "missing"
+    elif review_age_days < 0:
+        review_status = "future"
+    elif review_age_days > max_review_age_days:
+        review_status = "stale"
+    else:
+        review_status = "current"
     resolved_profiles: dict[str, dict[str, dict[str, str]]] = {}
     for variant in sorted(profiles.profiles):
         resolved_profiles[variant] = {}
@@ -72,6 +95,12 @@ def validate_registry_and_profiles(
         "valid": True,
         "registrySource": registry.source,
         "registryDigest": registry_digest(registry),
+        "registryReview": {
+            "reviewedAt": registry.reviewed_at,
+            "ageDays": review_age_days,
+            "maxAgeDays": max_review_age_days,
+            "status": review_status,
+        },
         "profilesSource": profiles.source,
         "backends": sorted(registry.backends.keys()),
         "defaultBackend": default_backend,
@@ -98,17 +127,27 @@ def main() -> int:
     parser.add_argument("--registry", type=Path)
     parser.add_argument("--profiles", type=Path)
     parser.add_argument("--benchmark-priors", type=Path)
+    parser.add_argument("--max-review-age-days", type=int, default=90)
+    parser.add_argument("--fail-on-stale", action="store_true")
     args = parser.parse_args()
     registry = load_model_registry(args.registry)
     profiles = load_orchestration_profiles(args.profiles)
     priors = load_benchmark_priors(args.benchmark_priors, registry=registry)
+    result = validate_registry_and_profiles(
+        registry,
+        profiles,
+        priors,
+        max_review_age_days=args.max_review_age_days,
+    )
     print(
         json.dumps(
-            validate_registry_and_profiles(registry, profiles, priors),
+            result,
             ensure_ascii=True,
             indent=2,
         )
     )
+    if args.fail_on_stale and result["registryReview"]["status"] != "current":
+        return 1
     return 0
 
 

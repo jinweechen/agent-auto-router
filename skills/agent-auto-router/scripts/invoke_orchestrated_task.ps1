@@ -6,6 +6,11 @@ param(
     [string]$Strategy = 'balance',
     [ValidateSet('auto', 'A', 'B', 'C', 'D', 'E', 'F')]
     [string]$Variant = 'auto',
+    [ValidateSet('direct', 'recommend', 'auto')]
+    [string]$OrchestrationPolicy = 'auto',
+    [ValidateSet('auto', 'off')]
+    [string]$ModelAffinity = 'auto',
+    [switch]$ConfirmHighRiskOrchestration,
     [ValidateSet('', 'none', 'low', 'medium', 'high', 'xhigh', 'max')]
     [string]$Effort = '',
     [string[]]$AcceptanceCriteria = @(),
@@ -23,12 +28,15 @@ param(
     [string]$GraderPolicy = 'auto',
     [ValidateSet('lean', 'full')]
     [string]$ContextMode = 'lean',
+    [ValidateSet('auto', 'off')]
+    [string]$RepositoryContextMode = 'auto',
     [ValidateSet('inherit', 'read-only', 'workspace-write', 'danger-full-access')]
     [string]$Sandbox = 'inherit',
     [string]$HostPermissionsJson = '',
     [string]$Backend = '',
     [string]$Workdir = (Get-Location).Path,
     [string]$ResultsDir = '',
+    [switch]$IncludeOutputInReport,
     [string]$StateDir = $(if ($env:CODEX_AUTO_ROUTER_STATE_DIR) { $env:CODEX_AUTO_ROUTER_STATE_DIR } else { Join-Path $HOME '.codex\auto-router' }),
     [string]$FeedbackFile = '',
     [ValidateSet('', 'none', 'low', 'medium', 'high', 'xhigh', 'max')]
@@ -64,13 +72,18 @@ if (-not $python) { throw 'Python 3 is required for multi-model orchestration.' 
 if (-not $DryRun -and -not $HostPermissionsJson -and $Sandbox -eq 'inherit') {
     throw 'Automatic permission inheritance requires -HostPermissionsJson from the current host runtime.'
 }
+if ($IncludeOutputInReport -and -not $ResultsDir) {
+    throw '-IncludeOutputInReport requires -ResultsDir.'
+}
 
 $arguments = @(
     $runner, '--stdin', '--strategy', $Strategy, '--variant', $Variant,
+    '--orchestration-policy', $OrchestrationPolicy, '--model-affinity', $ModelAffinity,
     '--max-workers', $MaxWorkers, '--timeout', $Timeout,
     '--total-timeout', $TotalTimeout, '--max-model-calls', $MaxModelCalls,
     '--grader-policy', $GraderPolicy,
     '--context-mode', $ContextMode,
+    '--repository-context', $RepositoryContextMode,
     '--state-dir', $StateDir,
     '--sandbox', $Sandbox, '--workdir', (Resolve-Path -LiteralPath $Workdir).Path
 )
@@ -79,6 +92,7 @@ if ($Effort) { $arguments += @('--effort', $Effort) }
 if ($Backend) { $arguments += @('--backend', $Backend) }
 if ($MaxTotalTokens -gt 0) { $arguments += @('--max-total-tokens', $MaxTotalTokens) }
 if ($ResultsDir) { $arguments += @('--results-dir', $ResultsDir) }
+if ($IncludeOutputInReport) { $arguments += '--include-output-in-report' }
 if ($FeedbackFile) { $arguments += @('--feedback-file', $FeedbackFile) }
 foreach ($roleEffort in @(
     @('planner', $PlannerEffort), @('dispatcher', $DispatcherEffort),
@@ -91,6 +105,7 @@ foreach ($criterion in $AcceptanceCriteria) {
     $arguments += @('--acceptance-criterion', $criterion)
 }
 if ($DryRun) { $arguments += '--dry-run' }
+if ($ConfirmHighRiskOrchestration) { $arguments += '--confirm-high-risk-orchestration' }
 if ($AllowDirty) { $arguments += '--allow-dirty' }
 if ($AllowNoChanges) { $arguments += '--allow-no-changes' }
 if ($Explain) { $arguments += '--explain' }

@@ -14,6 +14,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from codex_cli_adapter import (  # noqa: E402
     CodexCliAdapter,
+    codex_candidates,
     environment_for_codex_command,
     resolve_codex_command,
 )
@@ -22,6 +23,21 @@ from host_permissions import parse_host_permissions  # noqa: E402
 
 
 class CodexCommandResolutionTests(unittest.TestCase):
+    def test_privacy_safe_candidates_ignore_environment_locations(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "CODEX_CLI_PATH": r"C:\\secret\\codex.exe",
+                "LOCALAPPDATA": r"C:\\secret\\local",
+            },
+            clear=False,
+        ), patch("codex_cli_adapter.os.name", "nt"), patch(
+            "codex_cli_adapter.shutil.which", return_value=None
+        ):
+            self.assertEqual(
+                codex_candidates(include_environment_locations=False), []
+            )
+
     def test_single_runner_applies_inherited_sandbox_approval_and_roots(self) -> None:
         import single_task_runner
 

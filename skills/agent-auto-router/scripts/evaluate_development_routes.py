@@ -45,7 +45,8 @@ def load_records(path: Path) -> list[dict[str, Any]]:
         tokens = record.get("tokens")
         if tokens is not None:
             if not isinstance(tokens, dict) or set(tokens) - {
-                "input", "cached_input", "output", "reasoning_output", "total"
+                "input", "cached_input", "cache_write", "output",
+                "reasoning_output", "total"
             }:
                 raise ValueError(f"benchmark record {index} tokens are invalid")
             if any(

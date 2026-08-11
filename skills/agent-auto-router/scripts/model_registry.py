@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import re
+import datetime as dt
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -72,8 +73,15 @@ class ModelRegistry:
         models: Iterable[ModelSpec],
         backends=None,
         source: str = "memory",
+        reviewed_at: str | None = None,
     ) -> None:
         self.source = source
+        if reviewed_at is not None:
+            try:
+                dt.date.fromisoformat(reviewed_at)
+            except ValueError as exc:
+                raise ValueError("model registry reviewedAt must be YYYY-MM-DD") from exc
+        self.reviewed_at = reviewed_at
         self.models = tuple(models)
         if not self.models:
             raise ValueError("model registry must contain at least one model")
@@ -299,6 +307,7 @@ def model_spec_to_dict(model: ModelSpec) -> dict[str, Any]:
 def registry_to_dict(registry: ModelRegistry) -> dict[str, Any]:
     return {
         "schemaVersion": REGISTRY_SCHEMA_VERSION,
+        "reviewedAt": registry.reviewed_at,
         "backends": dict(sorted(registry.backends.items())),
         "models": [model_spec_to_dict(model) for model in registry.models],
     }
@@ -328,7 +337,15 @@ def registry_from_dict(payload: dict[str, Any], source: str = "memory") -> Model
         raw_models = payload.get("models")
         if not isinstance(raw_models, list) or not all(isinstance(item, dict) for item in raw_models):
             raise ValueError("model registry models must be an array of objects")
-        return ModelRegistry((model_spec_from_dict(item) for item in raw_models), backends, source)
+        reviewed_at = payload.get("reviewedAt")
+        if reviewed_at is not None and not isinstance(reviewed_at, str):
+            raise ValueError("model registry reviewedAt must be a string")
+        return ModelRegistry(
+            (model_spec_from_dict(item) for item in raw_models),
+            backends,
+            source,
+            reviewed_at,
+        )
     elif schema_version == 1 or schema_version is None:
         # v1 migration: wrap everything in a codex backend
         backends = {"codex": {"kind": "cli", "adapter": "CodexCliAdapter", "default": True}}
@@ -344,7 +361,10 @@ def registry_from_dict(payload: dict[str, Any], source: str = "memory") -> Model
                 item["id"] = f"codex:{model_id}"
             migrated_models.append(item)
         return ModelRegistry(
-            (model_spec_from_dict(item) for item in migrated_models), backends, source
+            (model_spec_from_dict(item) for item in migrated_models),
+            backends,
+            source,
+            None,
         )
     else:
         raise ValueError(

@@ -1,0 +1,24 @@
+{
+  "schema": "agent-auto-router.quick-profiles.v1",
+  "defaultProfile": "standard",
+  "profiles": {
+    "safe": {
+      "description": "Read-only inspection with no feedback persistence",
+      "strategy": "balance",
+      "sandbox": "read-only",
+      "contextMode": "lean",
+      "repositoryContextMode": "auto",
+      "modelAffinity": "off",
+      "noFeedback": true
+    },
+    "standard": {
+      "description": "Normal implementation limited to the selected workspace",
+      "strategy": "balance",
+      "sandbox": "workspace-write",
+      "contextMode": "lean",
+      "repositoryContextMode": "auto",
+      "modelAffinity": "auto",
+      "noFeedback": false
+    }
+  }
+}

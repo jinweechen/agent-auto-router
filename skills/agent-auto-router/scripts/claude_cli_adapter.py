@@ -19,9 +19,13 @@ def extract_claude_usage(payload: dict[str, Any]) -> dict[str, int]:
     usage = payload.get("usage")
     if not isinstance(usage, dict):
         usage = {}
+    cached_input = int(usage.get("cache_read_input_tokens", 0) or 0)
+    cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
+    uncached_input = int(usage.get("input_tokens", 0) or 0)
     return {
-        "input_tokens": int(usage.get("input_tokens", 0) or 0),
-        "cached_input_tokens": int(usage.get("cache_read_input_tokens", 0) or 0),
+        "input_tokens": uncached_input + cached_input + cache_write,
+        "cached_input_tokens": cached_input,
+        "cache_write_input_tokens": cache_write,
         "output_tokens": int(usage.get("output_tokens", 0) or 0),
         "reasoning_output_tokens": int(usage.get("reasoning_tokens", 0) or 0),
     }
@@ -298,7 +302,7 @@ class ClaudeCliAdapter(BaseCliAdapter):
                 f"Claude Code CLI produced no result for role={role}"
             )
         usage = extract_claude_usage(payload)
-        observed_total = self.record_usage(usage)
+        observed_total = self.record_usage(usage, model=model)
         cost_usd = payload.get("total_cost_usd")
         cost_usd = cost_usd if isinstance(cost_usd, (int, float)) else None
         context.records.append(CallRecord(
@@ -311,6 +315,7 @@ class ClaudeCliAdapter(BaseCliAdapter):
             estimated_cost_usd=cost_usd,
             response_id="",
             cached_input_tokens=usage["cached_input_tokens"],
+            cache_write_input_tokens=usage["cache_write_input_tokens"],
             reasoning_output_tokens=usage["reasoning_output_tokens"],
         ))
         self.emit_progress({
@@ -320,6 +325,7 @@ class ClaudeCliAdapter(BaseCliAdapter):
             "latency_seconds": latency,
             "input_tokens": usage["input_tokens"],
             "cached_input_tokens": usage["cached_input_tokens"],
+            "cache_write_input_tokens": usage["cache_write_input_tokens"],
             "output_tokens": usage["output_tokens"],
             "reasoning_output_tokens": usage["reasoning_output_tokens"],
             "observed_total_tokens": observed_total,

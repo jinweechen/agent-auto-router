@@ -7,7 +7,9 @@ from collections import defaultdict
 from typing import Any, Iterable
 
 
-TOKEN_FIELDS = ("input", "cached_input", "output", "reasoning_output", "total")
+TOKEN_FIELDS = (
+    "input", "cached_input", "cache_write", "output", "reasoning_output", "total"
+)
 
 
 def _empty_tokens() -> dict[str, int]:

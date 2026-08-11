@@ -5,11 +5,16 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SCRIPTS = pathlib.Path(__file__).resolve().parents[1] / "skills" / "agent-auto-router" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from repository_context import build_repository_context, inspect_repository  # noqa: E402
+from repository_context import (  # noqa: E402
+    build_repository_context,
+    disabled_repository_inspection,
+    inspect_repository,
+)
 from routing_policy import select_model  # noqa: E402
 
 
@@ -32,6 +37,50 @@ class RepositoryContextTests(unittest.TestCase):
             self.assertGreaterEqual(metadata["candidate_files"], 1)
             self.assertTrue(metadata["context_useful"])
             self.assertNotIn("task", metadata)
+
+    def test_explicit_hidden_relative_path_is_never_crowded_out(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            hidden = root / ".codex-plugin"
+            hidden.mkdir()
+            (hidden / "plugin.json").write_text(
+                '{"version":"private-value-must-not-enter-context"}\n',
+                encoding="utf-8",
+            )
+            ignored = root / ".venv"
+            ignored.mkdir()
+            (ignored / "noise.json").write_text("{}\n", encoding="utf-8")
+            for index in range(12):
+                (root / f"plugin_context_version_{index}.json").write_text(
+                    "{}\n", encoding="utf-8"
+                )
+
+            context, metadata = build_repository_context(
+                root,
+                "Read `.codex-plugin/plugin.json` and report its version.",
+                max_candidate_files=1,
+                repo_map_tokens=200,
+            )
+
+            self.assertTrue(metadata["task_has_path_hint"])
+            self.assertEqual(metadata["repo_files"], 13)
+            self.assertIn("- .codex-plugin/plugin.json", context)
+            self.assertNotIn("private-value-must-not-enter-context", context)
+
+    def test_windows_relative_path_hint_is_normalized(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            workflow = root / ".github" / "workflows"
+            workflow.mkdir(parents=True)
+            (workflow / "test.yml").write_text("name: test\n", encoding="utf-8")
+            context, metadata = build_repository_context(
+                root,
+                r"Inspect .github\workflows\test.yml.",
+                max_candidate_files=1,
+                repo_map_tokens=200,
+            )
+            self.assertTrue(metadata["task_has_path_hint"])
+            self.assertIn("- .github/workflows/test.yml", context)
 
     def test_tiny_repository_without_candidates_skips_context_injection(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -62,6 +111,31 @@ class RepositoryContextTests(unittest.TestCase):
             inspected = inspect_repository(root)
             self.assertTrue(inspected["is_git_repo"])
             self.assertEqual(inspected["source_files"], 1)
+            self.assertIn("scan_duration_ms", inspected)
+            self.assertFalse(inspected["scan_truncated"])
+
+    def test_precomputed_inspection_avoids_second_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            (root / "app.py").write_text("print('ok')\n", encoding="utf-8")
+            inspection = inspect_repository(root, "Update app.py")
+            with patch("repository_context.inspect_repository") as repeated_scan:
+                context, metadata = build_repository_context(
+                    root,
+                    "Update app.py",
+                    max_candidate_files=4,
+                    repo_map_tokens=200,
+                    repository_inspection=inspection,
+                )
+            repeated_scan.assert_not_called()
+            self.assertIn("app.py", context)
+            self.assertGreaterEqual(metadata["candidate_files"], 1)
+
+    def test_disabled_inspection_is_explicit_and_empty(self) -> None:
+        inspection = disabled_repository_inspection()
+        self.assertTrue(inspection["inspection_disabled"])
+        self.assertEqual(inspection["files"], [])
+        self.assertEqual(inspection["scan_duration_ms"], 0)
 
 
 if __name__ == "__main__":

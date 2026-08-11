@@ -1,5 +1,6 @@
 {
   "schemaVersion": 2,
+  "reviewedAt": "2026-08-11",
   "backends": {
     "codex": {
       "kind": "cli",

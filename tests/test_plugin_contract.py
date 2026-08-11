@@ -42,7 +42,10 @@ class PluginContractTests(unittest.TestCase):
 
     def test_cross_host_entrypoints_remain_packaged(self) -> None:
         skill_scripts = ROOT / "skills" / "agent-auto-router" / "scripts"
-        for name in ("host_execution_plan.py", "invoke_auto_task.ps1", "install.ps1"):
+        for name in (
+            "aar.ps1", "quick_profiles.py", "quick_profiles.json",
+            "host_execution_plan.py", "invoke_auto_task.ps1", "install.ps1",
+        ):
             self.assertTrue((skill_scripts / name).is_file(), name)
 
     def make_plugin_fixture(self, temp_root: Path) -> Path:

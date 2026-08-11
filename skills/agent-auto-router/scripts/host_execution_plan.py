@@ -17,10 +17,16 @@ from host_permissions import (
     parse_host_permissions,
     workdir_is_writable,
 )
+from model_affinity import workspace_identity
 from model_registry import load_model_registry
+from route_contract import (
+    EXECUTION_ENVELOPE_SCHEMA,
+    HOST_REQUEST_SCHEMA,
+    extract_route_decision,
+)
 
 
-SCHEMA = "agent-auto-router.host-plan.v2"
+SCHEMA = "agent-auto-router.host-plan.v3"
 DIRECT_VARIANTS = frozenset({"A", "E", "F"})
 ORCHESTRATED_VARIANTS = frozenset({"B", "C", "D"})
 
@@ -62,6 +68,7 @@ def _orchestration_roles(variant: str) -> list[str]:
 def build_host_plan(
     route: dict[str, Any],
     *,
+    task_text: str,
     workdir: pathlib.Path | str,
     available_backends: Iterable[str] | None = None,
     host_permissions: HostPermissions | dict[str, Any] | str | None = None,
@@ -69,6 +76,10 @@ def build_host_plan(
     known_backends: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Return a host-neutral plan; the caller executes only ``action.kind``."""
+    registry = load_model_registry()
+    route = extract_route_decision(
+        route, registry=registry, task_text=task_text
+    )
     selected_model = route.get("selectedModel")
     if not isinstance(selected_model, str) or not selected_model:
         raise ValueError("route.selectedModel must be a non-empty string")
@@ -87,6 +98,9 @@ def build_host_plan(
     resolved_workdir = pathlib.Path(workdir).resolve(strict=True)
     if not resolved_workdir.is_dir():
         raise ValueError(f"workdir must be a directory: {resolved_workdir}")
+    expected_workspace_key = workspace_identity(resolved_workdir)
+    if route.get("workspaceKey") != expected_workspace_key:
+        raise ValueError("route workspaceKey does not match the execution workdir")
     permissions = (
         host_permissions
         if isinstance(host_permissions, HostPermissions)
@@ -100,7 +114,6 @@ def build_host_plan(
     )
     would_write = effective_sandbox != "read-only"
 
-    registry = load_model_registry()
     declared_backends = tuple(known_backends or registry.backends)
     selected_spec = registry.get(selected_model)
     selected_backend = selected_spec.backend
@@ -111,9 +124,13 @@ def build_host_plan(
     )
     unknown_backends = sorted(set(backends) - set(declared_backends))
 
-    decision = route.get("decision") if isinstance(route.get("decision"), dict) else {}
-    policy = route.get("policy") if isinstance(route.get("policy"), dict) else {}
-    route_registry = route.get("registry") if isinstance(route.get("registry"), dict) else {}
+    decision = {
+        "strategy": route.get("strategy"),
+        "reason": route.get("reasonCode"),
+        "target_tier": route.get("targetTier"),
+    }
+    policy = route["policy"]
+    route_registry = route["registry"]
 
     direct = topology == "direct" and variant in DIRECT_VARIANTS
     orchestrated = topology == "orchestrated" and variant in ORCHESTRATED_VARIANTS
@@ -129,6 +146,9 @@ def build_host_plan(
         "effort": effort,
         "topology": topology,
         "variant": variant,
+        "workspaceKey": route.get("workspaceKey"),
+        "modelAffinity": execution_plan.get("modelAffinity", {}),
+        "roleModelPolicy": execution_plan.get("roleModelPolicy"),
         "context": context if isinstance(context, dict) else None,
         "modelCalls": 0,
         "modelCallsScope": "routing",
@@ -260,7 +280,7 @@ def build_host_plan(
             "taskSource": "host-current-user-task",
             "entrypoint": "invoke_orchestrated_task.py",
             "argv": [
-                "--stdin",
+                "--execution-envelope-stdin",
                 "--backend",
                 selected_backend,
                 "--variant",
@@ -268,14 +288,16 @@ def build_host_plan(
                 "--workdir",
                 str(resolved_workdir),
             ],
+            "stdinTemplate": {
+                "schema": EXECUTION_ENVELOPE_SCHEMA,
+                "task": {"source": "host-current-user-task"},
+                "routeDecision": route,
+                "hostPermissions": permissions.as_snapshot(),
+            },
             "permissions": permission_plan,
         }
         if effective_sandbox != "external-sandbox":
             action["argv"].extend(["--sandbox", effective_sandbox])
-        action["argv"].extend([
-            "--host-permissions-json",
-            json.dumps(permissions.as_snapshot(), ensure_ascii=True, separators=(",", ":")),
-        ])
     else:
         return _blocked(
             plan,
@@ -310,11 +332,29 @@ def main() -> int:
             parser.error(f"unknown backend: {', '.join(unknown)}")
 
     try:
-        route = json.load(sys.stdin)
+        request = json.load(sys.stdin)
+        if not isinstance(request, dict):
+            raise ValueError("host request must be a JSON object")
+        expected = {"schema", "task", "routeDecision"}
+        unknown = sorted(set(request) - expected)
+        missing = sorted(expected - set(request))
+        if unknown:
+            raise ValueError(
+                "host request contains unsupported fields: " + ", ".join(unknown)
+            )
+        if missing:
+            raise ValueError("host request is missing fields: " + ", ".join(missing))
+        if request.get("schema") != HOST_REQUEST_SCHEMA:
+            raise ValueError(f"host request schema must be {HOST_REQUEST_SCHEMA}")
+        task_text = request.get("task")
+        route = request.get("routeDecision")
+        if not isinstance(task_text, str) or not task_text.strip():
+            raise ValueError("host request task must be a non-empty string")
         if not isinstance(route, dict):
-            raise ValueError("route input must be a JSON object")
+            raise ValueError("host request routeDecision must be an object")
         plan = build_host_plan(
             route,
+            task_text=task_text,
             workdir=args.workdir,
             available_backends=explicit_backends,
             host_permissions=args.host_permissions_json,

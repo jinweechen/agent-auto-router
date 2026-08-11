@@ -39,12 +39,17 @@ def command_for_executable(executable: pathlib.Path) -> list[str]:
     return [executable_text]
 
 
-def codex_candidates() -> list[pathlib.Path]:
-    """Return explicit, PATH, and standard Windows installation candidates."""
+def codex_candidates(
+    *, include_environment_locations: bool = True
+) -> list[pathlib.Path]:
+    """Return trusted CLI candidates, optionally including env-derived locations."""
     candidates: list[pathlib.Path] = []
-    configured = os.environ.get("CODEX_CLI_PATH", "").strip().strip(chr(34))
-    if configured:
-        candidates.append(pathlib.Path(os.path.expandvars(os.path.expanduser(configured))))
+    if include_environment_locations:
+        configured = os.environ.get("CODEX_CLI_PATH", "").strip().strip(chr(34))
+        if configured:
+            candidates.append(
+                pathlib.Path(os.path.expandvars(os.path.expanduser(configured)))
+            )
 
     # On Windows, npm wrappers initialize the vendor resource directory that
     # contains codex-command-runner.exe and codex-windows-sandbox-setup.exe.
@@ -60,7 +65,7 @@ def codex_candidates() -> list[pathlib.Path]:
         if executable:
             candidates.append(pathlib.Path(executable))
 
-    if os.name == "nt":
+    if os.name == "nt" and include_environment_locations:
         local_app_data = os.environ.get("LOCALAPPDATA")
         if local_app_data:
             local_root = pathlib.Path(local_app_data)
@@ -103,10 +108,14 @@ def environment_for_codex_command(
     return environment
 
 
-def resolve_codex_command() -> list[str]:
+def resolve_codex_command(
+    *, include_environment_locations: bool = True
+) -> list[str]:
     """Resolve a runnable Codex CLI argv prefix from trusted local locations."""
     checked: set[str] = set()
-    for candidate in codex_candidates():
+    for candidate in codex_candidates(
+        include_environment_locations=include_environment_locations
+    ):
         if not candidate.is_file():
             continue
         key = str(candidate).lower()
@@ -120,10 +129,12 @@ def resolve_codex_command() -> list[str]:
     )
 
 
-def codex_cli_available() -> bool:
+def codex_cli_available(*, include_environment_locations: bool = True) -> bool:
     """Return whether the Codex CLI can be resolved without launching it."""
     try:
-        resolve_codex_command()
+        resolve_codex_command(
+            include_environment_locations=include_environment_locations
+        )
     except RuntimeError:
         return False
     return True
@@ -133,6 +144,7 @@ def extract_usage_details(events: list[dict[str, Any]]) -> dict[str, int]:
     totals = {
         "input_tokens": 0,
         "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
         "output_tokens": 0,
         "reasoning_output_tokens": 0,
     }
@@ -142,10 +154,18 @@ def extract_usage_details(events: list[dict[str, Any]]) -> dict[str, int]:
             continue
         for key in totals:
             totals[key] = max(totals[key], int(usage.get(key, 0) or 0))
+        totals["cache_write_input_tokens"] = max(
+            totals["cache_write_input_tokens"],
+            int(usage.get("cache_write_tokens", 0) or 0),
+        )
         input_details = usage.get("input_tokens_details")
         if isinstance(input_details, dict):
             totals["cached_input_tokens"] = max(
                 totals["cached_input_tokens"], int(input_details.get("cached_tokens", 0) or 0)
+            )
+            totals["cache_write_input_tokens"] = max(
+                totals["cache_write_input_tokens"],
+                int(input_details.get("cache_write_tokens", 0) or 0),
             )
         output_details = usage.get("output_tokens_details")
         if isinstance(output_details, dict):
@@ -289,7 +309,9 @@ class CodexCliAdapter(BaseCliAdapter):
                 usage_events = sum(
                     isinstance(event.get("usage"), dict) for event in parsed_events
                 )
-                total = self.record_usage(parsed_usage, event_count=usage_events)
+                total = self.record_usage(
+                    parsed_usage, event_count=usage_events, model=model
+                )
                 return parsed_events, parsed_usage, total
 
             try:
@@ -357,6 +379,7 @@ class CodexCliAdapter(BaseCliAdapter):
                 estimated_cost_usd=None,
                 response_id=thread_id,
                 cached_input_tokens=usage["cached_input_tokens"],
+                cache_write_input_tokens=usage["cache_write_input_tokens"],
                 reasoning_output_tokens=usage["reasoning_output_tokens"],
             ))
             self.emit_progress({
@@ -367,6 +390,7 @@ class CodexCliAdapter(BaseCliAdapter):
                 "thread_id": thread_id,
                 "input_tokens": input_tokens,
                 "cached_input_tokens": usage["cached_input_tokens"],
+                "cache_write_input_tokens": usage["cache_write_input_tokens"],
                 "output_tokens": output_tokens,
                 "reasoning_output_tokens": usage["reasoning_output_tokens"],
                 "observed_total_tokens": observed_total,

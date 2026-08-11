@@ -8,13 +8,16 @@ import hashlib
 import itertools
 import json
 import math
+import os
 import re
 import sys
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 from efficiency_metrics import summarize_feedback
+from model_affinity import ROLE_MODEL_POLICY_AFFINITY, ROLE_MODEL_POLICY_PROFILE
 
 from benchmark_priors import (
     BenchmarkPriors,
@@ -51,8 +54,10 @@ from routing_policy import (
 )
 from state_lock import append_lock, control_plane_lock
 
-FEEDBACK_SCHEMA_VERSION = 3
+FEEDBACK_SCHEMA_VERSION = 5
 CANDIDATE_SCHEMA_VERSION = 1
+DEFAULT_FEEDBACK_RETENTION_DAYS = 90
+DEFAULT_MAX_FEEDBACK_ROUTES = 5000
 DEFAULT_REGISTRY = load_model_registry()
 ROUTE_FEATURES = {
     "prompt_chars",
@@ -124,12 +129,48 @@ def _reject_sensitive_keys(value: Any, parent_key: str | None = None) -> None:
     if isinstance(value, dict):
         for key, nested in value.items():
             normalized_key = str(key).lower()
-            if parent_key != "observed_tokens" and normalized_key in FORBIDDEN_STORED_KEYS:
+            if (
+                parent_key not in {"observed_tokens", "selected_model_observed_tokens"}
+                and normalized_key in FORBIDDEN_STORED_KEYS
+            ):
                 raise ValueError(f"feedback payload may not store field: {key}")
             _reject_sensitive_keys(nested, normalized_key)
     elif isinstance(value, list):
         for nested in value:
             _reject_sensitive_keys(nested, parent_key)
+
+
+def _normalize_observed_tokens(
+    value: Any,
+    *,
+    field_name: str,
+) -> dict[str, int] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be an object or null")
+    supported = {
+        "input", "cached_input", "cache_write", "output", "reasoning_output", "total"
+    }
+    if set(value) - supported:
+        raise ValueError(f"{field_name} contains unsupported fields")
+    normalized: dict[str, int] = {}
+    for key in (
+        "input", "cached_input", "cache_write", "output", "reasoning_output", "total"
+    ):
+        count = value.get(key, 0)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ValueError(f"observed token count {key} must be a non-negative integer")
+        normalized[key] = count
+    if normalized["total"] != normalized["input"] + normalized["output"]:
+        raise ValueError("observed total tokens must equal input plus output")
+    if normalized["cached_input"] > normalized["input"]:
+        raise ValueError("cached input tokens may not exceed input tokens")
+    if normalized["cache_write"] > normalized["input"]:
+        raise ValueError("cache write tokens may not exceed input tokens")
+    if normalized["reasoning_output"] > normalized["output"]:
+        raise ValueError("reasoning output tokens may not exceed output tokens")
+    return normalized
 
 
 def normalize_route_event(
@@ -205,29 +246,38 @@ def normalize_route_event(
     )
     if not re.fullmatch(r"[0-9a-f]{64}", stored_registry_digest):
         raise ValueError("invalid feedback model registry digest")
-    observed_tokens = payload.get("observed_tokens")
-    normalized_tokens: dict[str, int] | None = None
-    if observed_tokens is not None:
-        if not isinstance(observed_tokens, dict):
-            raise ValueError("observed_tokens must be an object or null")
-        supported_token_fields = {
-            "input", "cached_input", "output", "reasoning_output", "total"
-        }
-        if set(observed_tokens) - supported_token_fields:
-            raise ValueError("observed_tokens contains unsupported fields")
-        normalized_tokens = {}
-        for key in ("input", "cached_input", "output", "reasoning_output", "total"):
-            value = observed_tokens.get(key, 0)
-            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                raise ValueError(f"observed token count {key} must be a non-negative integer")
-            normalized_tokens[key] = value
-        if normalized_tokens["total"] != normalized_tokens["input"] + normalized_tokens["output"]:
-            raise ValueError("observed total tokens must equal input plus output")
-        if normalized_tokens["cached_input"] > normalized_tokens["input"]:
-            raise ValueError("cached input tokens may not exceed input tokens")
-        if normalized_tokens["reasoning_output"] > normalized_tokens["output"]:
-            raise ValueError("reasoning output tokens may not exceed output tokens")
+    normalized_tokens = _normalize_observed_tokens(
+        payload.get("observed_tokens"), field_name="observed_tokens"
+    )
+    selected_model_tokens = _normalize_observed_tokens(
+        payload.get("selected_model_observed_tokens"),
+        field_name="selected_model_observed_tokens",
+    )
     exit_code = int(payload["exit_code"])
+    workspace_key = payload.get("workspace_key")
+    if workspace_key is not None and not re.fullmatch(r"[0-9a-f]{64}", str(workspace_key)):
+        raise ValueError("feedback workspace key must be a SHA-256 digest")
+    topology = str(payload.get("topology") or "direct")
+    if topology not in {"direct", "orchestrated"}:
+        raise ValueError("invalid feedback topology")
+    variant = str(
+        payload.get("variant")
+        or {"frontier": "A", "balanced": "E", "fast": "F"}[target_tier]
+    )
+    if variant not in {"A", "B", "C", "D", "E", "F"}:
+        raise ValueError("invalid feedback variant")
+    role_model_policy = str(
+        payload.get("role_model_policy") or ROLE_MODEL_POLICY_PROFILE
+    )
+    if role_model_policy not in {ROLE_MODEL_POLICY_AFFINITY, ROLE_MODEL_POLICY_PROFILE}:
+        raise ValueError("invalid feedback role model policy")
+    estimated_switches = payload.get("estimated_role_tier_switches", 0)
+    if (
+        isinstance(estimated_switches, bool)
+        or not isinstance(estimated_switches, int)
+        or not 0 <= estimated_switches <= 20
+    ):
+        raise ValueError("invalid feedback estimated role tier switches")
     raw_feature_schema_version = payload.get("feature_schema_version", 1)
     if (
         isinstance(raw_feature_schema_version, bool)
@@ -252,10 +302,16 @@ def normalize_route_event(
         "policyDigest": stored_policy_digest,
         "modelRegistryDigest": stored_registry_digest,
         "explicitOverride": bool(payload["explicit_override"]),
+        "workspaceKey": str(workspace_key) if workspace_key is not None else None,
+        "topology": topology,
+        "variant": variant,
+        "roleModelPolicy": role_model_policy,
+        "estimatedRoleTierSwitches": estimated_switches,
         "exitCode": exit_code,
         "executionSucceeded": exit_code == 0,
         "durationMs": max(0, int(payload["duration_ms"])),
         "observedTokens": normalized_tokens,
+        "selectedModelObservedTokens": selected_model_tokens,
         "validationConfigured": bool(payload.get("validation_configured", False)),
         "validationPassed": (
             bool(payload.get("validation_passed"))
@@ -311,6 +367,10 @@ def read_feedback(feedback_path: Path) -> list[dict[str, Any]]:
                 f"timed out waiting to read router state: {feedback_path.name}"
             )
         lines = feedback_path.read_text(encoding="utf-8").splitlines()
+    return _parse_feedback_lines(lines)
+
+
+def _parse_feedback_lines(lines: Iterable[str]) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for line_number, line in enumerate(lines, 1):
         if not line.strip():
@@ -323,6 +383,209 @@ def read_feedback(feedback_path: Path) -> list[dict[str, Any]]:
             raise ValueError(f"feedback line {line_number} must be an object")
         events.append(event)
     return events
+
+
+def _feedback_timestamp(event: dict[str, Any]) -> datetime:
+    value = event.get("recordedAt")
+    if not isinstance(value, str):
+        raise ValueError("feedback event is missing recordedAt")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("feedback event has invalid recordedAt") from exc
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _compact_feedback_events(
+    events: list[dict[str, Any]],
+    *,
+    maximum_routes: int,
+    retention_days: int,
+    now: datetime,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    cutoff = now.astimezone(timezone.utc) - timedelta(days=retention_days)
+    grouped: dict[str, dict[str, tuple[int, datetime, dict[str, Any]]]] = {}
+    latest_by_route: dict[str, tuple[int, datetime]] = {}
+    for index, event in enumerate(events):
+        event_type = event.get("eventType")
+        if event_type not in {"route_outcome", "human_label"}:
+            raise ValueError("feedback contains an unsupported event type")
+        route_id = str(event.get("routeId", ""))
+        if not SAFE_ID_PATTERN.fullmatch(route_id):
+            raise ValueError("feedback contains an invalid route ID")
+        recorded_at = _feedback_timestamp(event).astimezone(timezone.utc)
+        grouped.setdefault(route_id, {})[str(event_type)] = (index, recorded_at, event)
+        previous = latest_by_route.get(route_id)
+        if previous is None or (recorded_at, index) > (previous[1], previous[0]):
+            latest_by_route[route_id] = (index, recorded_at)
+
+    age_eligible = [
+        route_id
+        for route_id, (_, recorded_at) in latest_by_route.items()
+        if recorded_at >= cutoff
+    ]
+    selected_routes = set(
+        sorted(
+            age_eligible,
+            key=lambda route_id: (
+                latest_by_route[route_id][1],
+                latest_by_route[route_id][0],
+                route_id,
+            ),
+        )[-maximum_routes:]
+    )
+    retained_indexed = [
+        item
+        for route_id in selected_routes
+        for item in grouped[route_id].values()
+    ]
+    retained = [item[2] for item in sorted(retained_indexed, key=lambda item: item[0])]
+    summary = {
+        "beforeEvents": len(events),
+        "afterEvents": len(retained),
+        "eventsRemoved": len(events) - len(retained),
+        "beforeRoutes": len(grouped),
+        "afterRoutes": len(selected_routes),
+        "routesRemovedByAge": len(grouped) - len(age_eligible),
+        "routesRemovedByLimit": max(0, len(age_eligible) - len(selected_routes)),
+        "wouldChange": retained != events,
+    }
+    return retained, summary
+
+
+def _rewrite_feedback_unlocked(path: Path, events: Iterable[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+            for event in events:
+                handle.write(
+                    json.dumps(event, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+                    + "\n"
+                )
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def load_maintained_feedback(
+    feedback_path: Path,
+    *,
+    maximum_routes: int = DEFAULT_MAX_FEEDBACK_ROUTES,
+    retention_days: int = DEFAULT_FEEDBACK_RETENTION_DAYS,
+    apply: bool = True,
+    now: datetime | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Read and optionally compact feedback under one append lock."""
+    if isinstance(maximum_routes, bool) or not 1 <= maximum_routes <= 100000:
+        raise ValueError("maximum feedback routes must be between 1 and 100000")
+    if isinstance(retention_days, bool) or not 1 <= retention_days <= 3650:
+        raise ValueError("feedback retention days must be between 1 and 3650")
+    if not feedback_path.is_file():
+        return [], {
+            "path": str(feedback_path),
+            "exists": False,
+            "maximumRoutes": maximum_routes,
+            "retentionDays": retention_days,
+            "beforeEvents": 0,
+            "afterEvents": 0,
+            "eventsRemoved": 0,
+            "beforeRoutes": 0,
+            "afterRoutes": 0,
+            "routesRemovedByAge": 0,
+            "routesRemovedByLimit": 0,
+            "wouldChange": False,
+            "beforeBytes": 0,
+            "afterBytes": 0,
+            "oldestRetainedAt": None,
+            "newestRetainedAt": None,
+            "applied": False,
+            "storesTaskText": False,
+            "modelCalls": 0,
+        }
+    with append_lock(feedback_path) as acquired:
+        if not acquired:
+            raise RuntimeError(
+                f"timed out waiting to maintain router state: {feedback_path.name}"
+            )
+        before_bytes = feedback_path.stat().st_size
+        events = _parse_feedback_lines(
+            feedback_path.read_text(encoding="utf-8").splitlines()
+        )
+        retained, summary = _compact_feedback_events(
+            events,
+            maximum_routes=maximum_routes,
+            retention_days=retention_days,
+            now=now or datetime.now(timezone.utc),
+        )
+        changed = bool(summary["wouldChange"])
+        if apply and changed:
+            _rewrite_feedback_unlocked(feedback_path, retained)
+        after_bytes = (
+            feedback_path.stat().st_size
+            if apply and changed
+            else sum(
+                len(
+                    (
+                        json.dumps(
+                            event,
+                            ensure_ascii=True,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                        + "\n"
+                    ).encode("utf-8")
+                )
+                for event in retained
+            )
+        )
+    retained_times = [_feedback_timestamp(event) for event in retained]
+    summary.update(
+        {
+            "path": str(feedback_path),
+            "exists": True,
+            "maximumRoutes": maximum_routes,
+            "retentionDays": retention_days,
+            "beforeBytes": before_bytes,
+            "afterBytes": after_bytes,
+            "oldestRetainedAt": (
+                min(retained_times).astimezone(timezone.utc).isoformat()
+                if retained_times
+                else None
+            ),
+            "newestRetainedAt": (
+                max(retained_times).astimezone(timezone.utc).isoformat()
+                if retained_times
+                else None
+            ),
+            "applied": bool(apply and changed),
+            "storesTaskText": False,
+            "modelCalls": 0,
+        }
+    )
+    return retained, summary
+
+
+def maintain_feedback(
+    feedback_path: Path,
+    *,
+    maximum_routes: int = DEFAULT_MAX_FEEDBACK_ROUTES,
+    retention_days: int = DEFAULT_FEEDBACK_RETENTION_DAYS,
+    apply: bool = False,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Inspect feedback retention or atomically apply it without exposing content."""
+    _, summary = load_maintained_feedback(
+        feedback_path,
+        maximum_routes=maximum_routes,
+        retention_days=retention_days,
+        apply=apply,
+        now=now,
+    )
+    return summary
 
 
 def labeled_samples(
@@ -364,6 +627,9 @@ def labeled_samples(
         sample["preferredModel"] = preferred
         sample["preferredTier"] = preferred_tier
         sample["outcome"] = label.get("outcome")
+        sample["evidenceRecordedAt"] = max(
+            _feedback_timestamp(route), _feedback_timestamp(label)
+        ).astimezone(timezone.utc).isoformat()
         samples.append(sample)
     return samples
 
@@ -459,6 +725,260 @@ def score_policy(
         "falseUpgrades": false_upgrades,
         "falseDowngrades": false_downgrades,
         "highRiskViolations": high_risk_violations,
+    }
+
+
+def _wilson_interval(successes: int, total: int) -> list[float] | None:
+    if total <= 0:
+        return None
+    z = 1.959963984540054
+    rate = successes / total
+    denominator = 1 + (z * z / total)
+    midpoint = rate + (z * z / (2 * total))
+    margin = z * math.sqrt((rate * (1 - rate) / total) + (z * z / (4 * total * total)))
+    return [
+        max(0.0, (midpoint - margin) / denominator),
+        min(1.0, (midpoint + margin) / denominator),
+    ]
+
+
+def _paired_shadow_statistics(
+    samples: list[dict[str, Any]],
+    baseline: RoutingPolicy,
+    candidate: RoutingPolicy,
+    registry: ModelRegistry,
+    benchmark_priors: BenchmarkPriors,
+) -> dict[str, Any]:
+    baseline_wins = 0
+    candidate_wins = 0
+    both_correct = 0
+    both_wrong = 0
+    baseline_correct = 0
+    candidate_correct = 0
+    for sample in samples:
+        preferred = str(
+            sample.get("preferredTier")
+            or registry.tier_for_model(str(sample["preferredModel"]))
+        )
+        baseline_match = predict_sample(sample, baseline, benchmark_priors) == preferred
+        candidate_match = predict_sample(sample, candidate, benchmark_priors) == preferred
+        baseline_correct += int(baseline_match)
+        candidate_correct += int(candidate_match)
+        if baseline_match and candidate_match:
+            both_correct += 1
+        elif baseline_match:
+            baseline_wins += 1
+        elif candidate_match:
+            candidate_wins += 1
+        else:
+            both_wrong += 1
+    discordant = baseline_wins + candidate_wins
+    if discordant:
+        smaller = min(baseline_wins, candidate_wins)
+        tail = sum(math.comb(discordant, index) for index in range(smaller + 1))
+        p_value = min(1.0, 2 * tail / (2 ** discordant))
+    else:
+        p_value = 1.0
+    return {
+        "samples": len(samples),
+        "bothCorrect": both_correct,
+        "bothWrong": both_wrong,
+        "candidateWins": candidate_wins,
+        "baselineWins": baseline_wins,
+        "netCandidateWins": candidate_wins - baseline_wins,
+        "discordantPairs": discordant,
+        "twoSidedExactPValue": p_value,
+        "baselineAccuracyInterval95": _wilson_interval(baseline_correct, len(samples)),
+        "candidateAccuracyInterval95": _wilson_interval(candidate_correct, len(samples)),
+    }
+
+
+def _shadow_strata(
+    samples: list[dict[str, Any]],
+    baseline: RoutingPolicy,
+    candidate: RoutingPolicy,
+    registry: ModelRegistry,
+    benchmark_priors: BenchmarkPriors,
+    *,
+    minimum_size: int,
+) -> dict[str, Any]:
+    dimensions = {
+        "strategy": lambda sample: str(sample.get("strategy") or "unknown"),
+        "risk": lambda sample: (
+            "high-risk" if bool(sample.get("features", {}).get("high_risk")) else "standard"
+        ),
+        "labelSource": lambda sample: str(sample.get("labelSource") or "human"),
+    }
+    emitted: dict[str, list[dict[str, Any]]] = {}
+    suppressed: dict[str, int] = {}
+    for dimension, key_function in dimensions.items():
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for sample in samples:
+            grouped.setdefault(key_function(sample), []).append(sample)
+        rows: list[dict[str, Any]] = []
+        suppressed[dimension] = 0
+        for key in sorted(grouped):
+            group = grouped[key]
+            if len(group) < minimum_size:
+                suppressed[dimension] += 1
+                continue
+            baseline_score = score_policy(group, baseline, registry, benchmark_priors)
+            candidate_score = score_policy(group, candidate, registry, benchmark_priors)
+            changed = sum(
+                predict_sample(sample, baseline, benchmark_priors)
+                != predict_sample(sample, candidate, benchmark_priors)
+                for sample in group
+            )
+            rows.append(
+                {
+                    "value": key,
+                    "samples": len(group),
+                    "changedRoutes": changed,
+                    "baselineAccuracy": baseline_score["accuracy"],
+                    "candidateAccuracy": candidate_score["accuracy"],
+                    "accuracyDelta": candidate_score["accuracy"] - baseline_score["accuracy"],
+                    "baselineWeightedLoss": baseline_score["weightedLoss"],
+                    "candidateWeightedLoss": candidate_score["weightedLoss"],
+                    "weightedLossDelta": (
+                        candidate_score["weightedLoss"] - baseline_score["weightedLoss"]
+                    ),
+                }
+            )
+        emitted[dimension] = rows
+    return {
+        "minimumStratumSize": minimum_size,
+        "dimensions": emitted,
+        "suppressedStrata": suppressed,
+        "storesRouteIds": False,
+        "storesTaskText": False,
+    }
+
+
+def shadow_policy_comparison(
+    samples: list[dict[str, Any]],
+    baseline: RoutingPolicy,
+    candidate: RoutingPolicy,
+    registry: ModelRegistry | None = None,
+    benchmark_priors: BenchmarkPriors | None = None,
+) -> dict[str, Any]:
+    """Compare two policies on the same evidence without returning route identifiers."""
+    active_registry = registry or DEFAULT_REGISTRY
+    active_priors = benchmark_priors or load_benchmark_priors(registry=active_registry)
+    if any(
+        sample.get("featureSchemaVersion") != FEATURE_SCHEMA_VERSION
+        for sample in samples
+    ):
+        raise ValueError("shadow samples must use the current routing feature schema")
+    holdout = _split_samples(samples)[1] if len(samples) >= 4 else list(samples)
+    baseline_all = score_policy(samples, baseline, active_registry, active_priors)
+    candidate_all = score_policy(samples, candidate, active_registry, active_priors)
+    baseline_holdout = score_policy(holdout, baseline, active_registry, active_priors)
+    candidate_holdout = score_policy(holdout, candidate, active_registry, active_priors)
+    changed_routes = sum(
+        predict_sample(sample, baseline, active_priors)
+        != predict_sample(sample, candidate, active_priors)
+        for sample in samples
+    )
+    minimum_evidence = 8
+    minimum_accuracy_gain = 0.02
+    minimum_discordant_pairs = 4
+    maximum_p_value = 0.10
+    all_accuracy_delta = candidate_all["accuracy"] - baseline_all["accuracy"]
+    all_loss_delta = candidate_all["weightedLoss"] - baseline_all["weightedLoss"]
+    paired_all = _paired_shadow_statistics(
+        samples, baseline, candidate, active_registry, active_priors
+    )
+    paired_holdout = _paired_shadow_statistics(
+        holdout, baseline, candidate, active_registry, active_priors
+    )
+    minimum_effect_met = (
+        all_accuracy_delta >= minimum_accuracy_gain or all_loss_delta <= -1
+    )
+    statistically_supported = (
+        paired_all["discordantPairs"] >= minimum_discordant_pairs
+        and paired_all["candidateWins"] > paired_all["baselineWins"]
+        and paired_all["twoSidedExactPValue"] <= maximum_p_value
+    )
+    guardrails = {
+        "minimumEvidenceMet": len(samples) >= minimum_evidence,
+        "noHighRiskViolationRegression": (
+            candidate_holdout["highRiskViolations"]
+            <= baseline_holdout["highRiskViolations"]
+        ),
+        "noFalseDowngradeRegression": (
+            candidate_holdout["falseDowngrades"]
+            <= baseline_holdout["falseDowngrades"]
+        ),
+        "holdoutAccuracyNonDecreasing": (
+            candidate_holdout["accuracy"] >= baseline_holdout["accuracy"]
+        ),
+        "holdoutWeightedLossNonIncreasing": (
+            candidate_holdout["weightedLoss"] <= baseline_holdout["weightedLoss"]
+        ),
+    }
+    if not guardrails["minimumEvidenceMet"]:
+        assessment = "insufficient-evidence"
+    elif not all(guardrails.values()):
+        assessment = "regression"
+    elif changed_routes == 0:
+        assessment = "no-routing-difference"
+    elif minimum_effect_met and statistically_supported:
+        assessment = "candidate-favorable"
+    elif minimum_effect_met:
+        assessment = "promising-unconfirmed"
+    else:
+        assessment = "neutral"
+    return {
+        "schema": "agent-auto-router.policy-shadow.v1",
+        "assessment": assessment,
+        "dataset": {
+            "samples": len(samples),
+            "holdoutSamples": len(holdout),
+            "changedRoutes": changed_routes,
+            "storesRouteIds": False,
+            "storesTaskText": False,
+        },
+        "baseline": {
+            "policyDigest": policy_digest(baseline),
+            "allEvidence": baseline_all,
+            "holdout": baseline_holdout,
+        },
+        "candidate": {
+            "policyDigest": policy_digest(candidate),
+            "allEvidence": candidate_all,
+            "holdout": candidate_holdout,
+        },
+        "delta": {
+            "allEvidenceAccuracy": all_accuracy_delta,
+            "allEvidenceWeightedLoss": all_loss_delta,
+            "holdoutAccuracy": (
+                candidate_holdout["accuracy"] - baseline_holdout["accuracy"]
+            ),
+            "holdoutWeightedLoss": (
+                candidate_holdout["weightedLoss"] - baseline_holdout["weightedLoss"]
+            ),
+        },
+        "confidence": {
+            "minimumEvidence": minimum_evidence,
+            "minimumAccuracyGain": minimum_accuracy_gain,
+            "minimumDiscordantPairs": minimum_discordant_pairs,
+            "maximumPValue": maximum_p_value,
+            "minimumEffectMet": minimum_effect_met,
+            "statisticallySupported": statistically_supported,
+            "allEvidence": paired_all,
+            "holdout": paired_holdout,
+        },
+        "strata": _shadow_strata(
+            samples,
+            baseline,
+            candidate,
+            active_registry,
+            active_priors,
+            minimum_size=3,
+        ),
+        "guardrails": guardrails,
+        "activationAuthorized": False,
+        "modelCalls": 0,
     }
 
 
@@ -846,13 +1366,34 @@ def main() -> int:
     feedback_path = getattr(args, "feedback_file", None) or default_feedback_path(state_dir)
 
     if args.command == "record":
-        event = append_route_event(_read_stdin_object(), feedback_path, registry)
-        from guarded_auto import process_recorded_outcome
-
-        result = dict(event)
-        result["guardedAuto"] = process_recorded_outcome(
-            state_dir, feedback_path, registry=registry
+        payload = _read_stdin_object()
+        normalize_route_event(payload, registry)
+        from guarded_auto import (
+            feedback_recording_enabled,
+            learning_mode,
+            process_recorded_outcome,
         )
+
+        mode = learning_mode(state_dir)
+        if not feedback_recording_enabled(state_dir):
+            result = {
+                "recorded": False,
+                "reason": "feedback-disabled",
+                "learningMode": mode,
+                "guardedAuto": {
+                    "status": mode,
+                    "action": "none",
+                    "modelCalls": 0,
+                },
+            }
+        else:
+            event = append_route_event(payload, feedback_path, registry)
+            result = dict(event)
+            result["recorded"] = True
+            result["learningMode"] = mode
+            result["guardedAuto"] = process_recorded_outcome(
+                state_dir, feedback_path, registry=registry
+            )
     elif args.command == "label":
         label_event = append_label_event(
             args.route_id, args.preferred_model, args.outcome, feedback_path, registry

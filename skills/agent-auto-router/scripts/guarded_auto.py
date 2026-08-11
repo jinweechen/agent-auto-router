@@ -9,7 +9,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -27,15 +27,21 @@ from control_plane_store import (
 )
 from host_permissions import HostPermissions, parse_host_permissions
 from model_registry import TIER_RANK, ModelRegistry, load_model_registry, registry_digest
+from model_affinity import MODEL_AFFINITY_MODES
 from policy_learning import (
+    DEFAULT_FEEDBACK_RETENTION_DAYS,
+    DEFAULT_MAX_FEEDBACK_ROUTES,
     SAFE_ID_PATTERN,
     append_label_event,
     append_route_event,
     build_candidate,
     default_feedback_path,
     labeled_samples,
+    load_maintained_feedback,
+    maintain_feedback,
     prepare_policy_archive,
     read_feedback,
+    shadow_policy_comparison,
 )
 from routing_policy import (
     DEFAULT_STATE_DIR,
@@ -46,28 +52,30 @@ from routing_policy import (
     policy_from_dict,
     policy_to_dict,
 )
-from state_lock import control_plane_lock
+from state_lock import append_lock, control_plane_lock
 
 
 EXECUTION_REPORT_SCHEMA = "agent-auto-router.execution-report.v1"
-CONFIG_SCHEMA_VERSION = 1
-STATE_SCHEMA_VERSION = 1
-MODES = frozenset({"manual", "guarded-auto"})
+CONFIG_SCHEMA_VERSION = 2
+STATE_SCHEMA_VERSION = 2
+MODES = frozenset({"off", "observe", "guarded"})
 REPORT_STATUSES = frozenset({"succeeded", "failed", "blocked", "cancelled", "timed_out"})
 VERIFICATION_STATUSES = frozenset({"passed", "failed", "not-run"})
 SAFE_HOST_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,80}")
+DEFAULT_EXECUTION_REPORT_RETENTION_DAYS = 90
+DEFAULT_MAX_EXECUTION_REPORT_MARKERS = 5000
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "schemaVersion": CONFIG_SCHEMA_VERSION,
-    "mode": "manual",
-    "minimumSignals": 20,
+    "mode": "observe",
+    "minimumSignals": 12,
     "minimumValidationAccuracyGain": 0.05,
     "maximumThresholdStep": 1,
-    "canaryPercent": 10,
-    "minimumCanaryReports": 10,
-    "minimumBaselineReports": 10,
-    "minimumProbationReports": 20,
+    "canaryPercent": 20,
+    "minimumCanaryReports": 6,
+    "minimumBaselineReports": 6,
+    "minimumProbationReports": 12,
     "maximumFailureRateIncrease": 0.05,
 }
 
@@ -100,7 +108,7 @@ def validate_config(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("unsupported guarded-auto config schemaVersion")
     mode = str(payload.get("mode", ""))
     if mode not in MODES:
-        raise ValueError("guarded-auto mode must be manual or guarded-auto")
+        raise ValueError("learning mode must be off, observe, or guarded")
     return {
         "schemaVersion": CONFIG_SCHEMA_VERSION,
         "mode": mode,
@@ -150,6 +158,16 @@ def load_config(state_dir: Path) -> dict[str, Any]:
     return result
 
 
+def learning_mode(state_dir: Path) -> str:
+    """Return the canonical persisted-learning mode."""
+    return str(load_config(state_dir)["mode"])
+
+
+def feedback_recording_enabled(state_dir: Path) -> bool:
+    """Return whether automatic route outcomes may be persisted locally."""
+    return learning_mode(state_dir) in {"observe", "guarded"}
+
+
 def _path_is_within(path: Path, root: Path) -> bool:
     try:
         path.resolve(strict=False).relative_to(root.resolve(strict=False))
@@ -163,13 +181,17 @@ def learning_boundary_issue(
     feedback_path: Path | None,
     permissions: HostPermissions,
     requested_sandbox: str = "inherit",
+    model_affinity_mode: str = "off",
 ) -> str | None:
-    """Return why guarded state is writable by the child, or None when protected."""
-    if load_config(state_dir)["mode"] != "guarded-auto":
+    """Return why routing evidence is writable by the child, or None when protected."""
+    if model_affinity_mode not in MODEL_AFFINITY_MODES:
+        raise ValueError("model affinity mode must be auto or off")
+    learning = load_config(state_dir)["mode"]
+    if learning != "guarded" and model_affinity_mode != "auto":
         return None
     effective = permissions.effective_sandbox(requested_sandbox)
     if effective in {"danger-full-access", "external-sandbox"}:
-        return f"guarded-auto requires protected state; child sandbox is {effective}"
+        return f"adaptive routing requires protected state; child sandbox is {effective}"
     if effective == "read-only":
         return None
     protected_paths = [state_dir, feedback_path or default_feedback_path(state_dir)]
@@ -177,7 +199,7 @@ def learning_boundary_issue(
         for root_value in permissions.writable_roots:
             if _path_is_within(protected_path, Path(root_value)):
                 return (
-                    "guarded-auto state and feedback must be outside child writable roots: "
+                    "adaptive routing state and feedback must be outside child writable roots: "
                     f"{protected_path}"
                 )
     return None
@@ -187,12 +209,12 @@ def _configure_unlocked(
     state_dir: Path,
     *,
     mode: str,
-    minimum_signals: int = 20,
+    minimum_signals: int = 12,
     minimum_validation_accuracy_gain: float = 0.05,
-    canary_percent: int = 10,
-    minimum_canary_reports: int = 10,
-    minimum_baseline_reports: int = 10,
-    minimum_probation_reports: int = 20,
+    canary_percent: int = 20,
+    minimum_canary_reports: int = 6,
+    minimum_baseline_reports: int = 6,
+    minimum_probation_reports: int = 12,
     maximum_failure_rate_increase: float = 0.05,
 ) -> dict[str, Any]:
     recover_pending_transaction(state_dir)
@@ -208,7 +230,7 @@ def _configure_unlocked(
         "minimumProbationReports": minimum_probation_reports,
         "maximumFailureRateIncrease": maximum_failure_rate_increase,
     })
-    if mode == "manual":
+    if payload["mode"] != "guarded":
         state = load_state(state_dir)
         if state.get("status") == "probation":
             _restore_snapshot(
@@ -248,12 +270,12 @@ def configure(
     state_dir: Path,
     *,
     mode: str,
-    minimum_signals: int = 20,
+    minimum_signals: int = 12,
     minimum_validation_accuracy_gain: float = 0.05,
-    canary_percent: int = 10,
-    minimum_canary_reports: int = 10,
-    minimum_baseline_reports: int = 10,
-    minimum_probation_reports: int = 20,
+    canary_percent: int = 20,
+    minimum_canary_reports: int = 6,
+    minimum_baseline_reports: int = 6,
+    minimum_probation_reports: int = 12,
     maximum_failure_rate_increase: float = 0.05,
 ) -> dict[str, Any]:
     with control_plane_lock(state_dir, timeout_seconds=5) as acquired:
@@ -275,7 +297,7 @@ def configure(
 def _idle_state(
     reason: str | None = None,
     *,
-    last_evaluated_signals: int | None = None,
+    last_evaluated_at: str | None = None,
     last_candidate_id: str | None = None,
 ) -> dict[str, Any]:
     state: dict[str, Any] = {
@@ -285,8 +307,8 @@ def _idle_state(
     }
     if reason:
         state["reason"] = reason
-    if last_evaluated_signals is not None:
-        state["lastEvaluatedSignals"] = max(0, int(last_evaluated_signals))
+    if last_evaluated_at is not None:
+        state["lastEvaluatedAt"] = last_evaluated_at
     if last_candidate_id:
         state["lastCandidateId"] = last_candidate_id
     return state
@@ -319,6 +341,17 @@ def _timestamp(value: Any) -> datetime:
     except ValueError:
         return datetime.min.replace(tzinfo=timezone.utc)
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _sample_evidence_time(sample: dict[str, Any]) -> datetime:
+    return _timestamp(sample.get("evidenceRecordedAt") or sample.get("recordedAt"))
+
+
+def _latest_evidence_at(samples: Iterable[dict[str, Any]]) -> str | None:
+    values = [_sample_evidence_time(sample) for sample in samples]
+    if not values:
+        return None
+    return max(values).astimezone(timezone.utc).isoformat()
 
 
 def _event_after(event: dict[str, Any], started_at: Any) -> bool:
@@ -624,12 +657,12 @@ def _cycle_unlocked(
     *,
     dry_run: bool,
     registry: ModelRegistry,
+    config: dict[str, Any],
+    events: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    config = load_config(state_dir)
     state = load_state(state_dir)
-    events = read_feedback(feedback_path)
-    if config["mode"] != "guarded-auto":
-        return {"status": "manual", "action": "none", "modelCalls": 0}
+    if config["mode"] != "guarded":
+        return {"status": config["mode"], "action": "none", "modelCalls": 0}
     active_policy, active_source = load_active_policy(state_dir)
 
     if state["status"] == "idle":
@@ -642,15 +675,24 @@ def _cycle_unlocked(
                 "minimumSignals": int(config["minimumSignals"]),
                 "modelCalls": 0,
             }
-        previous_signal_count = int(state.get("lastEvaluatedSignals", 0))
+        last_evaluated_at = state.get("lastEvaluatedAt")
         reevaluation_interval = max(4, int(config["minimumSignals"]) // 4)
-        if previous_signal_count and len(samples) < previous_signal_count + reevaluation_interval:
+        new_signal_count = (
+            sum(
+                _sample_evidence_time(sample) > _timestamp(last_evaluated_at)
+                for sample in samples
+            )
+            if last_evaluated_at
+            else len(samples)
+        )
+        if last_evaluated_at and new_signal_count < reevaluation_interval:
             return {
                 "status": "waiting-for-new-signals",
                 "action": "none",
                 "signals": len(samples),
-                "lastEvaluatedSignals": previous_signal_count,
-                "nextEvaluationAt": previous_signal_count + reevaluation_interval,
+                "newSignals": new_signal_count,
+                "minimumNewSignals": reevaluation_interval,
+                "lastEvaluatedAt": last_evaluated_at,
                 "modelCalls": 0,
             }
         candidate, path = _write_guarded_candidate(
@@ -664,7 +706,7 @@ def _cycle_unlocked(
             if not dry_run:
                 rejected_state = _idle_state(
                     "candidate-rejected",
-                    last_evaluated_signals=len(samples),
+                    last_evaluated_at=_latest_evidence_at(samples),
                     last_candidate_id=str(candidate["candidateId"]),
                 )
                 audit = {
@@ -737,7 +779,9 @@ def _cycle_unlocked(
                         _state_path(state_dir),
                         _idle_state(
                             event["reason"],
-                            last_evaluated_signals=len(learning_samples(events, registry)),
+                            last_evaluated_at=_latest_evidence_at(
+                                learning_samples(events, registry)
+                            ),
                             last_candidate_id=str(candidate["candidateId"]),
                         ),
                     ),),
@@ -769,7 +813,9 @@ def _cycle_unlocked(
             "probation-failure-rate-regression",
             next_state=_idle_state(
                 "probation-failure-rate-regression",
-                last_evaluated_signals=len(learning_samples(events, registry)),
+                last_evaluated_at=_latest_evidence_at(
+                    learning_samples(events, registry)
+                ),
                 last_candidate_id=str(candidate["candidateId"]),
             ),
         )
@@ -789,7 +835,9 @@ def _cycle_unlocked(
                 _state_path(state_dir),
                 _idle_state(
                     "probation-passed",
-                    last_evaluated_signals=len(learning_samples(events, registry)),
+                    last_evaluated_at=_latest_evidence_at(
+                        learning_samples(events, registry)
+                    ),
                     last_candidate_id=str(candidate["candidateId"]),
                 ),
             ),),
@@ -810,12 +858,23 @@ def run_cycle(
         if not acquired:
             return {"status": "busy", "action": "none", "modelCalls": 0}
         recover_pending_transaction(state_dir)
-        return _cycle_unlocked(
+        config = load_config(state_dir)
+        events, maintenance = load_maintained_feedback(
+            feedback_path or default_feedback_path(state_dir),
+            maximum_routes=DEFAULT_MAX_FEEDBACK_ROUTES,
+            retention_days=DEFAULT_FEEDBACK_RETENTION_DAYS,
+            apply=not dry_run and config["mode"] != "off",
+        )
+        result = _cycle_unlocked(
             state_dir,
             feedback_path or default_feedback_path(state_dir),
             dry_run=dry_run,
             registry=active_registry,
+            config=config,
+            events=events,
         )
+        result["feedbackMaintenance"] = maintenance
+        return result
 
 
 def process_recorded_outcome(
@@ -853,7 +912,8 @@ def _execution_report_to_route_payload(
     allowed_route = {
         "routeId", "strategy", "effort", "selectorModel", "selectedModel", "targetTier",
         "reason", "features", "policyVersion", "policyDigest", "modelRegistryDigest",
-        "featureSchemaVersion", "explicitOverride",
+        "featureSchemaVersion", "explicitOverride", "workspaceKey", "topology", "variant",
+        "roleModelPolicy", "estimatedRoleTierSwitches",
     }
     allowed_result = {
         "status", "durationMs", "verification", "validationConfigured", "escalated",
@@ -887,6 +947,11 @@ def _execution_report_to_route_payload(
         "registry_digest": route.get("modelRegistryDigest"),
         "feature_schema_version": route.get("featureSchemaVersion", 1),
         "explicit_override": bool(route.get("explicitOverride", False)),
+        "workspace_key": route.get("workspaceKey"),
+        "topology": route.get("topology"),
+        "variant": route.get("variant"),
+        "role_model_policy": route.get("roleModelPolicy"),
+        "estimated_role_tier_switches": route.get("estimatedRoleTierSwitches", 0),
         "exit_code": 0 if status == "succeeded" else 1,
         "duration_ms": result.get("durationMs", 0),
         "observed_tokens": observed,
@@ -904,6 +969,293 @@ def _execution_report_to_route_payload(
     return report_id, host, route_payload, str(preferred) if preferred is not None else None, status
 
 
+def _execution_report_lock_path(reports: Path) -> Path:
+    return reports / "execution-reports"
+
+
+def _execution_report_operation_lock_path(reports: Path, report_id: str) -> Path:
+    digest = hashlib.sha256(report_id.encode("utf-8")).hexdigest()
+    return reports / "operations" / digest
+
+
+def _strict_marker_timestamp(value: Any, field: str, path: Path) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError(f"execution report marker {field} is missing: {path.name}")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(
+            f"execution report marker {field} is invalid: {path.name}"
+        ) from exc
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _validate_execution_report_marker(path: Path, payload: Any) -> dict[str, Any]:
+    allowed = {
+        "schema", "reportId", "recordedAt", "completedAt", "host", "routeId",
+        "state", "storesTaskText", "errorType", "labelExpected", "routeRecorded",
+        "labelRecorded", "cycleProcessed", "cycleDeferred", "resolvedAt", "resolvedBy",
+        "resolution",
+    }
+    if not isinstance(payload, dict) or set(payload) - allowed:
+        raise ValueError(f"invalid execution report marker: {path.name}")
+    if payload.get("schema") != EXECUTION_REPORT_SCHEMA:
+        raise ValueError(f"unsupported execution report marker: {path.name}")
+    if not SAFE_ID_PATTERN.fullmatch(str(payload.get("reportId", ""))):
+        raise ValueError(f"invalid execution report marker ID: {path.name}")
+    expected_name = (
+        hashlib.sha256(str(payload["reportId"]).encode("utf-8")).hexdigest() + ".json"
+    )
+    if path.name != expected_name:
+        raise ValueError(f"execution report marker filename is invalid: {path.name}")
+    if not SAFE_ID_PATTERN.fullmatch(str(payload.get("routeId", ""))):
+        raise ValueError(f"invalid execution report marker route ID: {path.name}")
+    if not SAFE_HOST_PATTERN.fullmatch(str(payload.get("host", ""))):
+        raise ValueError(f"invalid execution report marker host: {path.name}")
+    if payload.get("state") not in {"pending", "recorded", "incomplete"}:
+        raise ValueError(f"invalid execution report marker state: {path.name}")
+    if payload.get("storesTaskText") is not False:
+        raise ValueError(f"execution report marker privacy flag is invalid: {path.name}")
+    _strict_marker_timestamp(payload.get("recordedAt"), "recordedAt", path)
+    if payload.get("completedAt") is not None:
+        _strict_marker_timestamp(payload.get("completedAt"), "completedAt", path)
+    for field in (
+        "labelExpected", "routeRecorded", "labelRecorded", "cycleProcessed", "cycleDeferred"
+    ):
+        if not isinstance(payload.get(field), bool):
+            raise ValueError(f"execution report marker {field} is invalid: {path.name}")
+    if payload["state"] == "recorded":
+        if payload.get("completedAt") is None:
+            raise ValueError(f"execution report marker completedAt is missing: {path.name}")
+        if not payload["routeRecorded"]:
+            raise ValueError(f"recorded execution report marker is incomplete: {path.name}")
+        if payload["cycleProcessed"] == payload["cycleDeferred"]:
+            raise ValueError(f"recorded execution report marker cycle state is invalid: {path.name}")
+        if payload["labelExpected"] and not payload["labelRecorded"]:
+            raise ValueError(f"recorded execution report marker label is incomplete: {path.name}")
+    resolution_fields = ("resolvedAt", "resolvedBy", "resolution")
+    present_resolution_fields = [field for field in resolution_fields if payload.get(field) is not None]
+    if present_resolution_fields and len(present_resolution_fields) != len(resolution_fields):
+        raise ValueError(f"execution report marker resolution is incomplete: {path.name}")
+    if present_resolution_fields:
+        _strict_marker_timestamp(payload["resolvedAt"], "resolvedAt", path)
+        if not SAFE_HOST_PATTERN.fullmatch(str(payload["resolvedBy"])):
+            raise ValueError(f"execution report marker resolver is invalid: {path.name}")
+        if payload["resolution"] != "acknowledged-recorded":
+            raise ValueError(f"execution report marker resolution is invalid: {path.name}")
+    return payload
+
+
+def _execution_report_storage_unlocked(
+    reports: Path,
+    *,
+    maximum_markers: int,
+    retention_days: int,
+    apply: bool,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    marker_paths = sorted(reports.glob("*.json")) if reports.is_dir() else []
+    markers: list[tuple[Path, dict[str, Any], datetime]] = []
+    for path in marker_paths:
+        payload = _validate_execution_report_marker(
+            path, json.loads(path.read_text(encoding="utf-8"))
+        )
+        marker_time = _strict_marker_timestamp(
+            payload.get("completedAt") or payload.get("recordedAt"),
+            "completedAt" if payload.get("completedAt") else "recordedAt",
+            path,
+        ).astimezone(timezone.utc)
+        markers.append((path, payload, marker_time))
+    cutoff = (now or datetime.now(timezone.utc)).astimezone(timezone.utc) - timedelta(
+        days=retention_days
+    )
+    protected = [item for item in markers if item[1]["state"] != "recorded"]
+    recorded = [item for item in markers if item[1]["state"] == "recorded"]
+    age_eligible = [item for item in recorded if item[2] >= cutoff]
+    retained_recorded = sorted(
+        age_eligible,
+        key=lambda item: (item[2], item[1]["reportId"], item[0].name),
+    )[-maximum_markers:]
+    retained_paths = {item[0] for item in protected + retained_recorded}
+    removed = [item for item in markers if item[0] not in retained_paths]
+    if apply:
+        for path, _, _ in removed:
+            path.unlink()
+    return {
+        "path": str(reports),
+        "exists": reports.is_dir(),
+        "maximumRecordedMarkers": maximum_markers,
+        "retentionDays": retention_days,
+        "beforeMarkers": len(markers),
+        "afterMarkers": len(markers) - len(removed),
+        "recordedMarkers": len(recorded),
+        "pendingMarkers": sum(item[1]["state"] == "pending" for item in protected),
+        "incompleteMarkers": sum(item[1]["state"] == "incomplete" for item in protected),
+        "nonterminalMarkersRequireReview": bool(protected),
+        "markersRemovedByAge": len(recorded) - len(age_eligible),
+        "markersRemovedByLimit": max(0, len(age_eligible) - len(retained_recorded)),
+        "wouldChange": bool(removed),
+        "applied": bool(apply and removed),
+        "idempotencyWindowBounded": True,
+        "storesTaskText": False,
+        "modelCalls": 0,
+    }
+
+
+def maintain_execution_reports(
+    state_dir: Path,
+    *,
+    maximum_markers: int = DEFAULT_MAX_EXECUTION_REPORT_MARKERS,
+    retention_days: int = DEFAULT_EXECUTION_REPORT_RETENTION_DAYS,
+    apply: bool = False,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Inspect or prune completed execution-report idempotency markers."""
+    if isinstance(maximum_markers, bool) or not 1 <= maximum_markers <= 100000:
+        raise ValueError("maximum execution report markers must be between 1 and 100000")
+    if isinstance(retention_days, bool) or not 1 <= retention_days <= 3650:
+        raise ValueError("execution report retention days must be between 1 and 3650")
+    reports = resolve_control_plane_path(state_dir, ControlPlanePaths(state_dir).reports)
+    if not reports.is_dir():
+        return _execution_report_storage_unlocked(
+            reports,
+            maximum_markers=maximum_markers,
+            retention_days=retention_days,
+            apply=False,
+            now=now,
+        )
+    with append_lock(_execution_report_lock_path(reports)) as acquired:
+        if not acquired:
+            raise RuntimeError("execution report marker store is busy")
+        return _execution_report_storage_unlocked(
+            reports,
+            maximum_markers=maximum_markers,
+            retention_days=retention_days,
+            apply=apply,
+            now=now,
+        )
+
+
+def _write_execution_report_marker(reports: Path, marker: Path, payload: dict[str, Any]) -> None:
+    with append_lock(_execution_report_lock_path(reports)) as acquired:
+        if not acquired:
+            raise RuntimeError("execution report marker store is busy")
+        atomic_write_json(marker, payload)
+
+
+def _ingest_execution_report_locked(
+    *,
+    report_id: str,
+    host: str,
+    route_payload: dict[str, Any],
+    preferred: str | None,
+    status: str,
+    state_dir: Path,
+    target_feedback: Path,
+    reports: Path,
+    active_registry: ModelRegistry,
+) -> dict[str, Any]:
+    marker = reports / f"{hashlib.sha256(report_id.encode('utf-8')).hexdigest()}.json"
+    normalized_marker = {
+        "schema": EXECUTION_REPORT_SCHEMA,
+        "reportId": report_id,
+        "recordedAt": utc_now(),
+        "host": host,
+        "routeId": route_payload["route_id"],
+        "state": "pending",
+        "storesTaskText": False,
+        "labelExpected": preferred is not None,
+        "routeRecorded": False,
+        "labelRecorded": False,
+        "cycleProcessed": False,
+        "cycleDeferred": False,
+    }
+    with append_lock(_execution_report_lock_path(reports)) as acquired:
+        if not acquired:
+            raise RuntimeError("execution report marker store is busy")
+        try:
+            descriptor = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            existing = _validate_execution_report_marker(
+                marker, json.loads(marker.read_text(encoding="utf-8"))
+            )
+            if existing.get("reportId") != report_id:
+                raise ValueError("execution report marker collision")
+            if existing.get("state") != "recorded":
+                raise ValueError("execution report has an incomplete prior recording")
+            return {"status": "duplicate", "reportId": report_id, "modelCalls": 0}
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as marker_stream:
+                marker_stream.write(json.dumps(normalized_marker, ensure_ascii=True) + "\n")
+                marker_stream.flush()
+                os.fsync(marker_stream.fileno())
+        except Exception:
+            try:
+                marker.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+    route_recorded = False
+    try:
+        event = append_route_event(route_payload, target_feedback, active_registry)
+        route_recorded = True
+        normalized_marker["routeRecorded"] = True
+        _write_execution_report_marker(reports, marker, normalized_marker)
+        if preferred is not None:
+            append_label_event(
+                str(route_payload["route_id"]),
+                preferred,
+                "pass" if status == "succeeded" else "fail",
+                target_feedback,
+                active_registry,
+            )
+            normalized_marker["labelRecorded"] = True
+            _write_execution_report_marker(reports, marker, normalized_marker)
+        cycle = process_recorded_outcome(state_dir, target_feedback, registry=active_registry)
+        normalized_marker["cycleProcessed"] = True
+        normalized_marker["state"] = "recorded"
+        normalized_marker["completedAt"] = utc_now()
+        with append_lock(_execution_report_lock_path(reports)) as acquired:
+            if not acquired:
+                raise RuntimeError("execution report marker store is busy")
+            atomic_write_json(marker, normalized_marker)
+            try:
+                report_storage = _execution_report_storage_unlocked(
+                    reports,
+                    maximum_markers=DEFAULT_MAX_EXECUTION_REPORT_MARKERS,
+                    retention_days=DEFAULT_EXECUTION_REPORT_RETENTION_DAYS,
+                    apply=True,
+                )
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                report_storage = {
+                    "status": "error",
+                    "errorType": type(exc).__name__,
+                    "storesTaskText": False,
+                    "modelCalls": 0,
+                }
+        return {
+            "status": "recorded",
+            "reportId": report_id,
+            "event": event,
+            "guardedAuto": cycle,
+            "executionReportStorage": report_storage,
+            "modelCalls": 0,
+        }
+    except Exception as exc:
+        with append_lock(_execution_report_lock_path(reports)) as acquired:
+            if acquired:
+                if route_recorded:
+                    normalized_marker["state"] = "incomplete"
+                    normalized_marker["errorType"] = type(exc).__name__
+                    atomic_write_json(marker, normalized_marker)
+                else:
+                    try:
+                        marker.unlink()
+                    except FileNotFoundError:
+                        pass
+        raise
+
+
 def ingest_execution_report(
     payload: dict[str, Any],
     state_dir: Path,
@@ -914,60 +1266,316 @@ def ingest_execution_report(
     report_id, host, route_payload, preferred, status = _execution_report_to_route_payload(
         payload, active_registry
     )
+    mode = learning_mode(state_dir)
+    if mode == "off":
+        return {
+            "status": "ignored",
+            "reason": "feedback-disabled",
+            "reportId": report_id,
+            "learningMode": mode,
+            "modelCalls": 0,
+        }
     reports = resolve_control_plane_path(state_dir, ControlPlanePaths(state_dir).reports)
-    marker = reports / (
-        f"{hashlib.sha256(report_id.encode('utf-8')).hexdigest()}.json"
-    )
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        descriptor = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        existing = json.loads(marker.read_text(encoding="utf-8"))
-        if existing.get("reportId") != report_id:
-            raise ValueError("execution report marker collision")
-        if existing.get("state") != "recorded":
-            raise ValueError("execution report has an incomplete prior recording")
-        return {"status": "duplicate", "reportId": report_id, "modelCalls": 0}
-    normalized_marker = {
-        "schema": EXECUTION_REPORT_SCHEMA,
-        "reportId": report_id,
-        "recordedAt": utc_now(),
-        "host": host,
-        "routeId": route_payload["route_id"],
-        "state": "pending",
-        "storesTaskText": False,
-    }
-    route_recorded = False
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as marker_stream:
-            marker_stream.write(json.dumps(normalized_marker, ensure_ascii=True) + "\n")
-        target_feedback = feedback_path or default_feedback_path(state_dir)
-        event = append_route_event(route_payload, target_feedback, active_registry)
-        route_recorded = True
-        if preferred is not None:
-            append_label_event(
-                str(route_payload["route_id"]),
-                preferred,
-                "pass" if status == "succeeded" else "fail",
-                target_feedback,
-                active_registry,
+    reports.mkdir(parents=True, exist_ok=True)
+    with append_lock(_execution_report_operation_lock_path(reports, report_id)) as acquired:
+        if not acquired:
+            raise RuntimeError("execution report is busy")
+        return _ingest_execution_report_locked(
+            report_id=report_id,
+            host=host,
+            route_payload=route_payload,
+            preferred=preferred,
+            status=status,
+            state_dir=state_dir,
+            target_feedback=feedback_path or default_feedback_path(state_dir),
+            reports=reports,
+            active_registry=active_registry,
+        )
+
+
+def maintain_feedback_state(
+    state_dir: Path,
+    feedback_path: Path | None = None,
+    *,
+    maximum_routes: int = DEFAULT_MAX_FEEDBACK_ROUTES,
+    retention_days: int = DEFAULT_FEEDBACK_RETENTION_DAYS,
+    apply: bool = False,
+) -> dict[str, Any]:
+    """Inspect or compact privacy-minimized feedback under control-plane locks."""
+    with control_plane_lock(state_dir, timeout_seconds=5) as acquired:
+        if not acquired:
+            raise RuntimeError("routing control plane is busy")
+        recover_pending_transaction(state_dir)
+        result = maintain_feedback(
+            feedback_path or default_feedback_path(state_dir),
+            maximum_routes=maximum_routes,
+            retention_days=retention_days,
+            apply=apply,
+        )
+        result["operation"] = "applied" if result["applied"] else "inspection"
+        return result
+
+
+def maintain_execution_report_state(
+    state_dir: Path,
+    *,
+    maximum_markers: int = DEFAULT_MAX_EXECUTION_REPORT_MARKERS,
+    retention_days: int = DEFAULT_EXECUTION_REPORT_RETENTION_DAYS,
+    apply: bool = False,
+) -> dict[str, Any]:
+    """Inspect or prune completed idempotency markers under control-plane locks."""
+    with control_plane_lock(state_dir, timeout_seconds=5) as acquired:
+        if not acquired:
+            raise RuntimeError("routing control plane is busy")
+        recover_pending_transaction(state_dir)
+        result = maintain_execution_reports(
+            state_dir,
+            maximum_markers=maximum_markers,
+            retention_days=retention_days,
+            apply=apply,
+        )
+        result["operation"] = "applied" if result["applied"] else "inspection"
+        return result
+
+
+def recover_execution_report(
+    state_dir: Path,
+    report_id: str,
+    feedback_path: Path | None = None,
+    *,
+    action: str = "inspect",
+    confirm_report_id: str | None = None,
+    resolved_by: str | None = None,
+) -> dict[str, Any]:
+    """Inspect or explicitly reconcile one nonterminal execution-report marker."""
+    if not SAFE_ID_PATTERN.fullmatch(report_id):
+        raise ValueError("invalid execution report ID")
+    if action not in {"inspect", "release-for-retry", "acknowledge-recorded"}:
+        raise ValueError("unsupported execution report recovery action")
+    if action != "inspect":
+        if confirm_report_id != report_id:
+            raise ValueError("report recovery requires an exact --confirm-report-id match")
+        if resolved_by is None or not SAFE_HOST_PATTERN.fullmatch(resolved_by):
+            raise ValueError("report recovery requires a safe --resolved-by value")
+    reports = resolve_control_plane_path(state_dir, ControlPlanePaths(state_dir).reports)
+    marker_name = hashlib.sha256(report_id.encode("utf-8")).hexdigest() + ".json"
+    marker = reports / marker_name
+    resolved_dir = resolve_control_plane_path(state_dir, reports / "resolved")
+    archive = resolved_dir / marker_name
+    reports.mkdir(parents=True, exist_ok=True)
+    with append_lock(_execution_report_operation_lock_path(reports, report_id)) as acquired:
+        if not acquired:
+            raise RuntimeError("execution report is busy")
+        with control_plane_lock(state_dir, timeout_seconds=5) as control_acquired:
+            if not control_acquired:
+                raise RuntimeError("routing control plane is busy")
+            recover_pending_transaction(state_dir)
+            if not marker.is_file():
+                if archive.is_file():
+                    archived = json.loads(archive.read_text(encoding="utf-8"))
+                    if archived.get("reportId") != report_id:
+                        raise ValueError("execution report recovery archive is invalid")
+                    return {
+                        "status": "released-for-retry",
+                        "reportId": report_id,
+                        "archiveRetained": True,
+                        "storesTaskText": False,
+                        "policyMutationAuthorized": False,
+                        "modelCalls": 0,
+                    }
+                raise ValueError("execution report marker does not exist")
+            with append_lock(_execution_report_lock_path(reports)) as marker_acquired:
+                if not marker_acquired:
+                    raise RuntimeError("execution report marker store is busy")
+                stored = _validate_execution_report_marker(
+                    marker, json.loads(marker.read_text(encoding="utf-8"))
+                )
+            target_feedback = feedback_path or default_feedback_path(state_dir)
+            events = read_feedback(target_feedback)
+            matching_outcomes = [
+                event for event in events
+                if event.get("eventType") == "route_outcome"
+                and event.get("routeId") == stored["routeId"]
+            ]
+            matching_labels = [
+                event for event in events
+                if event.get("eventType") == "human_label"
+                and event.get("routeId") == stored["routeId"]
+            ]
+            nonterminal = stored["state"] in {"pending", "incomplete"}
+            no_phase_progress = not any(
+                stored[field]
+                for field in ("routeRecorded", "labelRecorded", "cycleProcessed", "cycleDeferred")
             )
-        cycle = process_recorded_outcome(state_dir, target_feedback, registry=active_registry)
-        normalized_marker["state"] = "recorded"
-        normalized_marker["completedAt"] = utc_now()
-        atomic_write_json(marker, normalized_marker)
-        return {"status": "recorded", "reportId": report_id, "event": event, "guardedAuto": cycle, "modelCalls": 0}
-    except Exception as exc:
-        if route_recorded:
-            normalized_marker["state"] = "incomplete"
-            normalized_marker["errorType"] = type(exc).__name__
-            atomic_write_json(marker, normalized_marker)
+            can_release = (
+                nonterminal
+                and no_phase_progress
+                and not matching_outcomes
+                and not matching_labels
+            )
+            label_evidence_satisfied = (
+                len(matching_labels) == 1 if stored["labelExpected"] else len(matching_labels) <= 1
+            )
+            can_acknowledge = (
+                nonterminal
+                and len(matching_outcomes) == 1
+                and label_evidence_satisfied
+            )
+            inspection = {
+                "status": "review-required" if nonterminal else "already-recorded",
+                "reportId": report_id,
+                "markerState": stored["state"],
+                "progress": {
+                    "labelExpected": stored["labelExpected"],
+                    "routeRecorded": stored["routeRecorded"],
+                    "labelRecorded": stored["labelRecorded"],
+                    "cycleProcessed": stored["cycleProcessed"],
+                    "cycleDeferred": stored["cycleDeferred"],
+                },
+                "evidence": {
+                    "routeOutcomeEvents": len(matching_outcomes),
+                    "humanLabelEvents": len(matching_labels),
+                },
+                "allowedActions": {
+                    "releaseForRetry": can_release,
+                    "acknowledgeRecorded": can_acknowledge,
+                },
+                "storesTaskText": False,
+                "policyMutationAuthorized": False,
+                "modelCalls": 0,
+            }
+            if action == "inspect":
+                return inspection
+            if action == "release-for-retry":
+                if not can_release:
+                    raise ValueError("execution report cannot be released because progress or evidence exists")
+                resolved_at = utc_now()
+                archived = dict(stored)
+                archived.update(
+                    {
+                        "state": "released",
+                        "resolvedAt": resolved_at,
+                        "resolvedBy": resolved_by,
+                        "resolution": "released-for-retry",
+                        "routeOutcomeEvents": 0,
+                        "humanLabelEvents": 0,
+                    }
+                )
+                with append_lock(_execution_report_lock_path(reports)) as marker_acquired:
+                    if not marker_acquired:
+                        raise RuntimeError("execution report marker store is busy")
+                    atomic_write_json(archive, archived)
+                    marker.unlink()
+                return {
+                    "status": "released-for-retry",
+                    "reportId": report_id,
+                    "archiveRetained": True,
+                    "retryAuthorized": True,
+                    "storesTaskText": False,
+                    "policyMutationAuthorized": False,
+                    "modelCalls": 0,
+                }
+            if not can_acknowledge:
+                raise ValueError("execution report evidence is not safe to acknowledge")
+            resolved_at = utc_now()
+            reconciled = dict(stored)
+            reconciled.update(
+                {
+                    "state": "recorded",
+                    "completedAt": resolved_at,
+                    "routeRecorded": True,
+                    "labelRecorded": len(matching_labels) == 1,
+                    "cycleDeferred": not stored["cycleProcessed"],
+                    "resolvedAt": resolved_at,
+                    "resolvedBy": resolved_by,
+                    "resolution": "acknowledged-recorded",
+                }
+            )
+            reconciled.pop("errorType", None)
+            _write_execution_report_marker(reports, marker, reconciled)
+            return {
+                "status": "acknowledged-recorded",
+                "reportId": report_id,
+                "learningCycleRequired": reconciled["cycleDeferred"],
+                "nextCommand": "cycle" if reconciled["cycleDeferred"] else None,
+                "storesTaskText": False,
+                "policyMutationAuthorized": False,
+                "modelCalls": 0,
+            }
+
+
+def policy_shadow(
+    state_dir: Path,
+    feedback_path: Path | None = None,
+    candidate_path: Path | None = None,
+    *,
+    registry: ModelRegistry | None = None,
+) -> dict[str, Any]:
+    """Compare a candidate against its baseline without activating or routing it."""
+    active_registry = registry or load_model_registry()
+    with control_plane_lock(state_dir, timeout_seconds=5) as acquired:
+        if not acquired:
+            raise RuntimeError("routing control plane is busy")
+        recover_pending_transaction(state_dir)
+        lifecycle = load_state(state_dir)
+        if candidate_path is None:
+            if lifecycle.get("status") not in {"canary", "probation"}:
+                return {
+                    "schema": "agent-auto-router.policy-shadow.v1",
+                    "assessment": "no-candidate",
+                    "activationAuthorized": False,
+                    "storesTaskText": False,
+                    "modelCalls": 0,
+                }
+            candidate = _load_state_candidate(state_dir, lifecycle)
+            source = "lifecycle"
         else:
-            try:
-                marker.unlink()
-            except FileNotFoundError:
-                pass
-        raise
+            resolved_candidate = candidate_path.resolve(strict=False)
+            if not resolved_candidate.is_file():
+                raise ValueError("shadow candidate file does not exist")
+            candidate = json.loads(resolved_candidate.read_text(encoding="utf-8"))
+            if not isinstance(candidate, dict) or not _candidate_is_intact(candidate):
+                raise ValueError("shadow candidate integrity check failed")
+            source = "explicit-file"
+        if candidate.get("featureSchemaVersion") != FEATURE_SCHEMA_VERSION:
+            raise ValueError("shadow candidate uses a stale routing feature schema")
+        if candidate.get("modelRegistryDigest") != registry_digest(active_registry):
+            raise ValueError("shadow candidate uses a stale model registry")
+        priors = load_benchmark_priors(registry=active_registry)
+        if candidate.get("benchmarkPriorsDigest") != benchmark_priors_digest(priors):
+            raise ValueError("shadow candidate uses stale benchmark priors")
+        baseline = policy_from_dict(candidate.get("basePolicy", {}))
+        contender = policy_from_dict(candidate.get("policy", {}))
+        if candidate.get("basePolicyDigest") != policy_digest(baseline):
+            raise ValueError("shadow candidate base policy digest is invalid")
+        active_policy, _ = load_active_policy(state_dir)
+        if policy_digest(active_policy) not in {
+            policy_digest(baseline),
+            policy_digest(contender),
+        }:
+            raise ValueError("shadow candidate is stale because the active policy changed")
+        events, feedback_storage = load_maintained_feedback(
+            feedback_path or default_feedback_path(state_dir),
+            maximum_routes=DEFAULT_MAX_FEEDBACK_ROUTES,
+            retention_days=DEFAULT_FEEDBACK_RETENTION_DAYS,
+            apply=False,
+        )
+        comparison = shadow_policy_comparison(
+            learning_samples(events, active_registry),
+            baseline,
+            contender,
+            active_registry,
+            priors,
+        )
+        comparison.update(
+            {
+                "candidateId": candidate.get("candidateId"),
+                "candidateSource": source,
+                "lifecycleStatus": lifecycle.get("status"),
+                "feedbackStorage": feedback_storage,
+            }
+        )
+        return comparison
 
 
 def status(state_dir: Path, feedback_path: Path | None = None) -> dict[str, Any]:
@@ -975,11 +1583,18 @@ def status(state_dir: Path, feedback_path: Path | None = None) -> dict[str, Any]
         if not acquired:
             raise RuntimeError("routing control plane is busy")
         recover_pending_transaction(state_dir)
-        events = read_feedback(feedback_path or default_feedback_path(state_dir))
+        target_feedback = feedback_path or default_feedback_path(state_dir)
+        events, feedback_storage = load_maintained_feedback(
+            target_feedback,
+            maximum_routes=DEFAULT_MAX_FEEDBACK_ROUTES,
+            retention_days=DEFAULT_FEEDBACK_RETENTION_DAYS,
+            apply=False,
+        )
         registry = load_model_registry()
         samples = learning_samples(events, registry)
         active, source = load_active_policy(state_dir)
         reports = resolve_control_plane_path(state_dir, ControlPlanePaths(state_dir).reports)
+        execution_report_storage = maintain_execution_reports(state_dir, apply=False)
         return {
             "schemaVersion": STATE_SCHEMA_VERSION,
             "config": load_config(state_dir),
@@ -995,6 +1610,8 @@ def status(state_dir: Path, feedback_path: Path | None = None) -> dict[str, Any]
                 sample.get("labelSource") == "verified-tier-escalation" for sample in samples
             ),
             "executionReports": len(list(reports.glob("*.json"))) if reports.is_dir() else 0,
+            "executionReportStorage": execution_report_storage,
+            "feedbackStorage": feedback_storage,
             "storesTaskText": False,
             "modelCalls": 0,
         }
@@ -1006,13 +1623,17 @@ def main() -> int:
 
     configure_parser = subparsers.add_parser("configure")
     configure_parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
-    configure_parser.add_argument("--mode", choices=sorted(MODES), required=True)
-    configure_parser.add_argument("--minimum-signals", type=int, default=20)
+    configure_parser.add_argument(
+        "--mode",
+        choices=sorted(MODES),
+        required=True,
+    )
+    configure_parser.add_argument("--minimum-signals", type=int, default=12)
     configure_parser.add_argument("--minimum-validation-accuracy-gain", type=float, default=0.05)
-    configure_parser.add_argument("--canary-percent", type=int, default=10)
-    configure_parser.add_argument("--minimum-canary-reports", type=int, default=10)
-    configure_parser.add_argument("--minimum-baseline-reports", type=int, default=10)
-    configure_parser.add_argument("--minimum-probation-reports", type=int, default=20)
+    configure_parser.add_argument("--canary-percent", type=int, default=20)
+    configure_parser.add_argument("--minimum-canary-reports", type=int, default=6)
+    configure_parser.add_argument("--minimum-baseline-reports", type=int, default=6)
+    configure_parser.add_argument("--minimum-probation-reports", type=int, default=12)
     configure_parser.add_argument("--maximum-failure-rate-increase", type=float, default=0.05)
 
     cycle_parser = subparsers.add_parser("cycle")
@@ -1029,6 +1650,48 @@ def main() -> int:
     status_parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
     status_parser.add_argument("--feedback-file", type=Path)
 
+    feedback_parser = subparsers.add_parser("feedback")
+    feedback_parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
+    feedback_parser.add_argument("--feedback-file", type=Path)
+    feedback_parser.add_argument(
+        "--maximum-routes", type=int, default=DEFAULT_MAX_FEEDBACK_ROUTES
+    )
+    feedback_parser.add_argument(
+        "--retention-days", type=int, default=DEFAULT_FEEDBACK_RETENTION_DAYS
+    )
+    feedback_parser.add_argument("--apply", action="store_true")
+
+    reports_parser = subparsers.add_parser("reports")
+    reports_parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
+    reports_parser.add_argument(
+        "--maximum-markers",
+        type=int,
+        default=DEFAULT_MAX_EXECUTION_REPORT_MARKERS,
+    )
+    reports_parser.add_argument(
+        "--retention-days",
+        type=int,
+        default=DEFAULT_EXECUTION_REPORT_RETENTION_DAYS,
+    )
+    reports_parser.add_argument("--apply", action="store_true")
+
+    recover_report_parser = subparsers.add_parser("recover-report")
+    recover_report_parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
+    recover_report_parser.add_argument("--feedback-file", type=Path)
+    recover_report_parser.add_argument("--report-id", required=True)
+    recover_report_parser.add_argument(
+        "--action",
+        choices=("inspect", "release-for-retry", "acknowledge-recorded"),
+        default="inspect",
+    )
+    recover_report_parser.add_argument("--confirm-report-id")
+    recover_report_parser.add_argument("--resolved-by")
+
+    shadow_parser = subparsers.add_parser("shadow")
+    shadow_parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
+    shadow_parser.add_argument("--feedback-file", type=Path)
+    shadow_parser.add_argument("--candidate", type=Path)
+
     boundary_parser = subparsers.add_parser("check-boundary")
     boundary_parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
     boundary_parser.add_argument("--feedback-file", type=Path)
@@ -1037,6 +1700,9 @@ def main() -> int:
         "--requested-sandbox",
         choices=("inherit", "read-only", "workspace-write", "danger-full-access"),
         default="inherit",
+    )
+    boundary_parser.add_argument(
+        "--model-affinity", choices=MODEL_AFFINITY_MODES, default="auto"
     )
 
     args = parser.parse_args()
@@ -1060,6 +1726,36 @@ def main() -> int:
             if not isinstance(payload, dict):
                 raise ValueError("execution report input must be an object")
             result = ingest_execution_report(payload, args.state_dir, args.feedback_file)
+        elif args.command == "feedback":
+            result = maintain_feedback_state(
+                args.state_dir,
+                args.feedback_file,
+                maximum_routes=args.maximum_routes,
+                retention_days=args.retention_days,
+                apply=args.apply,
+            )
+        elif args.command == "reports":
+            result = maintain_execution_report_state(
+                args.state_dir,
+                maximum_markers=args.maximum_markers,
+                retention_days=args.retention_days,
+                apply=args.apply,
+            )
+        elif args.command == "recover-report":
+            result = recover_execution_report(
+                args.state_dir,
+                args.report_id,
+                args.feedback_file,
+                action=args.action,
+                confirm_report_id=args.confirm_report_id,
+                resolved_by=args.resolved_by,
+            )
+        elif args.command == "shadow":
+            result = policy_shadow(
+                args.state_dir,
+                args.feedback_file,
+                args.candidate,
+            )
         elif args.command == "check-boundary":
             permissions = parse_host_permissions(args.host_permissions_json)
             try:
@@ -1068,6 +1764,7 @@ def main() -> int:
                     args.feedback_file,
                     permissions,
                     args.requested_sandbox,
+                    args.model_affinity,
                 )
             except ControlPlaneRecoveryRequired as exc:
                 print(json.dumps({

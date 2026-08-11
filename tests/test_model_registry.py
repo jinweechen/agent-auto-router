@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import datetime as dt
 import pathlib
 import sys
 import unittest
@@ -52,6 +53,33 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertEqual(registry.get("sol").model_id, "codex:gpt-5.6-sol")
         self.assertEqual(registry.get("terra").tier, "balanced")
         self.assertEqual(registry.get("luna").tier, "fast")
+        self.assertEqual(registry.reviewed_at, "2026-08-11")
+
+    def test_registry_review_freshness_is_reported_without_network(self) -> None:
+        registry = load_model_registry()
+        profiles = load_orchestration_profiles()
+        current = validate_registry_and_profiles(
+            registry,
+            profiles,
+            today=dt.date(2026, 8, 11),
+            max_review_age_days=90,
+        )
+        self.assertEqual(current["registryReview"]["status"], "current")
+        payload = registry_payload()
+        payload["reviewedAt"] = "2025-01-01"
+        stale = validate_registry_and_profiles(
+            registry_from_dict(payload, "stale-test"),
+            profiles,
+            today=dt.date(2026, 8, 11),
+            max_review_age_days=90,
+        )
+        self.assertEqual(stale["registryReview"]["status"], "stale")
+
+    def test_registry_rejects_invalid_review_date(self) -> None:
+        payload = registry_payload()
+        payload["reviewedAt"] = "not-a-date"
+        with self.assertRaisesRegex(ValueError, "reviewedAt"):
+            registry_from_dict(payload, "unit-test")
 
     def test_new_enabled_model_can_win_tier_resolution_without_policy_code_change(self) -> None:
         payload = registry_payload()

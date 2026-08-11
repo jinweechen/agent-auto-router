@@ -9,7 +9,12 @@ from typing import Any
 from execution_adapter import ExecutionAdapter
 from execution_types import CallRecord, RunContext
 from model_registry import ModelRegistry, load_model_registry
-from orchestration_profiles import OrchestrationProfiles, load_orchestration_profiles
+from model_affinity import ROLE_MODEL_POLICY_AFFINITY
+from orchestration_profiles import (
+    OrchestrationProfiles,
+    load_orchestration_profiles,
+    resolve_role_with_affinity,
+)
 
 OrchestrationClient = ExecutionAdapter
 
@@ -316,6 +321,8 @@ def run_variant(
     required_capabilities: tuple[str, ...] = (),
     backends: tuple[str, ...] | None = None,
     allow_explicit_only: bool = False,
+    selected_model: str | None = None,
+    role_model_policy: str = ROLE_MODEL_POLICY_AFFINITY,
 ) -> dict[str, Any]:
     if max_workers < 1:
         raise ValueError("max_workers must be at least 1")
@@ -328,11 +335,14 @@ def run_variant(
     final_role = "direct" if variant in {"A", "E", "F"} else "reviewer"
 
     def resolve(role: str) -> tuple[str, str]:
-        assignment = active_profiles.assignment(variant, role)
         final_requirements = required_capabilities if role == final_role else ()
-        model_spec = assignment.resolve(
+        preferred_spec, model_spec, resolution, role_effort = resolve_role_with_affinity(
+            active_profiles,
             active_registry,
+            variant,
             role,
+            selected_model=selected_model,
+            role_model_policy=role_model_policy,
             required_capabilities=final_requirements,
             required_tier="frontier" if final_requirements else None,
             backends=backends,
@@ -340,11 +350,13 @@ def run_variant(
         )
         resolved_roles[role] = {
             "model": model_spec.model_id,
+            "preferredModel": preferred_spec.model_id,
+            "modelResolution": resolution,
             "tier": model_spec.tier,
-            "effort": assignment.effort,
+            "effort": role_effort,
             "backend": model_spec.backend,
         }
-        return model_spec.model_id, assignment.effort
+        return model_spec.model_id, role_effort
 
     if variant == "A":
         direct_model, direct_effort = resolve("direct")
@@ -417,12 +429,18 @@ def run_variant(
             "critical_errors": [],
             "rationale": "Independent grading skipped by the token-saving execution policy.",
         }
+    ordered_models = [resolved_roles[role]["model"] for role in resolved_roles]
+    model_switches = sum(
+        left != right for left, right in zip(ordered_models, ordered_models[1:])
+    )
     return {
         "case_id": case["id"],
         "variant": variant,
         "registry_source": active_registry.source,
         "profile_source": active_profiles.source,
         "resolved_roles": resolved_roles,
+        "role_model_policy": role_model_policy,
+        "planned_model_switches": model_switches,
         "grade": grade_result,
         "implementation_status": "completed",
         "grading_status": grading_status,
@@ -433,6 +451,7 @@ def run_variant(
         "tokens": {
             "input": context.total_input_tokens,
             "cached_input": context.total_cached_input_tokens,
+            "cache_write": context.total_cache_write_input_tokens,
             "uncached_input": context.total_uncached_input_tokens,
             "output": context.total_output_tokens,
             "reasoning_output": context.total_reasoning_output_tokens,
