@@ -20,6 +20,19 @@ EXECUTION_REPORT_SCHEMA = "agent-auto-router.execution-report.v1"
 DIRECT_VARIANTS = frozenset({"A", "E", "F"})
 ORCHESTRATED_VARIANTS = frozenset({"B", "C", "D"})
 DEFAULT_WORKER_LIMIT = {"B": 3, "C": 3, "D": 2}
+DEFAULT_STAGE_TIMEOUT_MS = 30 * 60 * 1000
+EXTENDED_STAGE_TIMEOUT_MS = 60 * 60 * 1000
+DEFAULT_TOTAL_TIMEOUT_MS = 4 * 60 * 60 * 1000
+INTERRUPT_GRACE_TIMEOUT_MS = 30 * 1000
+EXTENDED_REASONING_EFFORTS = frozenset({"xhigh", "max", "ultra"})
+TERMINAL_STATES = (
+    "succeeded",
+    "failed",
+    "blocked",
+    "cancelled",
+    "timed_out",
+    "orphaned",
+)
 
 
 def _normalized_models(values: Iterable[str]) -> frozenset[str]:
@@ -50,6 +63,12 @@ def _positive_parallel_children(value: int) -> int:
 
 def _grader_enabled(decision: dict[str, Any], variant: str) -> bool:
     return bool(decision.get("high_risk")) or variant in {"B", "C"}
+
+
+def _stage_timeout_ms(reasoning_effort: str) -> int:
+    if reasoning_effort in EXTENDED_REASONING_EFFORTS:
+        return EXTENDED_STAGE_TIMEOUT_MS
+    return DEFAULT_STAGE_TIMEOUT_MS
 
 
 def _role_order(variant: str, include_grader: bool) -> tuple[str, ...]:
@@ -215,6 +234,8 @@ def build_desktop_plan(
             "roleModelResolution": "profile-exact-or-declared-runtime-tier-upgrade",
             "workspaceSharing": "shared",
             "readOnlyRoleEnforcement": "instructions-plus-workspace-state-check",
+            "terminalReconciliation": "required",
+            "workspaceChangeReporting": "coordinator-authoritative",
         },
         "coordination": {
             "mode": "staged-dag",
@@ -231,7 +252,70 @@ def build_desktop_plan(
                 "failed",
                 "blocked",
                 "cancelled",
+                "timed_out",
+                "orphaned",
             ],
+            "timeoutPolicy": {
+                "defaultStageTimeoutMs": DEFAULT_STAGE_TIMEOUT_MS,
+                "extendedStageTimeoutMs": EXTENDED_STAGE_TIMEOUT_MS,
+                "extendedReasoningEfforts": sorted(EXTENDED_REASONING_EFFORTS),
+                "totalTimeoutMs": DEFAULT_TOTAL_TIMEOUT_MS,
+                "totalDeadlineStartsAt": "first-agent-spawn",
+                "onStageTimeout": "mark_timed_out_then_interrupt",
+                "onTotalTimeout": "mark_run_timed_out_interrupt_all_active_block_dependents",
+                "activeStageOutcome": "timed_out",
+                "unstartedDependentStageOutcome": "blocked",
+                "automaticRetry": False,
+            },
+            "terminalReconciliation": {
+                "trackLaunchedAgentIds": True,
+                "authoritativeSignals": [
+                    "final_status_notification",
+                    "child_thread_completed",
+                    "terminal_tool_result",
+                ],
+                "advisorySignals": ["list_agents"],
+                "conflictPolicy": "authoritative-terminal-wins",
+                "staleRunningPolicy": "record_without_relaunch",
+                "lateTerminalAfterTimeoutPolicy": "record_child_terminal_preserve_timeout_outcome",
+                "requiredBeforeDependentStage": True,
+                "requiredBeforeFinalResponse": True,
+            },
+            "cleanupPolicy": {
+                "mode": "try-finally",
+                "interruptUnresolvedAgents": True,
+                "skipAuthoritativelyTerminalAgents": True,
+                "releaseWriterClaim": True,
+                "reconcileAfterInterrupt": True,
+                "interruptGraceTimeoutMs": INTERRUPT_GRACE_TIMEOUT_MS,
+                "interruptTerminalSignals": [
+                    "final_status_notification",
+                    "child_thread_completed",
+                    "terminal_tool_result",
+                ],
+                "orphanedOnlyAfterGraceTimeout": True,
+                "unresolvedAfterInterruptState": "orphaned",
+            },
+            "workspaceChangeReconciliation": {
+                "sourceOfTruth": "coordinator-workdir",
+                "captureBaselineBeforeFirstSpawn": True,
+                "captureFinalAfterCleanup": True,
+                "snapshotTool": "scripts/desktop_workspace_snapshot.py",
+                "baselineStorage": "outside-child-writable-roots",
+                "forbiddenRootsSource": "effective-permissions-writableRoots",
+                "protectedPathValidation": True,
+                "manifestFormat": "path-type-mode-size-sha256-plus-git-status-v1",
+                "gitPathEnumeration": "ls-files-cached-others-exclude-standard-z",
+                "gitStatusFormat": "porcelain-v1-z-untracked-files-all",
+                "nonGitFallback": "deterministic-path-content-manifest",
+                "comparison": "baseline-to-final-content-identity",
+                "childPatchEvents": "advisory-only",
+                "authoritativeChangedPaths": "runChangedPaths",
+                "authoritativeChangedFileCount": "runChangedFileCount",
+                "reportPreexistingDirtyPaths": True,
+                "reportFinalDirtyPaths": True,
+                "failOnUnexpectedReadOnlyChange": True,
+            },
             "writerClaim": {
                 "mode": "exclusive",
                 "claimId": f"{route_id}:workspace-writer",
@@ -243,6 +327,13 @@ def build_desktop_plan(
                 "stage_started",
                 "stage_succeeded",
                 "stage_failed",
+                "stage_timed_out",
+                "run_timed_out",
+                "stage_orphaned",
+                "agent_interrupted",
+                "post_interrupt_reconciled",
+                "terminal_reconciled",
+                "workspace_reconciled",
                 "writer_claim_acquired",
                 "writer_claim_released",
             ],
@@ -413,6 +504,7 @@ def build_desktop_plan(
             "maximumInstances": maximum_instances,
             "idempotencyKeyTemplate": f"{route_id}:{role}:{{instance}}",
             "maxAttempts": 1,
+            "timeoutMs": _stage_timeout_ms(role_effort),
         })
 
     minimum_calls = len(agents)
@@ -426,8 +518,9 @@ def build_desktop_plan(
             "dependsOn": list(agent["dependsOn"]),
             "minimumInstances": agent["minimumInstances"],
             "maximumInstances": agent["maximumInstances"],
+            "timeoutMs": agent["timeoutMs"],
             "initialState": "pending",
-            "terminalStates": ["succeeded", "failed", "blocked", "cancelled"],
+            "terminalStates": list(TERMINAL_STATES),
         }
         for agent in agents
     ]

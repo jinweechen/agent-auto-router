@@ -133,6 +133,119 @@ class DesktopExecutionTests(unittest.TestCase):
         )
         self.assertNotIn("private task", json.dumps(plan))
 
+    def test_desktop_plan_declares_bounded_terminal_cleanup(self) -> None:
+        route = route_for("Implement a routine change")
+        plan = build_desktop_plan(
+            route,
+            [_bare(route["selectedModel"])],
+            host_permissions=host_permissions(),
+            workdir=SCRIPTS.parents[2],
+            max_parallel_children=3,
+        )
+        coordination = plan["coordination"]
+        timeout = coordination["timeoutPolicy"]
+        terminal = coordination["terminalReconciliation"]
+        cleanup = coordination["cleanupPolicy"]
+        direct = agent_for(plan, "direct")
+
+        self.assertGreater(direct["timeoutMs"], 0)
+        self.assertEqual(plan["stages"][0]["timeoutMs"], direct["timeoutMs"])
+        self.assertLessEqual(direct["timeoutMs"], timeout["totalTimeoutMs"])
+        self.assertFalse(timeout["automaticRetry"])
+        self.assertEqual(timeout["onStageTimeout"], "mark_timed_out_then_interrupt")
+        self.assertEqual(timeout["totalDeadlineStartsAt"], "first-agent-spawn")
+        self.assertEqual(
+            timeout["onTotalTimeout"],
+            "mark_run_timed_out_interrupt_all_active_block_dependents",
+        )
+        self.assertEqual(timeout["activeStageOutcome"], "timed_out")
+        self.assertEqual(timeout["unstartedDependentStageOutcome"], "blocked")
+        self.assertIn("timed_out", coordination["runStateMachine"])
+        self.assertIn("orphaned", coordination["runStateMachine"])
+        self.assertIn("timed_out", plan["stages"][0]["terminalStates"])
+        self.assertIn("orphaned", plan["stages"][0]["terminalStates"])
+        self.assertTrue(terminal["trackLaunchedAgentIds"])
+        self.assertEqual(terminal["advisorySignals"], ["list_agents"])
+        self.assertEqual(terminal["conflictPolicy"], "authoritative-terminal-wins")
+        self.assertEqual(terminal["staleRunningPolicy"], "record_without_relaunch")
+        self.assertEqual(cleanup["mode"], "try-finally")
+        self.assertTrue(cleanup["interruptUnresolvedAgents"])
+        self.assertTrue(cleanup["skipAuthoritativelyTerminalAgents"])
+        self.assertTrue(cleanup["releaseWriterClaim"])
+        self.assertTrue(cleanup["reconcileAfterInterrupt"])
+        self.assertGreater(cleanup["interruptGraceTimeoutMs"], 0)
+        self.assertTrue(cleanup["orphanedOnlyAfterGraceTimeout"])
+        self.assertEqual(
+            terminal["lateTerminalAfterTimeoutPolicy"],
+            "record_child_terminal_preserve_timeout_outcome",
+        )
+        self.assertIn("run_timed_out", coordination["auditEventTypes"])
+        self.assertIn("post_interrupt_reconciled", coordination["auditEventTypes"])
+        self.assertIn("terminal_reconciled", coordination["auditEventTypes"])
+        self.assertIn("workspace_reconciled", coordination["auditEventTypes"])
+
+    def test_desktop_plan_makes_parent_workspace_change_count_authoritative(self) -> None:
+        route = route_for(
+            "Implement API and tests for several independent components",
+            criteria=["API", "tests", "docs", "rollback"],
+        )
+        plan = build_desktop_plan(
+            route,
+            all_desktop_models(),
+            host_permissions=host_permissions(),
+            workdir=SCRIPTS.parents[2],
+            max_parallel_children=3,
+        )
+        reconciliation = plan["coordination"]["workspaceChangeReconciliation"]
+        self.assertEqual(plan["hostContract"]["workspaceSharing"], "shared")
+        self.assertEqual(
+            plan["hostContract"]["workspaceChangeReporting"],
+            "coordinator-authoritative",
+        )
+        self.assertEqual(reconciliation["sourceOfTruth"], "coordinator-workdir")
+        self.assertTrue(reconciliation["captureBaselineBeforeFirstSpawn"])
+        self.assertTrue(reconciliation["captureFinalAfterCleanup"])
+        self.assertEqual(
+            reconciliation["manifestFormat"],
+            "path-type-mode-size-sha256-plus-git-status-v1",
+        )
+        self.assertEqual(
+            reconciliation["gitStatusFormat"],
+            "porcelain-v1-z-untracked-files-all",
+        )
+        self.assertEqual(
+            reconciliation["comparison"],
+            "baseline-to-final-content-identity",
+        )
+        self.assertEqual(
+            reconciliation["forbiddenRootsSource"],
+            "effective-permissions-writableRoots",
+        )
+        self.assertTrue(reconciliation["protectedPathValidation"])
+        self.assertEqual(reconciliation["childPatchEvents"], "advisory-only")
+        self.assertEqual(reconciliation["authoritativeChangedPaths"], "runChangedPaths")
+        self.assertEqual(
+            reconciliation["authoritativeChangedFileCount"],
+            "runChangedFileCount",
+        )
+        self.assertTrue(reconciliation["reportPreexistingDirtyPaths"])
+        self.assertTrue(reconciliation["reportFinalDirtyPaths"])
+
+    def test_extended_reasoning_effort_gets_extended_but_bounded_timeout(self) -> None:
+        route = route_for("Implement a routine change")
+        route["executionPlan"]["effort"] = "max"
+        plan = build_desktop_plan(
+            route,
+            [_bare(route["selectedModel"])],
+            host_permissions=host_permissions(),
+            workdir=SCRIPTS.parents[2],
+            max_parallel_children=3,
+        )
+        timeout = plan["coordination"]["timeoutPolicy"]
+        direct = agent_for(plan, "direct")
+        self.assertEqual(direct["timeoutMs"], timeout["extendedStageTimeoutMs"])
+        self.assertLess(direct["timeoutMs"], timeout["totalTimeoutMs"])
+
     def test_selected_model_unavailable_is_explicitly_blocked(self) -> None:
         route = route_for("Implement a routine change")
         plan = build_desktop_plan(

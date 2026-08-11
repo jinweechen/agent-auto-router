@@ -77,6 +77,30 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertIn("~/.agents/plugins/marketplace.json", self.readme)
         self.assertIn("codex plugin remove agent-auto-router@personal", self.readme)
 
+    def test_desktop_lifecycle_and_change_reconciliation_are_documented(self) -> None:
+        skill = (ROOT / "skills" / "agent-auto-router" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        entrypoints = (
+            ROOT / "skills" / "agent-auto-router" / "references" / "entrypoints.md"
+        ).read_text(encoding="utf-8")
+        contract = (
+            ROOT / "skills" / "agent-auto-router" / "references" / "router-contract.md"
+        ).read_text(encoding="utf-8")
+        combined = "\n".join((skill, entrypoints, contract))
+        for required in (
+            "timed_out",
+            "orphaned",
+            "try/finally",
+            "authoritative terminal",
+            "parent-workdir",
+            "runChangedFileCount",
+            "interruptGraceTimeoutMs",
+            "total timeout",
+            "content-aware",
+        ):
+            self.assertIn(required, combined)
+
     def test_backend_qualified_model_ids_are_registered(self) -> None:
         registry = json.loads(MODEL_REGISTRY.read_text(encoding="utf-8"))
         registered = {model["id"] for model in registry["models"]}

@@ -6,7 +6,7 @@ A local, deterministic model-routing plugin and Skill for Codex, Claude Code, an
 
 Before execution, it selects a trusted model from task complexity, risk, constraint level, repository size, and reasoning effort, then produces either a direct-execution plan or a bounded multi-role orchestration plan. Routing itself makes no model call, does not change global Codex configuration, and never reads or forwards login credentials.
 
-Current project version: `0.7.0`.
+Current project version: `0.7.0+codex.20260811011327`.
 
 ## At a glance
 
