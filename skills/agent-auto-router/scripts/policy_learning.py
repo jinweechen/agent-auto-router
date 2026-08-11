@@ -8,10 +8,8 @@ import hashlib
 import itertools
 import json
 import math
-import os
 import re
 import sys
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -22,6 +20,16 @@ from benchmark_priors import (
     BenchmarkPriors,
     benchmark_priors_digest,
     load_benchmark_priors,
+)
+from control_plane_store import (
+    ControlPlanePaths,
+    append_jsonl as _append_jsonl,
+    atomic_write_json as _atomic_write_json,
+    canonical_digest as _canonical_digest,
+    commit_control_plane_transaction,
+    recover_pending_transaction,
+    resolve_control_plane_path,
+    utc_now,
 )
 
 from model_registry import (
@@ -108,43 +116,8 @@ FORBIDDEN_STORED_KEYS = {
 SAFE_ID_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 def default_feedback_path(state_dir: Path) -> Path:
-    return state_dir / "feedback.jsonl"
-
-
-def _canonical_digest(payload: dict[str, Any]) -> str:
-    data = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(data.encode("utf-8")).hexdigest()
-
-
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    try:
-        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=True, indent=2) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-
-
-def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-    with append_lock(path) as acquired:
-        if not acquired:
-            raise RuntimeError(f"timed out waiting to append router state: {path.name}")
-        with path.open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(line + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
+    return ControlPlanePaths(state_dir).feedback
 
 
 def _reject_sensitive_keys(value: Any, parent_key: str | None = None) -> None:
@@ -660,14 +633,15 @@ def build_candidate(
     return candidate
 
 
-def _archive_policy(state_dir: Path, policy: RoutingPolicy, reason: str) -> Path:
+def prepare_policy_archive(
+    state_dir: Path, policy: RoutingPolicy, reason: str
+) -> tuple[Path, dict[str, Any]]:
     payload = policy_to_dict(policy)
     payload["archivedAt"] = utc_now()
     payload["archiveReason"] = reason
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    path = state_dir / "history" / f"{stamp}-{policy_digest(policy)[:12]}.json"
-    _atomic_write_json(path, payload)
-    return path
+    path = ControlPlanePaths(state_dir).history / f"{stamp}-{policy_digest(policy)[:12]}.json"
+    return path, payload
 
 
 def _approve_candidate_unlocked(
@@ -677,6 +651,7 @@ def _approve_candidate_unlocked(
     feedback_path: Path | None = None,
     registry: ModelRegistry | None = None,
 ) -> dict[str, Any]:
+    recover_pending_transaction(state_dir)
     active_registry = registry or DEFAULT_REGISTRY
     candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
     if not isinstance(candidate, dict) or candidate.get("schemaVersion") != CANDIDATE_SCHEMA_VERSION:
@@ -724,14 +699,13 @@ def _approve_candidate_unlocked(
     for key in ("evaluation", "safetyChecks", "eligibleForApproval"):
         if candidate.get(key) != rebuilt.get(key):
             raise ValueError(f"candidate {key} failed live revalidation")
-    archived = _archive_policy(state_dir, current, "approval")
+    archived, archived_payload = prepare_policy_archive(state_dir, current, "approval")
     active_payload = policy_to_dict(next_policy)
     active_payload["activation"] = {
         "activatedAt": utc_now(),
         "approvedBy": approved_by,
         "candidateId": candidate_id,
     }
-    _atomic_write_json(state_dir / "active-policy.json", active_payload)
     audit = {
         "eventType": "policy_approved",
         "recordedAt": utc_now(),
@@ -741,7 +715,16 @@ def _approve_candidate_unlocked(
         "toDigest": policy_digest(next_policy),
         "rollbackSnapshot": str(archived),
     }
-    _append_jsonl(state_dir / "audit.jsonl", audit)
+    transaction_id = commit_control_plane_transaction(
+        state_dir,
+        operation="manual-approval",
+        writes=(
+            (archived, archived_payload),
+            (ControlPlanePaths(state_dir).active_policy, active_payload),
+        ),
+        audit_events=(audit,),
+    )
+    audit["transactionId"] = transaction_id
     return audit
 
 
@@ -765,8 +748,10 @@ def approve_candidate(
 
 
 def _rollback_policy_unlocked(state_dir: Path, approved_by: str) -> dict[str, Any]:
+    recover_pending_transaction(state_dir)
     current, _ = load_active_policy(state_dir)
-    history_dir = state_dir / "history"
+    paths = ControlPlanePaths(state_dir)
+    history_dir = resolve_control_plane_path(state_dir, paths.history)
     choices: list[tuple[str, Path, RoutingPolicy]] = []
     for path in history_dir.glob("*.json") if history_dir.is_dir() else []:
         policy = policy_from_dict(json.loads(path.read_text(encoding="utf-8")))
@@ -775,7 +760,7 @@ def _rollback_policy_unlocked(state_dir: Path, approved_by: str) -> dict[str, An
     if not choices:
         raise ValueError("no previous policy version is available for rollback")
     _, selected_path, previous = sorted(choices, reverse=True)[0]
-    archived = _archive_policy(state_dir, current, "rollback")
+    archived, archived_payload = prepare_policy_archive(state_dir, current, "rollback")
     active_payload = policy_to_dict(previous)
     active_payload["activation"] = {
         "activatedAt": utc_now(),
@@ -783,7 +768,6 @@ def _rollback_policy_unlocked(state_dir: Path, approved_by: str) -> dict[str, An
         "rollbackFromDigest": policy_digest(current),
         "rollbackSource": str(selected_path),
     }
-    _atomic_write_json(state_dir / "active-policy.json", active_payload)
     audit = {
         "eventType": "policy_rolled_back",
         "recordedAt": utc_now(),
@@ -792,7 +776,13 @@ def _rollback_policy_unlocked(state_dir: Path, approved_by: str) -> dict[str, An
         "toDigest": policy_digest(previous),
         "archivedPolicy": str(archived),
     }
-    _append_jsonl(state_dir / "audit.jsonl", audit)
+    transaction_id = commit_control_plane_transaction(
+        state_dir,
+        operation="manual-rollback",
+        writes=((archived, archived_payload), (paths.active_policy, active_payload)),
+        audit_events=(audit,),
+    )
+    audit["transactionId"] = transaction_id
     return audit
 
 

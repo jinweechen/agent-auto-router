@@ -77,6 +77,13 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertIn("~/.agents/plugins/marketplace.json", self.readme)
         self.assertIn("codex plugin remove agent-auto-router@personal", self.readme)
 
+    def test_model_consuming_benchmarks_are_separate_from_the_skill(self) -> None:
+        for readme in (self.readme, self.chinese_readme):
+            self.assertIn("[benchmarks/](benchmarks/README.md)", readme)
+            self.assertIn("`--route-only`", readme)
+        self.assertFalse((SCRIPT_DIR / "codex_cli_orchestration_eval.py").exists())
+        self.assertFalse((SCRIPT_DIR / "eval_cases.json").exists())
+
     def test_desktop_lifecycle_and_change_reconciliation_are_documented(self) -> None:
         skill = (ROOT / "skills" / "agent-auto-router" / "SKILL.md").read_text(
             encoding="utf-8"

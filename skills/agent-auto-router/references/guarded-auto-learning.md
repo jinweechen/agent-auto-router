@@ -42,6 +42,8 @@ The state directory and any custom feedback file are protected control-plane inp
 
 Guarded lifecycle transitions, manual approval/rollback, and configuration changes share one bounded operating-system file lock. Feedback and audit JSONL streams use their own bounded append locks. The operating system releases an active lock when a process exits, so an abandoned `.guarded-auto.lock` file is inert rather than a permanent `busy` state.
 
+Related policy, lifecycle, history, candidate, configuration, and audit mutations use a write-ahead control-plane transaction. A prepared transaction is replayable, audit events carry an idempotent transaction ID, and a revision marker is committed only after every target write succeeds. Route reads fail closed while a prepared transaction remains; the next locked configure, cycle, approval, rollback, or status operation completes recovery. Corrupted journals are preserved for inspection rather than discarded.
+
 ## Enable, inspect, and disable
 
 ```powershell

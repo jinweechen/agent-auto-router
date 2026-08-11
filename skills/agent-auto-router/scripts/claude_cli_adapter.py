@@ -5,14 +5,13 @@ import os
 import pathlib
 import shutil
 import subprocess
-import threading
 import time
 from typing import Any, Callable
 
+from cli_adapter_base import BaseCliAdapter
+from execution_policy import WRITE_ROLES
+from execution_types import CallRecord, RunContext
 from host_permissions import HostPermissions
-
-from execution_policy import ExecutionPolicy, WRITE_ROLES
-from orchestration_engine import CallRecord, RunContext
 
 
 def extract_claude_usage(payload: dict[str, Any]) -> dict[str, int]:
@@ -57,7 +56,7 @@ def parse_claude_json_output(raw: str) -> dict[str, Any]:
     raise ValueError("No JSON object found in Claude CLI output")
 
 
-class ClaudeCliAdapter:
+class ClaudeCliAdapter(BaseCliAdapter):
     """Claude Code CLI backend implementation of ExecutionAdapter."""
 
     def __init__(
@@ -77,53 +76,23 @@ class ClaudeCliAdapter:
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         host_permissions: HostPermissions | None = None,
     ) -> None:
-        if total_timeout_seconds is not None and total_timeout_seconds < 1:
-            raise ValueError("total_timeout_seconds must be at least 1")
-        if max_model_calls is not None and max_model_calls < 1:
-            raise ValueError("max_model_calls must be at least 1")
-        if max_total_tokens is not None and max_total_tokens < 1:
-            raise ValueError("max_total_tokens must be at least 1")
-        self.timeout_seconds = timeout_seconds
-        self.effort_override = effort_override
-        self.role_efforts = role_efforts or {}
-        self.workdir = workdir.resolve()
-        self.execution_mode = execution_mode
+        super().__init__(
+            timeout_seconds=timeout_seconds,
+            effort_override=effort_override,
+            role_efforts=role_efforts,
+            workdir=workdir,
+            execution_mode=execution_mode,
+            write_sandbox=write_sandbox,
+            total_timeout_seconds=total_timeout_seconds,
+            max_model_calls=max_model_calls,
+            max_total_tokens=max_total_tokens,
+            progress_callback=progress_callback,
+            host_permissions=host_permissions,
+        )
         self.max_turns = max_turns
         self.allowed_tools = allowed_tools
         self.model_map = model_map if model_map is not None else {}
-        self.total_timeout_seconds = total_timeout_seconds
-        self.max_model_calls = max_model_calls
-        self.max_total_tokens = max_total_tokens
-        self.progress_callback = progress_callback
-        self.host_permissions = host_permissions
-        self.policy = ExecutionPolicy(execution_mode, write_sandbox=write_sandbox)
-        self.started_at = time.monotonic()
-        self.calls_started = 0
-        self._call_lock = threading.Lock()
-        self._call_reservations: dict[int, int] = {}
-        self._token_lock = threading.Lock()
-        self.usage_events_observed = 0
-        self.observed_input_tokens = 0
-        self.observed_cached_input_tokens = 0
-        self.observed_output_tokens = 0
-        self.observed_reasoning_output_tokens = 0
         self.claude_command = self._resolve_claude_command()
-
-    def observed_usage(self) -> dict[str, int] | None:
-        with self._token_lock:
-            if self.usage_events_observed == 0:
-                return None
-            input_tokens = self.observed_input_tokens
-            cached_input_tokens = self.observed_cached_input_tokens
-            output_tokens = self.observed_output_tokens
-            reasoning_output_tokens = self.observed_reasoning_output_tokens
-        return {
-            "input_tokens": input_tokens,
-            "cached_input_tokens": cached_input_tokens,
-            "output_tokens": output_tokens,
-            "reasoning_output_tokens": reasoning_output_tokens,
-            "total_tokens": input_tokens + output_tokens,
-        }
 
     @staticmethod
     def _resolve_claude_command() -> list[str]:
@@ -178,14 +147,6 @@ class ClaudeCliAdapter:
     def _normalize_effort(self, effort: str) -> str:
         return "low" if effort == "none" else effort
 
-    def effective_effort(self, role: str, requested: str) -> str:
-        role_key = "worker" if role.startswith("worker:") else role
-        return (
-            self.effort_override
-            or self.role_efforts.get(role_key)
-            or ("high" if requested == "max" else requested)
-        )
-
     def _allowed_tools_for_role(self, role: str) -> list[str]:
         if self.execution_mode and role in WRITE_ROLES:
             return list(self.allowed_tools)
@@ -221,58 +182,6 @@ class ClaudeCliAdapter:
             ]
         return [*argv, "--permission-mode", "default"]
 
-    def reserve_call(self, role: str, projected_tokens: int = 0) -> int:
-        with self._call_lock:
-            with self._token_lock:
-                observed_total = self.observed_input_tokens + self.observed_output_tokens
-            reserved_total = sum(self._call_reservations.values())
-            if (
-                self.max_total_tokens is not None
-                and observed_total >= self.max_total_tokens
-                and role not in WRITE_ROLES
-            ):
-                raise RuntimeError(
-                    f"Observed token budget exhausted before role={role}: "
-                    f"observed={observed_total}, max_total_tokens={self.max_total_tokens}"
-                )
-            if (
-                self.max_total_tokens is not None
-                and observed_total + reserved_total + max(0, projected_tokens)
-                > self.max_total_tokens
-                and role not in WRITE_ROLES
-            ):
-                raise RuntimeError(
-                    f"Projected token budget would be exceeded before role={role}: "
-                    f"observed={observed_total}, reserved={reserved_total}, "
-                    f"projected={projected_tokens}, "
-                    f"max_total_tokens={self.max_total_tokens}"
-                )
-            if self.max_model_calls is not None and self.calls_started >= self.max_model_calls:
-                raise RuntimeError(
-                    f"Model call budget exhausted before role={role}: "
-                    f"max_model_calls={self.max_model_calls}"
-                )
-            self.calls_started += 1
-            call_index = self.calls_started
-            self._call_reservations[call_index] = max(0, projected_tokens)
-            return call_index
-
-    def release_call_reservation(self, call_index: int) -> None:
-        with self._call_lock:
-            self._call_reservations.pop(call_index, None)
-
-    def remaining_timeout(self) -> float:
-        if self.total_timeout_seconds is None:
-            return float(self.timeout_seconds)
-        remaining = self.total_timeout_seconds - (time.monotonic() - self.started_at)
-        if remaining <= 0:
-            raise TimeoutError("Total orchestration timeout exhausted")
-        return min(float(self.timeout_seconds), remaining)
-
-    def emit_progress(self, event: dict[str, Any]) -> None:
-        if self.progress_callback is not None:
-            self.progress_callback(event)
-
     def create(
         self,
         *,
@@ -286,10 +195,11 @@ class ClaudeCliAdapter:
     ) -> tuple[str, dict[str, Any]]:
         effective_effort = self.effective_effort(role, effort)
         claude_model = self._resolve_model(model)
-        prompt = (
-            f"{self.policy.preamble_for_role(role)}\n\nWorkspace: {self.workdir}\n\n"
-            f"Keep the response within {max_output_tokens} tokens.\n\n"
-            f"INSTRUCTIONS:\n{instructions}\n\nINPUT:\n{input_text}"
+        prompt = self.build_prompt(
+            role=role,
+            instructions=instructions,
+            input_text=input_text,
+            max_output_tokens=max_output_tokens,
         )
         projected_tokens = max_output_tokens + max(1, len(prompt) // 4)
         call_index = self.reserve_call(role, projected_tokens)
@@ -388,13 +298,7 @@ class ClaudeCliAdapter:
                 f"Claude Code CLI produced no result for role={role}"
             )
         usage = extract_claude_usage(payload)
-        with self._token_lock:
-            self.usage_events_observed += 1
-            self.observed_input_tokens += usage["input_tokens"]
-            self.observed_cached_input_tokens += usage["cached_input_tokens"]
-            self.observed_output_tokens += usage["output_tokens"]
-            self.observed_reasoning_output_tokens += usage["reasoning_output_tokens"]
-            observed_total = self.observed_input_tokens + self.observed_output_tokens
+        observed_total = self.record_usage(usage)
         cost_usd = payload.get("total_cost_usd")
         cost_usd = cost_usd if isinstance(cost_usd, (int, float)) else None
         context.records.append(CallRecord(

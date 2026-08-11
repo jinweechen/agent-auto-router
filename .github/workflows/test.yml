@@ -37,7 +37,7 @@ jobs:
           $output = Join-Path $env:RUNNER_TEMP 'auto-router-eval.json'
           python './skills/agent-auto-router/scripts/evaluate_auto_router.py' --output $output
       - name: Compile Python sources
-        run: python -m compileall -q skills/agent-auto-router/scripts scripts tests
+        run: python -m compileall -q skills/agent-auto-router/scripts scripts benchmarks tests
       - name: Verify orchestrated dry run
         if: runner.os == 'Windows'
         shell: pwsh

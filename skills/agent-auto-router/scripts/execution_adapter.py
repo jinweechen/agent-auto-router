@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from orchestration_engine import RunContext
+from execution_types import RunContext
 
 
 @runtime_checkable

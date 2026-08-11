@@ -6,7 +6,7 @@ A local, deterministic model-routing plugin and Skill for Codex, Claude Code, an
 
 Before execution, it selects a trusted model from task complexity, risk, constraint level, repository size, and reasoning effort, then produces either a direct-execution plan or a bounded multi-role orchestration plan. Routing itself makes no model call, does not change global Codex configuration, and never reads or forwards login credentials.
 
-Current project version: `0.7.0+codex.20260811011327`.
+Current project version: `0.7.0+codex.20260811022119`.
 
 ## At a glance
 
@@ -434,6 +434,8 @@ python "./skills/agent-auto-router/scripts/evaluate_development_routes.py" `
 
 Input may contain only case ID, configuration, optional model and effort, external acceptance, optional tokens, duration, and retries. It must not contain prompts or outputs. The tool compares acceptance first and calculates a token delta only for matched cases where both configurations passed and both token counts are complete.
 
+Development benchmarks that make real CLI model calls live outside the installed package under [benchmarks/](benchmarks/README.md). They are not Skill runtime dependencies; set an explicit model-call budget and use an isolated workspace before running them. `--route-only` emits a routing report without a model call.
+
 ### Tests and validation
 
 ```powershell
@@ -444,7 +446,7 @@ python "./scripts/validate_skill.py"
 python "./scripts/validate_plugin.py"
 $pluginTestHome = Join-Path $env:TEMP "agent-auto-router-plugin-test"
 python "./scripts/install_personal_plugin.py" --home "$pluginTestHome" --skip-codex-install
-python -m compileall -q skills/agent-auto-router/scripts scripts tests
+python -m compileall -q skills/agent-auto-router/scripts scripts benchmarks tests
 ```
 
 The repository's `validate_skill.py` does not depend on a personal Codex installation path, so it works on ordinary development machines and in CI. If the current Codex environment has the system `skill-creator` installed, you can additionally run its official validator:
@@ -461,6 +463,7 @@ CI runs the core suite on Windows and Ubuntu with Python 3.10 and 3.12. Windows 
 ```text
 .
 ├── .codex-plugin/plugin.json      # Codex plugin manifest
+├── benchmarks/                    # Development evaluation tools excluded from the Skill
 ├── scripts/
 │   ├── install_personal_plugin.py # Personal marketplace installer
 │   ├── validate_plugin.py         # Portable plugin validator

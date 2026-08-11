@@ -4,32 +4,26 @@ import argparse
 import datetime as dt
 import json
 import pathlib
+import sys
 import time
 from typing import Any
 
-from auto_router import route_case
-from codex_cli_adapter import CodexCliAdapter
-from orchestration_engine import (
-    CallRecord,
-    DEFAULT_CASES,
-    RunContext,
-    run_variant,
-)
-
-
 ROOT = pathlib.Path(__file__).resolve().parent
+SKILL_SCRIPTS = ROOT.parent / "skills" / "agent-auto-router" / "scripts"
+sys.path.insert(0, str(SKILL_SCRIPTS))
+
+from auto_router import route_case
+from cli_arguments import positive_int
+from codex_cli_adapter import CodexCliAdapter
+from orchestration_engine import run_variant
 
 
-def positive_int(value: str) -> int:
-    parsed = int(value)
-    if parsed < 1:
-        raise argparse.ArgumentTypeError("value must be at least 1")
-    return parsed
+DEFAULT_CASES = ROOT / "eval_cases.json"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Evaluate Sol/Terra/Luna through the signed-in Codex CLI"
+        description="Evaluate deterministic routes through the signed-in Codex CLI"
     )
     parser.add_argument("--cases", type=pathlib.Path, default=DEFAULT_CASES)
     parser.add_argument("--variants", default="B,C")
@@ -55,12 +49,12 @@ def parse_args() -> argparse.Namespace:
         "--routing-mode",
         choices=("off", "intelligence", "balance", "cost"),
         default="off",
-        help="Select a deterministic Auto Lite routing policy",
+        help="Select a deterministic routing policy",
     )
     parser.add_argument(
         "--shadow-auto",
         action="store_true",
-        help="Record the Auto Lite recommendation without changing selected variants",
+        help="Record the Auto recommendation without changing selected variants",
     )
     parser.add_argument(
         "--explain-route",
@@ -70,7 +64,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--route-only",
         action="store_true",
-        help="Write Auto Lite route decisions without launching Codex model calls",
+        help="Write route decisions without launching Codex model calls",
     )
     return parser.parse_args()
 
@@ -104,7 +98,7 @@ def main() -> int:
             json.dumps(
                 {
                     "created_at": timestamp,
-                    "router_version": "auto-lite-v1",
+                    "router_version": route_results[0]["routing"]["router_version"],
                     "mode": route_mode,
                     "model_calls": 0,
                     "results": route_results,
@@ -165,7 +159,7 @@ def main() -> int:
             case_variants = [route_decision["variant"]]
         if route_decision and args.explain_route:
             print(
-                f"Auto Lite mode={route_mode} route={route_decision['route']} "
+                f"Auto mode={route_mode} route={route_decision['route']} "
                 f"variant={route_decision['variant']} reasons="
                 + "; ".join(route_decision["reasons"]),
                 flush=True,

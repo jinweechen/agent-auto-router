@@ -344,11 +344,18 @@ class PolicyLearningTests(unittest.TestCase):
             active, _ = load_active_policy(state_dir)
             self.assertEqual(active.balance_frontier_threshold, 4)
             self.assertEqual(approval["eventType"], "policy_approved")
+            self.assertRegex(approval["transactionId"], r"^[a-f0-9]{32}$")
 
             rollback = rollback_policy(state_dir, "unit-test")
             restored, _ = load_active_policy(state_dir)
             self.assertEqual(restored, RoutingPolicy())
             self.assertEqual(rollback["eventType"], "policy_rolled_back")
+            self.assertRegex(rollback["transactionId"], r"^[a-f0-9]{32}$")
+            audit_events = [
+                json.loads(line)
+                for line in (state_dir / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(len({event["transactionId"] for event in audit_events}), 2)
 
     def test_ineligible_candidate_cannot_be_approved(self) -> None:
         samples = [labeled_sample(f"route-{index}") for index in range(24)]

@@ -14,21 +14,28 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from benchmark_priors import benchmark_priors_digest, load_benchmark_priors
+from control_plane_store import (
+    ControlPlaneRecoveryRequired,
+    ControlPlanePaths,
+    atomic_write_json,
+    canonical_digest,
+    commit_control_plane_transaction,
+    control_plane_revision,
+    recover_pending_transaction,
+    resolve_control_plane_path,
+    utc_now,
+)
 from host_permissions import HostPermissions, parse_host_permissions
 from model_registry import TIER_RANK, ModelRegistry, load_model_registry, registry_digest
 from policy_learning import (
     SAFE_ID_PATTERN,
-    _append_jsonl,
-    _archive_policy,
-    _atomic_write_json,
-    _canonical_digest,
     append_label_event,
     append_route_event,
     build_candidate,
     default_feedback_path,
     labeled_samples,
+    prepare_policy_archive,
     read_feedback,
-    utc_now,
 )
 from routing_policy import (
     DEFAULT_STATE_DIR,
@@ -66,15 +73,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 
 def _config_path(state_dir: Path) -> Path:
-    return state_dir / "guarded-auto-config.json"
+    return ControlPlanePaths(state_dir).config
 
 
 def _state_path(state_dir: Path) -> Path:
-    return state_dir / "guarded-auto-state.json"
-
-
-def _audit_path(state_dir: Path) -> Path:
-    return state_dir / "audit.jsonl"
+    return ControlPlanePaths(state_dir).lifecycle
 
 
 def _bounded_int(value: Any, name: str, minimum: int, maximum: int) -> int:
@@ -131,13 +134,20 @@ def validate_config(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_config(state_dir: Path) -> dict[str, Any]:
-    path = _config_path(state_dir)
+    revision_before = control_plane_revision(state_dir)
+    path = resolve_control_plane_path(state_dir, _config_path(state_dir))
     if not path.is_file():
-        return dict(DEFAULT_CONFIG)
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError("guarded-auto config must be an object")
-    return validate_config(payload)
+        result = dict(DEFAULT_CONFIG)
+    else:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("guarded-auto config must be an object")
+        result = validate_config(payload)
+    if control_plane_revision(state_dir) != revision_before:
+        raise ControlPlaneRecoveryRequired(
+            "routing control plane changed while reading guarded-auto config"
+        )
+    return result
 
 
 def _path_is_within(path: Path, root: Path) -> bool:
@@ -185,6 +195,7 @@ def _configure_unlocked(
     minimum_probation_reports: int = 20,
     maximum_failure_rate_increase: float = 0.05,
 ) -> dict[str, Any]:
+    recover_pending_transaction(state_dir)
     payload = validate_config({
         "schemaVersion": CONFIG_SCHEMA_VERSION,
         "mode": mode,
@@ -201,8 +212,13 @@ def _configure_unlocked(
         state = load_state(state_dir)
         if state.get("status") == "probation":
             _restore_snapshot(
-                state_dir, state, "guarded-auto-disabled-during-probation"
+                state_dir,
+                state,
+                "guarded-auto-disabled-during-probation",
+                next_state=_idle_state("guarded-auto-disabled"),
+                extra_writes=((_config_path(state_dir), payload),),
             )
+            return payload
         elif state.get("status") == "canary":
             event = {
                 "eventType": "policy_auto_cancelled",
@@ -210,9 +226,21 @@ def _configure_unlocked(
                 "reason": "guarded-auto-disabled",
                 "candidateId": state.get("candidateId"),
             }
-            _append_jsonl(_audit_path(state_dir), event)
-            _atomic_write_json(_state_path(state_dir), _idle_state("guarded-auto-disabled"))
-    _atomic_write_json(_config_path(state_dir), payload)
+            commit_control_plane_transaction(
+                state_dir,
+                operation="guarded-disable-canary",
+                writes=(
+                    (_state_path(state_dir), _idle_state("guarded-auto-disabled")),
+                    (_config_path(state_dir), payload),
+                ),
+                audit_events=(event,),
+            )
+            return payload
+    commit_control_plane_transaction(
+        state_dir,
+        operation="guarded-configure",
+        writes=((_config_path(state_dir), payload),),
+    )
     return payload
 
 
@@ -265,15 +293,22 @@ def _idle_state(
 
 
 def load_state(state_dir: Path) -> dict[str, Any]:
-    path = _state_path(state_dir)
+    revision_before = control_plane_revision(state_dir)
+    path = resolve_control_plane_path(state_dir, _state_path(state_dir))
     if not path.is_file():
-        return _idle_state()
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict) or payload.get("schemaVersion") != STATE_SCHEMA_VERSION:
-        raise ValueError("unsupported guarded-auto state")
-    if payload.get("status") not in {"idle", "canary", "probation"}:
-        raise ValueError("invalid guarded-auto lifecycle state")
-    return payload
+        result = _idle_state()
+    else:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("schemaVersion") != STATE_SCHEMA_VERSION:
+            raise ValueError("unsupported guarded-auto state")
+        if payload.get("status") not in {"idle", "canary", "probation"}:
+            raise ValueError("invalid guarded-auto lifecycle state")
+        result = payload
+    if control_plane_revision(state_dir) != revision_before:
+        raise ControlPlaneRecoveryRequired(
+            "routing control plane changed while reading guarded-auto state"
+        )
+    return result
 
 
 def _timestamp(value: Any) -> datetime:
@@ -379,7 +414,7 @@ def _candidate_is_intact(candidate: dict[str, Any]) -> bool:
     candidate_id = candidate.get("candidateId")
     unsigned = dict(candidate)
     unsigned.pop("candidateId", None)
-    return isinstance(candidate_id, str) and candidate_id == _canonical_digest(unsigned)
+    return isinstance(candidate_id, str) and candidate_id == canonical_digest(unsigned)
 
 
 def _write_guarded_candidate(
@@ -388,8 +423,6 @@ def _write_guarded_candidate(
     base_policy: RoutingPolicy,
     config: dict[str, Any],
     registry: ModelRegistry,
-    *,
-    write: bool = True,
 ) -> tuple[dict[str, Any], Path]:
     candidate = build_candidate(
         samples,
@@ -414,10 +447,8 @@ def _write_guarded_candidate(
         "storesTaskText": False,
     }
     candidate.pop("candidateId", None)
-    candidate["candidateId"] = _canonical_digest(candidate)
+    candidate["candidateId"] = canonical_digest(candidate)
     path = state_dir / "candidates" / f"guarded-{candidate['candidateId'][:16]}.json"
-    if write:
-        _atomic_write_json(path, candidate)
     return candidate, path
 
 
@@ -442,20 +473,32 @@ def _start_canary(
         "basePolicyDigest": policy_digest(base_policy),
         "canaryPercent": int(config["canaryPercent"]),
     }
-    _atomic_write_json(_state_path(state_dir), state)
-    _append_jsonl(_audit_path(state_dir), {
+    audit = {
         "eventType": "policy_auto_canary_started",
         "recordedAt": started_at,
         "candidateId": candidate["candidateId"],
         "basePolicyDigest": state["basePolicyDigest"],
         "candidatePolicyDigest": state["candidatePolicyDigest"],
         "canaryPercent": state["canaryPercent"],
-    })
+    }
+    commit_control_plane_transaction(
+        state_dir,
+        operation="guarded-canary-start",
+        writes=((candidate_path, candidate), (_state_path(state_dir), state)),
+        audit_events=(audit,),
+    )
     return state
 
 
-def _load_state_candidate(state: dict[str, Any]) -> dict[str, Any]:
-    path = Path(str(state.get("candidatePath", "")))
+def _load_state_candidate(state_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
+    candidate_root = resolve_control_plane_path(
+        state_dir, ControlPlanePaths(state_dir).candidates
+    )
+    path = resolve_control_plane_path(
+        state_dir, Path(str(state.get("candidatePath", "")))
+    )
+    if path.parent != candidate_root or not path.is_file():
+        raise ValueError("guarded-auto candidate path is outside the candidate directory")
     candidate = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(candidate, dict) or not _candidate_is_intact(candidate):
         raise ValueError("guarded-auto candidate integrity check failed")
@@ -476,15 +519,16 @@ def _activate_candidate(
     baseline_stats: dict[str, Any],
 ) -> dict[str, Any]:
     candidate_policy = _candidate_policy(candidate)
-    archived = _archive_policy(state_dir, base_policy, "guarded-auto-promotion")
+    archived, archived_payload = prepare_policy_archive(
+        state_dir, base_policy, "guarded-auto-promotion"
+    )
+    started_at = utc_now()
     active_payload = policy_to_dict(candidate_policy)
     active_payload["activation"] = {
-        "activatedAt": utc_now(),
+        "activatedAt": started_at,
         "activationMode": "guarded-auto",
         "candidateId": candidate["candidateId"],
     }
-    _atomic_write_json(state_dir / "active-policy.json", active_payload)
-    started_at = utc_now()
     next_state = {
         "schemaVersion": STATE_SCHEMA_VERSION,
         "status": "probation",
@@ -497,44 +541,80 @@ def _activate_candidate(
         "basePolicySnapshot": str(archived.resolve()),
         "baselineFailureRate": baseline_stats.get("failureRate"),
     }
-    _atomic_write_json(_state_path(state_dir), next_state)
-    _append_jsonl(_audit_path(state_dir), {
+    audit = {
         "eventType": "policy_auto_promoted",
         "recordedAt": started_at,
         "candidateId": candidate["candidateId"],
         "fromDigest": policy_digest(base_policy),
         "toDigest": policy_digest(candidate_policy),
         "rollbackSnapshot": str(archived.resolve()),
-    })
+    }
+    commit_control_plane_transaction(
+        state_dir,
+        operation="guarded-promotion",
+        writes=(
+            (archived, archived_payload),
+            (ControlPlanePaths(state_dir).active_policy, active_payload),
+            (_state_path(state_dir), next_state),
+        ),
+        audit_events=(audit,),
+    )
     return next_state
 
 
-def _restore_snapshot(state_dir: Path, state: dict[str, Any], reason: str) -> dict[str, Any]:
+def _restore_snapshot(
+    state_dir: Path,
+    state: dict[str, Any],
+    reason: str,
+    *,
+    next_state: dict[str, Any] | None = None,
+    extra_writes: Iterable[tuple[Path, dict[str, Any]]] = (),
+) -> dict[str, Any]:
+    recover_pending_transaction(state_dir)
+    paths = ControlPlanePaths(state_dir)
     current, _ = load_active_policy(state_dir)
-    snapshot_path = Path(str(state.get("basePolicySnapshot", "")))
+    history_root = resolve_control_plane_path(state_dir, paths.history)
+    snapshot_path = resolve_control_plane_path(
+        state_dir, Path(str(state.get("basePolicySnapshot", "")))
+    )
+    if snapshot_path.parent != history_root or not snapshot_path.is_file():
+        raise ValueError("guarded-auto rollback snapshot is outside the policy history")
     snapshot_payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
     if not isinstance(snapshot_payload, dict):
         raise ValueError("guarded-auto rollback snapshot is invalid")
     previous = policy_from_dict(snapshot_payload)
-    _archive_policy(state_dir, current, "guarded-auto-rollback")
+    archived, archived_payload = prepare_policy_archive(
+        state_dir, current, "guarded-auto-rollback"
+    )
+    recorded_at = utc_now()
     active_payload = policy_to_dict(previous)
     active_payload["activation"] = {
-        "activatedAt": utc_now(),
+        "activatedAt": recorded_at,
         "activationMode": "guarded-auto-rollback",
         "candidateId": state.get("candidateId"),
         "reason": reason,
     }
-    _atomic_write_json(state_dir / "active-policy.json", active_payload)
     event = {
         "eventType": "policy_auto_rolled_back",
-        "recordedAt": utc_now(),
+        "recordedAt": recorded_at,
         "candidateId": state.get("candidateId"),
         "fromDigest": policy_digest(current),
         "toDigest": policy_digest(previous),
         "reason": reason,
     }
-    _append_jsonl(_audit_path(state_dir), event)
-    _atomic_write_json(_state_path(state_dir), _idle_state(reason))
+    writes: list[tuple[Path, dict[str, Any]]] = [
+        (archived, archived_payload),
+        (paths.active_policy, active_payload),
+        (_state_path(state_dir), next_state or _idle_state(reason)),
+    ]
+    writes.extend(extra_writes)
+    transaction_id = commit_control_plane_transaction(
+        state_dir,
+        operation="guarded-rollback",
+        writes=writes,
+        audit_events=(event,),
+    )
+    event["transactionId"] = transaction_id
     return event
 
 
@@ -579,24 +659,26 @@ def _cycle_unlocked(
             active_policy,
             config,
             registry,
-            write=not dry_run,
         )
         if not candidate.get("eligibleForAutoCanary"):
             if not dry_run:
-                _atomic_write_json(
-                    _state_path(state_dir),
-                    _idle_state(
-                        "candidate-rejected",
-                        last_evaluated_signals=len(samples),
-                        last_candidate_id=str(candidate["candidateId"]),
-                    ),
+                rejected_state = _idle_state(
+                    "candidate-rejected",
+                    last_evaluated_signals=len(samples),
+                    last_candidate_id=str(candidate["candidateId"]),
                 )
-                _append_jsonl(_audit_path(state_dir), {
+                audit = {
                     "eventType": "policy_auto_candidate_rejected",
                     "recordedAt": utc_now(),
                     "candidateId": candidate["candidateId"],
                     "signals": len(samples),
-                })
+                }
+                commit_control_plane_transaction(
+                    state_dir,
+                    operation="guarded-candidate-reject",
+                    writes=((path, candidate), (_state_path(state_dir), rejected_state)),
+                    audit_events=(audit,),
+                )
             return {
                 "status": "candidate-rejected",
                 "action": "would-reject" if dry_run else "rejected",
@@ -616,7 +698,7 @@ def _cycle_unlocked(
         next_state = _start_canary(state_dir, active_policy, candidate, path, config)
         return {"status": "canary", "action": "started", "state": next_state, "modelCalls": 0}
 
-    candidate = _load_state_candidate(state)
+    candidate = _load_state_candidate(state_dir, state)
     priors = load_benchmark_priors(registry=registry)
     if candidate.get("modelRegistryDigest") != registry_digest(registry):
         raise ValueError("guarded-auto candidate is stale because the registry changed")
@@ -648,14 +730,18 @@ def _cycle_unlocked(
                 "evaluation": summary,
             }
             if not dry_run:
-                _append_jsonl(_audit_path(state_dir), event)
-                _atomic_write_json(
-                    _state_path(state_dir),
-                    _idle_state(
-                        event["reason"],
-                        last_evaluated_signals=len(learning_samples(events, registry)),
-                        last_candidate_id=str(candidate["candidateId"]),
-                    ),
+                commit_control_plane_transaction(
+                    state_dir,
+                    operation="guarded-canary-reject",
+                    writes=((
+                        _state_path(state_dir),
+                        _idle_state(
+                            event["reason"],
+                            last_evaluated_signals=len(learning_samples(events, registry)),
+                            last_candidate_id=str(candidate["candidateId"]),
+                        ),
+                    ),),
+                    audit_events=(event,),
                 )
             return {"status": "canary-rejected", "action": "would-reject" if dry_run else "rejected", "evaluation": summary, "modelCalls": 0}
         if dry_run:
@@ -677,10 +763,11 @@ def _cycle_unlocked(
     if regression:
         if dry_run:
             return {"status": "dry-run", "action": "would-rollback", "evaluation": probation, "modelCalls": 0}
-        event = _restore_snapshot(state_dir, state, "probation-failure-rate-regression")
-        _atomic_write_json(
-            _state_path(state_dir),
-            _idle_state(
+        event = _restore_snapshot(
+            state_dir,
+            state,
+            "probation-failure-rate-regression",
+            next_state=_idle_state(
                 "probation-failure-rate-regression",
                 last_evaluated_signals=len(learning_samples(events, registry)),
                 last_candidate_id=str(candidate["candidateId"]),
@@ -695,14 +782,18 @@ def _cycle_unlocked(
         "evaluation": probation,
     }
     if not dry_run:
-        _append_jsonl(_audit_path(state_dir), event)
-        _atomic_write_json(
-            _state_path(state_dir),
-            _idle_state(
-                "probation-passed",
-                last_evaluated_signals=len(learning_samples(events, registry)),
-                last_candidate_id=str(candidate["candidateId"]),
-            ),
+        commit_control_plane_transaction(
+            state_dir,
+            operation="guarded-stabilize",
+            writes=((
+                _state_path(state_dir),
+                _idle_state(
+                    "probation-passed",
+                    last_evaluated_signals=len(learning_samples(events, registry)),
+                    last_candidate_id=str(candidate["candidateId"]),
+                ),
+            ),),
+            audit_events=(event,),
         )
     return {"status": "stable", "action": "would-stabilize" if dry_run else "stabilized", "evaluation": probation, "modelCalls": 0}
 
@@ -718,6 +809,7 @@ def run_cycle(
     with control_plane_lock(state_dir) as acquired:
         if not acquired:
             return {"status": "busy", "action": "none", "modelCalls": 0}
+        recover_pending_transaction(state_dir)
         return _cycle_unlocked(
             state_dir,
             feedback_path or default_feedback_path(state_dir),
@@ -822,7 +914,10 @@ def ingest_execution_report(
     report_id, host, route_payload, preferred, status = _execution_report_to_route_payload(
         payload, active_registry
     )
-    marker = state_dir / "reports" / f"{hashlib.sha256(report_id.encode('utf-8')).hexdigest()}.json"
+    reports = resolve_control_plane_path(state_dir, ControlPlanePaths(state_dir).reports)
+    marker = reports / (
+        f"{hashlib.sha256(report_id.encode('utf-8')).hexdigest()}.json"
+    )
     marker.parent.mkdir(parents=True, exist_ok=True)
     try:
         descriptor = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -860,13 +955,13 @@ def ingest_execution_report(
         cycle = process_recorded_outcome(state_dir, target_feedback, registry=active_registry)
         normalized_marker["state"] = "recorded"
         normalized_marker["completedAt"] = utc_now()
-        _atomic_write_json(marker, normalized_marker)
+        atomic_write_json(marker, normalized_marker)
         return {"status": "recorded", "reportId": report_id, "event": event, "guardedAuto": cycle, "modelCalls": 0}
     except Exception as exc:
         if route_recorded:
             normalized_marker["state"] = "incomplete"
             normalized_marker["errorType"] = type(exc).__name__
-            _atomic_write_json(marker, normalized_marker)
+            atomic_write_json(marker, normalized_marker)
         else:
             try:
                 marker.unlink()
@@ -876,24 +971,33 @@ def ingest_execution_report(
 
 
 def status(state_dir: Path, feedback_path: Path | None = None) -> dict[str, Any]:
-    events = read_feedback(feedback_path or default_feedback_path(state_dir))
-    registry = load_model_registry()
-    samples = learning_samples(events, registry)
-    active, source = load_active_policy(state_dir)
-    return {
-        "schemaVersion": STATE_SCHEMA_VERSION,
-        "config": load_config(state_dir),
-        "lifecycle": load_state(state_dir),
-        "activePolicy": policy_to_dict(active),
-        "activePolicyDigest": policy_digest(active),
-        "activePolicySource": source,
-        "learningSignals": len(samples),
-        "humanLabels": sum(sample.get("labelSource") != "verified-tier-escalation" for sample in samples),
-        "verifiedTierEscalations": sum(sample.get("labelSource") == "verified-tier-escalation" for sample in samples),
-        "executionReports": len(list((state_dir / "reports").glob("*.json"))) if (state_dir / "reports").is_dir() else 0,
-        "storesTaskText": False,
-        "modelCalls": 0,
-    }
+    with control_plane_lock(state_dir, timeout_seconds=5) as acquired:
+        if not acquired:
+            raise RuntimeError("routing control plane is busy")
+        recover_pending_transaction(state_dir)
+        events = read_feedback(feedback_path or default_feedback_path(state_dir))
+        registry = load_model_registry()
+        samples = learning_samples(events, registry)
+        active, source = load_active_policy(state_dir)
+        reports = resolve_control_plane_path(state_dir, ControlPlanePaths(state_dir).reports)
+        return {
+            "schemaVersion": STATE_SCHEMA_VERSION,
+            "config": load_config(state_dir),
+            "lifecycle": load_state(state_dir),
+            "activePolicy": policy_to_dict(active),
+            "activePolicyDigest": policy_digest(active),
+            "activePolicySource": source,
+            "learningSignals": len(samples),
+            "humanLabels": sum(
+                sample.get("labelSource") != "verified-tier-escalation" for sample in samples
+            ),
+            "verifiedTierEscalations": sum(
+                sample.get("labelSource") == "verified-tier-escalation" for sample in samples
+            ),
+            "executionReports": len(list(reports.glob("*.json"))) if reports.is_dir() else 0,
+            "storesTaskText": False,
+            "modelCalls": 0,
+        }
 
 
 def main() -> int:
@@ -958,12 +1062,21 @@ def main() -> int:
             result = ingest_execution_report(payload, args.state_dir, args.feedback_file)
         elif args.command == "check-boundary":
             permissions = parse_host_permissions(args.host_permissions_json)
-            issue = learning_boundary_issue(
-                args.state_dir,
-                args.feedback_file,
-                permissions,
-                args.requested_sandbox,
-            )
+            try:
+                issue = learning_boundary_issue(
+                    args.state_dir,
+                    args.feedback_file,
+                    permissions,
+                    args.requested_sandbox,
+                )
+            except ControlPlaneRecoveryRequired as exc:
+                print(json.dumps({
+                    "protected": False,
+                    "reason": "guarded-auto-recovery-required",
+                    "message": str(exc),
+                    "modelCalls": 0,
+                }, ensure_ascii=True, indent=2))
+                return 2
             if issue:
                 print(json.dumps({
                     "protected": False,

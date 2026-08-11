@@ -6,7 +6,7 @@
 
 它在执行前根据任务复杂度、风险、约束程度、仓库规模和 reasoning effort 选择受信模型，并生成直接执行或有界多角色编排计划。路由过程本身不调用模型，不修改 Codex 全局配置，也不读取或转发登录凭据。
 
-当前项目版本：`0.7.0+codex.20260811011327`。
+当前项目版本：`0.7.0+codex.20260811022119`。
 
 ## 先看结论
 
@@ -432,6 +432,8 @@ python "./skills/agent-auto-router/scripts/evaluate_development_routes.py" `
 
 输入只能包含 case ID、configuration、可选 model/effort、外部验收结果、可选 Token、耗时和重试次数，不能包含提示词或输出。工具先比较验收通过率，只在同一用例双方都通过且 Token 完整时计算差异。
 
+需要真实 CLI 模型调用的开发评测已移出安装包，位于 [benchmarks/](benchmarks/README.md)。它不是 Skill 运行依赖；运行前必须明确模型调用预算并使用隔离工作区。`--route-only` 只生成路由报告，不调用模型。
+
 ### 测试与 Skill 校验
 
 ```powershell
@@ -442,7 +444,7 @@ python "./scripts/validate_skill.py"
 python "./scripts/validate_plugin.py"
 $pluginTestHome = Join-Path $env:TEMP "agent-auto-router-plugin-test"
 python "./scripts/install_personal_plugin.py" --home "$pluginTestHome" --skip-codex-install
-python -m compileall -q skills/agent-auto-router/scripts scripts tests
+python -m compileall -q skills/agent-auto-router/scripts scripts benchmarks tests
 ```
 
 仓库内的 `validate_skill.py` 不依赖 Codex 的个人安装路径，因此可用于普通开发机和 CI。若当前 Codex 环境安装了系统 `skill-creator`，还可以额外运行其官方校验：
@@ -459,6 +461,7 @@ CI 在 Windows 与 Ubuntu、Python 3.10 与 3.12 上运行核心测试；Windows
 ```text
 .
 ├── .codex-plugin/plugin.json      # Codex 插件清单
+├── benchmarks/                    # 不随 Skill 安装的开发评测工具
 ├── scripts/
 │   ├── install_personal_plugin.py # 个人 marketplace 安装
 │   ├── validate_plugin.py         # 便携插件校验

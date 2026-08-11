@@ -1,5 +1,6 @@
 .env
 .env.*
+/docs/
 eval-results*/
 __pycache__/
 *.py[cod]

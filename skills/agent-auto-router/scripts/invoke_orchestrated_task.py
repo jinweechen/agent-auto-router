@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute one task through safe Sol/Terra/Luna orchestration."""
+"""Execute one task through bounded registry-driven orchestration."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from typing import Any
 from auto_router import VARIANT_LABELS, route_case
 from benchmark_priors import benchmark_priors_digest, load_benchmark_priors
 from claude_cli_adapter import ClaudeCliAdapter
+from cli_arguments import positive_int
 from codex_cli_adapter import CodexCliAdapter
-from codex_cli_orchestration_eval import positive_int
 from host_permissions import (
     HostPermissions,
     cli_permission_issue,

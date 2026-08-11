@@ -82,8 +82,14 @@ def try_file_lock(
 
 def control_plane_lock(state_dir: Path, *, timeout_seconds: float = 0):
     """Serialize active-policy and guarded lifecycle mutations."""
+    root = state_dir.resolve(strict=False)
+    lock_path = (state_dir / ".guarded-auto.lock").resolve(strict=False)
+    try:
+        lock_path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("control-plane lock path is outside the state directory") from exc
     return try_file_lock(
-        state_dir / ".guarded-auto.lock",
+        lock_path,
         timeout_seconds=timeout_seconds,
     )
 

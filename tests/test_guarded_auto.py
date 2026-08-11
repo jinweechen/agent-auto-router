@@ -237,6 +237,11 @@ class GuardedAutoTests(unittest.TestCase):
             self.assertFalse(candidate["requiresHumanApproval"])
             self.assertTrue(candidate["optimizerSettings"]["conservativeOnly"])
             self.assertEqual(candidate["optimizerSettings"]["maximumThresholdStep"], 1)
+            audit = json.loads(
+                (state_dir / "audit.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+            )
+            self.assertRegex(audit["transactionId"], r"^[a-f0-9]{32}$")
+            self.assertTrue((state_dir / ".control-plane-revision.json").is_file())
 
     def test_canary_selection_is_deterministic_and_integrity_checked(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

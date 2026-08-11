@@ -13,6 +13,12 @@ from benchmark_priors import (
     benchmark_priors_digest,
     load_benchmark_priors,
 )
+from control_plane_store import (
+    ControlPlaneRecoveryRequired,
+    canonical_digest,
+    control_plane_revision,
+    resolve_control_plane_path,
+)
 from model_registry import (
     EFFORTS,
     TIER_RANK,
@@ -292,10 +298,18 @@ def active_policy_path(state_dir: Path | None = None) -> Path:
 
 
 def load_active_policy(state_dir: Path | None = None) -> tuple[RoutingPolicy, str]:
-    path = active_policy_path(state_dir)
+    configured_path = active_policy_path(state_dir)
+    revision_before = control_plane_revision(configured_path.parent)
+    path = resolve_control_plane_path(configured_path.parent, configured_path)
     if not path.is_file():
-        return RoutingPolicy(), "builtin"
-    return load_policy_file(path), str(path)
+        result = (RoutingPolicy(), "builtin")
+    else:
+        result = (load_policy_file(path), str(path))
+    if control_plane_revision(path.parent) != revision_before:
+        raise ControlPlaneRecoveryRequired(
+            "routing control plane changed while reading the active policy"
+        )
+    return result
 
 
 def load_policy_for_route(
@@ -306,20 +320,29 @@ def load_policy_for_route(
     benchmark_priors_digest_value: str | None = None,
 ) -> tuple[RoutingPolicy, str]:
     """Select the active or guarded canary policy for one opaque route ID."""
-    active, source = load_active_policy(state_dir)
     if not route_id or len(route_id) > 200:
         raise ValueError("route_id must be a non-empty opaque identifier")
     root = active_policy_path(state_dir).parent
-    config_path = root / "guarded-auto-config.json"
-    state_path = root / "guarded-auto-state.json"
+    revision_before = control_plane_revision(root)
+    active, source = load_active_policy(state_dir)
+
+    def stable_result(policy: RoutingPolicy, policy_source: str) -> tuple[RoutingPolicy, str]:
+        if control_plane_revision(root) != revision_before:
+            raise ControlPlaneRecoveryRequired(
+                "routing control plane changed while selecting a route policy"
+            )
+        return policy, policy_source
+
+    config_path = resolve_control_plane_path(root, root / "guarded-auto-config.json")
+    state_path = resolve_control_plane_path(root, root / "guarded-auto-state.json")
     if not config_path.is_file() or not state_path.is_file():
-        return active, source
+        return stable_result(active, source)
     config = json.loads(config_path.read_text(encoding="utf-8"))
     state = json.loads(state_path.read_text(encoding="utf-8"))
     if not isinstance(config, dict) or not isinstance(state, dict):
         raise ValueError("guarded-auto configuration and state must be objects")
     if config.get("mode") != "guarded-auto" or state.get("status") != "canary":
-        return active, source
+        return stable_result(active, source)
     if state.get("basePolicyDigest") != policy_digest(active):
         raise ValueError("active policy changed during guarded-auto canary")
     canary_percent = state.get("canaryPercent")
@@ -328,8 +351,10 @@ def load_policy_for_route(
     if not 1 <= canary_percent <= 50:
         raise ValueError("guarded-auto canaryPercent must be between 1 and 50")
 
-    candidate_root = (root / "candidates").resolve()
-    candidate_path = Path(str(state.get("candidatePath", ""))).resolve()
+    candidate_root = resolve_control_plane_path(root, root / "candidates")
+    candidate_path = resolve_control_plane_path(
+        root, Path(str(state.get("candidatePath", "")))
+    )
     if candidate_path.parent != candidate_root or not candidate_path.is_file():
         raise ValueError("guarded-auto candidate path is outside the candidate directory")
     candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
@@ -338,10 +363,7 @@ def load_policy_for_route(
     candidate_id = candidate.get("candidateId")
     unsigned = dict(candidate)
     unsigned.pop("candidateId", None)
-    canonical = json.dumps(
-        unsigned, ensure_ascii=True, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    if not isinstance(candidate_id, str) or candidate_id != hashlib.sha256(canonical).hexdigest():
+    if not isinstance(candidate_id, str) or candidate_id != canonical_digest(unsigned):
         raise ValueError("guarded-auto candidate integrity check failed")
     if candidate_id != state.get("candidateId"):
         raise ValueError("guarded-auto candidate identity changed")
@@ -361,8 +383,8 @@ def load_policy_for_route(
         raise ValueError("guarded-auto candidate policy digest changed")
     bucket = int(hashlib.sha256(route_id.encode("utf-8")).hexdigest()[:8], 16) % 100
     if bucket < canary_percent:
-        return candidate_policy, f"guarded-auto-canary:{candidate_id}"
-    return active, source
+        return stable_result(candidate_policy, f"guarded-auto-canary:{candidate_id}")
+    return stable_result(active, source)
 
 
 def _contains_term(text: str, term: str) -> bool:
