@@ -6,7 +6,7 @@
 
 它在执行前根据任务复杂度、风险、约束程度和 reasoning effort 选择受信模型，并生成有界执行计划。标准路由会安全启用自适应仓库检查、编排建议和本次计划内模型复用，但不读取历史状态，也不启动额外智能体。跨任务黏性、学习策略、反馈写入和多角色执行仍需显式开启。路由过程本身不调用模型，不修改 Codex 全局配置，也不读取或转发登录凭据。
 
-当前项目版本：`0.15.0+codex.20260813062845`。
+当前项目版本：`0.15.0+codex.20260813124518`。
 
 ## 先看结论
 
@@ -14,6 +14,8 @@
 - 默认 `balance` 策略在 `fast / balanced / frontier` 三个能力层之间选择模型。
 - Codex Desktop 通过原生子代理协议执行；CLI 模式使用用户已经登录的官方 CLI。
 - Desktop 计划不包含任务正文，所有执行都受当前宿主权限、调用预算和单写入者规则约束。
+- 每次 Desktop 阶段尝试都可生成绑定到准确计划尝试的闭合字段执行收据：同一次尝试的 `attemptBindingId` 保持稳定，`receiptId` 则对收据完整内容取摘要。requested、resolved 和宿主实际观测到的模型身份彼此分离；宿主没有遥测时明确保持 unresolved。
+- 执行完成、宿主界面陈旧状态和证据验收是三个独立结论；终止与超时按可信事件序号判定先后，预期写入的工作还必须具备带内容摘要的工作区变更证据，子智能体也不能用自身声明验收自身工作。
 - 标准路由是零状态的：普通回答不扫描仓库；代码、路径、依赖或调试任务会执行一次有界自适应扫描。它不加载学习策略、不读黏性反馈、不持久化结果，也不自动编排。
 - 新模型可以先显式试用，验证后再进入 Auto；模型不可用时明确失败，不静默回退。
 
@@ -24,6 +26,7 @@
 | 自动选模 | 从版本化受信注册表选择模型、effort、能力层和上下文预算 |
 | 统一路由协议 | Python 与 PowerShell 入口统一消费带任务及工作区绑定的严格 `agent-auto-router.route-decision` |
 | Desktop 执行计划 | 输出 `agent-auto-router.desktop-plan`，由当前主代理执行有界 DAG |
+| 执行收据 | 生成或校验隐私安全的 `agent-auto-router.execution-receipt`，独立记录身份、终止状态、界面对账与验收 |
 | CLI 执行 | 通过 UTF-8 stdin 调用已登录的 Codex CLI 或编排后端 |
 | 多角色编排 | 支持 planner、dispatcher、worker、reviewer、grader，并保证只有一个写入者 |
 | 通用宿主协议 | 输出带 stdin 执行信封模板的 `agent-auto-router.host-plan` |
@@ -54,6 +57,8 @@
   -> 选择 tier、model、effort、context 和 A-F 变体
   -> 校验宿主权限、模型可用性、调用预算和工作区边界
   -> Desktop：输出无任务正文的 staged plan
+     -> 可信宿主分别记录 requested / resolved / actual 身份
+     -> 绑定本次尝试，将有序终止证据、界面状态、工作区变更和必需检查对账为执行收据
      CLI：调用对应已登录 CLI
   -> 在 observe/guarded 模式记录隐私最小化结果
   -> 可选：人工标注或 guarded 学习

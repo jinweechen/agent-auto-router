@@ -23,7 +23,7 @@ from route_contract import validate_route_decision  # noqa: E402
 
 class ProtocolSchemaTests(unittest.TestCase):
     def test_runtime_protocol_names_are_stable_and_unversioned(self) -> None:
-        self.assertEqual(len(RUNTIME_PROTOCOL_SCHEMAS), 16)
+        self.assertEqual(len(RUNTIME_PROTOCOL_SCHEMAS), 17)
         for schema in RUNTIME_PROTOCOL_SCHEMAS:
             with self.subTest(schema=schema):
                 self.assertTrue(schema.startswith("agent-auto-router."))
@@ -53,7 +53,7 @@ class ProtocolSchemaTests(unittest.TestCase):
     def test_repository_has_no_version_suffixed_router_protocol_literals(self) -> None:
         protocol_names = (
             "route-decision|task-binding|execution-envelope|host-request|host-plan|"
-            "host-permissions|desktop-spawn-capabilities|desktop-plan|execution-report|runner-input|"
+            "host-permissions|desktop-spawn-capabilities|desktop-plan|execution-receipt|execution-report|runner-input|"
             "model-affinity|quick-profiles|doctor|policy-shadow|workspace-snapshot|"
             "workspace-comparison|evaluation-run"
         )

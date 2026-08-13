@@ -194,6 +194,33 @@ class DocumentationContractTests(unittest.TestCase):
         ):
             self.assertIn(required, combined)
 
+    def test_execution_receipt_identity_and_acceptance_contract_is_documented(self) -> None:
+        skill = (ROOT / "skills" / "agent-auto-router" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        entrypoints = (
+            ROOT / "skills" / "agent-auto-router" / "references" / "entrypoints.md"
+        ).read_text(encoding="utf-8")
+        contract = (
+            ROOT / "skills" / "agent-auto-router" / "references" / "router-contract.md"
+        ).read_text(encoding="utf-8")
+        combined = "\n".join((skill, entrypoints, contract, self.readme, self.chinese_readme))
+        for required in (
+            "agent-auto-router.execution-receipt",
+            "requested",
+            "resolved",
+            "actual",
+            "unresolved",
+            "stale_host_ui",
+            "agent-claim",
+            "raw workspace paths",
+            "attemptBindingId",
+            "complete-content-sha256",
+            "terminalSequence",
+            "changed-required",
+        ):
+            self.assertIn(required, combined)
+
     def test_skill_is_explicit_use_only(self) -> None:
         skill = (ROOT / "skills" / "agent-auto-router" / "SKILL.md").read_text(
             encoding="utf-8"

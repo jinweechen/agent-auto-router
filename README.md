@@ -6,7 +6,7 @@ A local, deterministic model-routing plugin and Skill for Codex, Claude Code, an
 
 Before execution, it selects a trusted model from task complexity, risk, constraint level, and reasoning effort, then produces a bounded execution plan. Standard routing safely enables adaptive repository inspection, orchestration recommendations, and within-plan model reuse without reading historical state or starting extra agents. Cross-run affinity, learned policy, feedback writes, and multi-role execution remain explicit opt-ins. Routing itself makes no model call, does not change global Codex configuration, and never reads or forwards login credentials.
 
-Current project version: `0.15.0+codex.20260813062845`.
+Current project version: `0.15.0+codex.20260813124518`.
 
 ## At a glance
 
@@ -14,6 +14,8 @@ Current project version: `0.15.0+codex.20260813062845`.
 - The default `balance` strategy selects among the `fast`, `balanced`, and `frontier` capability tiers.
 - Codex Desktop executes through the native child-agent protocol; CLI mode uses an official CLI in which the user is already signed in.
 - Desktop plans omit the task body, and every execution is constrained by current host permissions, a call budget, and the single-writer rule.
+- Each attempted Desktop stage can emit a closed execution receipt bound to the exact plan attempt. `attemptBindingId` is stable for that attempt, while `receiptId` hashes the complete receipt content. Requested, resolved, and host-observed actual model identity remain separate; missing telemetry stays explicitly unresolved.
+- Completion, stale host UI, and evidence-backed acceptance are separate decisions. Trusted event sequence resolves terminal-versus-timeout order; write-intended work also needs content-digested workspace-change evidence, and a child cannot accept its own work.
 - Standard routing is zero-state: adaptive inspection skips plain-answer tasks and performs one bounded scan for code, path, dependency, or debugging tasks. It does not load learned policy, read affinity feedback, persist outcomes, or auto-orchestrate.
 - New models can be tested explicitly before entering Auto. An unavailable model fails explicitly instead of silently falling back.
 
@@ -24,6 +26,7 @@ Current project version: `0.15.0+codex.20260813062845`.
 | Automatic model selection | Selects a model, effort, capability tier, and context budget from a versioned trusted registry |
 | Canonical route decisions | Emits strict `agent-auto-router.route-decision` objects with task and workspace bindings |
 | Desktop execution plans | Emits `agent-auto-router.desktop-plan`, which the current primary agent executes as a bounded DAG |
+| Execution receipts | Emits or validates privacy-safe `agent-auto-router.execution-receipt` evidence for identity, terminal state, UI reconciliation, and acceptance |
 | CLI execution | Invokes a signed-in Codex CLI or orchestration backend through UTF-8 stdin |
 | Multi-role orchestration | Supports planner, dispatcher, worker, reviewer, and grader roles while enforcing a single writer |
 | Generic host protocol | Emits `agent-auto-router.host-plan` with stdin execution-envelope templates |
@@ -54,6 +57,8 @@ Task
   -> tier, model, effort, context, and A-F variant selection
   -> host-permission, model-availability, call-budget, and workspace checks
   -> Desktop: emit a staged plan without the task body
+     -> trusted host records requested / resolved / actual identity
+     -> bind the attempt and reconcile ordered terminal evidence, advisory UI, workspace change, and required checks into a receipt
      CLI: invoke the corresponding signed-in CLI
   -> record a privacy-minimized result in observe/guarded mode
   -> optional human labeling or guarded learning

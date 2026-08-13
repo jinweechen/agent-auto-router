@@ -13,11 +13,18 @@ from desktop_spawn_capabilities import (
     DesktopSpawnCapabilities,
     parse_desktop_spawn_capabilities,
 )
+from execution_receipt import (
+    build_execution_receipt_contract,
+    build_receipt_plan_binding,
+)
 from host_permissions import HostPermissions, parse_host_permissions, workdir_is_writable
 from model_registry import TIER_RANK, load_model_registry, registry_digest, strip_backend_prefix
 from orchestration_profiles import load_orchestration_profiles, resolve_role_with_affinity
 from policy_learning import ROUTE_FEATURES
-from protocol_schemas import DESKTOP_PLAN_SCHEMA, EXECUTION_REPORT_SCHEMA
+from protocol_schemas import (
+    DESKTOP_PLAN_SCHEMA,
+    EXECUTION_REPORT_SCHEMA,
+)
 
 
 SCHEMA = DESKTOP_PLAN_SCHEMA
@@ -310,6 +317,9 @@ def build_desktop_plan(
                 "requiredBeforeDependentStage": True,
                 "requiredBeforeFinalResponse": True,
             },
+            "executionReceipt": build_execution_receipt_contract(
+                required_after_attempt=not dry_run
+            ),
             "checkpointPolicy": {
                 "maximumOpenRunsPerParentTurn": 1,
                 "newRunRequiresPreviousTerminalReconciliation": True,
@@ -360,6 +370,7 @@ def build_desktop_plan(
                 "agent_interrupted",
                 "post_interrupt_reconciled",
                 "terminal_reconciled",
+                "execution_receipt_recorded",
                 "workspace_reconciled",
                 "writer_claim_acquired",
                 "writer_claim_released",
@@ -571,13 +582,25 @@ def build_desktop_plan(
             )
         role_would_write = role == final_role and would_write
         maximum_instances = worker_limit if role == "worker" else 1
-        agents.append({
+        agent_plan = {
             "id": role,
             "role": role,
             "model": model_id,
             "preferredModel": preferred_model_id,
             "modelResolution": model_resolution,
             "reasoningEffort": role_effort,
+            "receiptIdentity": {
+                "requested": {
+                    "model": preferred_model_id,
+                    "effort": role_effort,
+                },
+                "resolved": {
+                    "model": model_id,
+                    "effort": role_effort,
+                    "modelResolution": model_resolution,
+                },
+                "actualPolicy": "trusted-host-observed-or-unresolved",
+            },
             "forkTurns": "none",
             "workdir": str(resolved_workdir),
             "writer": role_would_write and not dry_run,
@@ -590,7 +613,12 @@ def build_desktop_plan(
             "idempotencyKeyTemplate": f"{route_id}:{role}:{{instance}}",
             "maxAttempts": 1,
             "timeoutMs": _stage_timeout_ms(role_effort),
-        })
+        }
+        agent_plan["receiptBinding"] = build_receipt_plan_binding(
+            route_id,
+            agent_plan,
+        )
+        agents.append(agent_plan)
 
     planned_models = [agent["model"] for agent in agents]
     plan["modelSwitching"] = {

@@ -281,7 +281,49 @@ class DesktopExecutionTests(unittest.TestCase):
             pathlib.Path(direct["workdir"]), SCRIPTS.parents[2].resolve()
         )
         self.assertEqual(direct["idempotencyKeyTemplate"], "route-test:direct:{instance}")
+        self.assertEqual(
+            direct["receiptIdentity"],
+            {
+                "requested": {
+                    "model": direct["preferredModel"],
+                    "effort": direct["reasoningEffort"],
+                },
+                "resolved": {
+                    "model": direct["model"],
+                    "effort": direct["reasoningEffort"],
+                    "modelResolution": direct["modelResolution"],
+                },
+                "actualPolicy": "trusted-host-observed-or-unresolved",
+            },
+        )
+        self.assertEqual(direct["receiptBinding"]["routeId"], "route-test")
+        self.assertEqual(direct["receiptBinding"]["stageId"], "direct")
+        self.assertEqual(direct["receiptBinding"]["writer"], direct["writer"])
+        self.assertEqual(
+            direct["receiptBinding"]["workspaceEvidencePolicy"], "changed-required"
+        )
+        self.assertRegex(direct["receiptBinding"]["digest"], r"^[0-9a-f]{64}$")
         self.assertEqual(plan["coordination"]["writerClaim"]["ownerRole"], "direct")
+        receipt_contract = plan["coordination"]["executionReceipt"]
+        self.assertEqual(receipt_contract["schema"], "agent-auto-router.execution-receipt")
+        self.assertTrue(receipt_contract["requiredAfterAttempt"])
+        self.assertEqual(
+            receipt_contract["actualIdentityPolicy"],
+            "observed-or-unresolved-never-inferred",
+        )
+        self.assertEqual(
+            receipt_contract["planBindingPolicy"],
+            "canonical-agent-binding-digest",
+        )
+        self.assertEqual(
+            receipt_contract["receiptIdPolicy"], "complete-content-sha256"
+        )
+        self.assertEqual(
+            receipt_contract["eventOrdering"], "trusted-monotonic-sequence"
+        )
+        self.assertEqual(
+            receipt_contract["writerWorkspaceEvidence"], "changed-required"
+        )
         self.assertFalse(plan["hostContract"]["fullHistoryForkAllowed"])
         self.assertFalse(plan["privacy"]["taskIncludedInPlan"])
         self.assertFalse(plan["privacy"]["credentialsRead"])

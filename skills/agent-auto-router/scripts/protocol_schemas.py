@@ -9,6 +9,7 @@ HOST_PLAN_SCHEMA = "agent-auto-router.host-plan"
 HOST_PERMISSIONS_SCHEMA = "agent-auto-router.host-permissions"
 DESKTOP_SPAWN_CAPABILITIES_SCHEMA = "agent-auto-router.desktop-spawn-capabilities"
 DESKTOP_PLAN_SCHEMA = "agent-auto-router.desktop-plan"
+EXECUTION_RECEIPT_SCHEMA = "agent-auto-router.execution-receipt"
 EXECUTION_REPORT_SCHEMA = "agent-auto-router.execution-report"
 RUNNER_INPUT_SCHEMA = "agent-auto-router.runner-input"
 MODEL_AFFINITY_SCHEMA = "agent-auto-router.model-affinity"
@@ -27,6 +28,7 @@ RUNTIME_PROTOCOL_SCHEMAS = frozenset({
     HOST_PERMISSIONS_SCHEMA,
     DESKTOP_SPAWN_CAPABILITIES_SCHEMA,
     DESKTOP_PLAN_SCHEMA,
+    EXECUTION_RECEIPT_SCHEMA,
     EXECUTION_REPORT_SCHEMA,
     RUNNER_INPUT_SCHEMA,
     MODEL_AFFINITY_SCHEMA,
