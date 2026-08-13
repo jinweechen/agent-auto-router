@@ -159,6 +159,37 @@ class ControlPlaneStoreTests(unittest.TestCase):
             self.assertEqual(result["reason"], "guarded-auto-recovery-required")
             self.assertEqual(result["modelCalls"], 0)
 
+    def test_boundary_cli_reports_invalid_permissions_without_usage_text(self) -> None:
+        permissions = json.dumps({
+            "schema": "agent-auto-router.host-permissions.v1",
+            "sandbox": "read-only",
+            "approvalPolicy": "never",
+            "networkAccess": False,
+            "writableRoots": [],
+            "canRequestPermissions": False,
+        })
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS / "guarded_auto.py"),
+                "check-boundary",
+                "--host-permissions-json",
+                permissions,
+                "--requested-sandbox",
+                "read-only",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(completed.returncode, 2)
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["reason"], "invalid-host-permissions")
+        self.assertIn("source", result["message"])
+        self.assertEqual(result["modelCalls"], 0)
+        self.assertNotIn("usage:", completed.stderr.lower())
+
     def test_transaction_rejects_targets_outside_state_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)

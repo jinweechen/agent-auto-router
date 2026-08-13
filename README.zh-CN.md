@@ -4,9 +4,9 @@
 
 面向 Codex、Claude Code 和通用 Agent 宿主的本地确定性模型路由插件与 Skill。
 
-它在执行前根据任务复杂度、风险、约束程度、仓库规模和 reasoning effort 选择受信模型，并生成直接执行或有界多角色编排计划。路由过程本身不调用模型，不修改 Codex 全局配置，也不读取或转发登录凭据。
+它在执行前根据任务复杂度、风险、约束程度和 reasoning effort 选择受信模型，并生成直接执行计划。仓库检查、学习策略、模型黏性、反馈和多角色编排都是可显式开启的专家能力。路由过程本身不调用模型，不修改 Codex 全局配置，也不读取或转发登录凭据。
 
-当前项目版本：`0.15.0+codex.20260811`。
+当前项目版本：`0.15.0+codex.20260813015724`。
 
 ## 先看结论
 
@@ -14,7 +14,7 @@
 - 默认 `balance` 策略在 `fast / balanced / frontier` 三个能力层之间选择模型。
 - Codex Desktop 通过原生子代理协议执行；CLI 模式使用用户已经登录的官方 CLI。
 - Desktop 计划不包含任务正文，所有执行都受当前宿主权限、调用预算和单写入者规则约束。
-- 默认学习模式是 `observe`：自动记录隐私最小化路由结果，但只有显式启用 `guarded` 后才可能自动调整阈值。
+- 标准路由是无状态的：不扫描仓库、不加载学习策略、不读黏性反馈、不持久化结果，也不自动编排；每项高级能力都需要单独显式开启。
 - 新模型可以先显式试用，验证后再进入 Auto；模型不可用时明确失败，不静默回退。
 
 ## 能做什么
@@ -95,7 +95,7 @@ Python 路由器仅使用标准库，没有第三方运行时依赖。
   -Workdir "D:/path/to/project"
 ```
 
-默认 `standard` 预设只允许写入 `Workdir`，全局默认 `observe` 会记录隐私最小化路由元数据并启用模型黏性；`-Profile safe` 是只读模式，同时关闭反馈记录和跨任务模型黏性。这两个预设是经过校验的固定安全组合，不是可任意改写权限的捷径。普通本地使用到这里即可；只有 Desktop 宿主集成、显式模型、多角色编排、验证升级或学习管理才需要下面的完整入口。
+默认 `standard` 预设只允许写入 `Workdir`，`-Profile safe` 是只读模式。两者都是无状态直连路由，关闭仓库检查、学习策略、反馈和模型黏性。这两个预设是经过校验的固定安全组合，不是可任意改写权限的捷径。普通本地使用到这里即可；只有 Desktop 宿主集成、显式模型、仓库感知路由、多角色编排、验证升级或学习管理才需要下面的完整入口。
 
 诊断默认只输出简洁摘要。通过 `aar.ps1 -Json`，或运行 `doctor.py --json`，可获得机器可读详情；它不读取任务、不打印环境变量值、不检查凭据，也不会调用模型。`--verbose-paths` 是额外的显式排障选项。
 
@@ -204,9 +204,9 @@ ASCII 关键词按词法边界匹配，避免 `tokenizer`/`token`、`information
 | E | direct | `balanced` direct |
 | F | direct | `fast` direct |
 
-A/E/F 是直接执行。默认 `auto` 编排策略只会在低风险任务同时具有明确并行信号、足够规模，并且扣除模型调用与模型层切换开销后确定性收益分仍为正时选择 B/C/D。计划会给出评分、门槛、各项得分、预计额外调用和层切换次数，但不会回显任务。`recommended=true` 表示收益门和当前策略支持编排；在 `auto` 下计划可能已经是编排拓扑，`requiresExplicitOptIn=true` 则只用于 `recommend` 模式或高风险确认门。`direct` 会同时关闭这两个标志。边缘任务保持直连。高风险任务保持直接执行，只把多角色拓扑作为建议，专家调用者必须传入 `-ConfirmHighRiskOrchestration` 才能授权展开。专家入口可选择 `direct`、`recommend` 或 `auto`。低风险 A/E/F 和 D 默认不额外调用 grader；B/C 与高风险任务保留独立验收。
+A/E/F 是直接执行。标准入口默认使用 `direct`；专家调用者必须显式选择 `recommend` 或 `auto` 才会评估或使用 B/C/D。`auto` 仍要求低风险任务具有明确并行信号、足够规模，并且扣除模型调用与层切换开销后收益为正。高风险任务还必须显式传入 `-ConfirmHighRiskOrchestration`。专用编排入口本身就是显式高级工作流。
 
-模型黏性默认开启。单次编排中，只要本次路由选中的模型受信、支持对应角色且不弱于角色配置要求，所有角色就优先复用它；否则使用配置中的精确角色模型。跨任务时，Auto 可以在同一工作区摘要、同一策略下保留最近 30 分钟内成功使用的模型。同 tier 可直接保留；保留高一个 tier 的模型要求归属于该选中模型自身的 cached-input 与 cache-write 遥测形成至少 15% 的缓存信号，其他角色模型的聚合遥测不能充当证据。系统绝不会保留更弱模型，也不允许跨越一个以上 tier；连续三个有效样本的缓存信号低于 5% 时，角色分配回到 profile 策略。这些比例只用于路由，不是供应商账单估算。
+标准路由默认关闭模型黏性，可用 `-ModelAffinity auto` 显式开启。开启后，Auto 只能在同一工作区摘要、同一策略下复用最近 30 分钟内成功使用的模型，并继续受既有 tier 与缓存信号边界约束。这些比例只用于路由，不是供应商账单估算。
 
 角色默认值来自 [orchestration_profiles.json](skills/agent-auto-router/scripts/orchestration_profiles.json)。
 
@@ -259,7 +259,7 @@ Desktop 当前只支持 Codex 后端。默认 `selected-model-preferred` 角色�
   -Explain
 ```
 
-CLI 任务正文通过 UTF-8 stdin 传入，不出现在子进程命令行参数中。`-Model sol`、`-Model terra` 或完整受信 Codex ID 可以显式覆盖本次选择，但不会修改全局配置。`-ModelAffinity auto` 是默认值；需要无状态、严格按 profile 执行时使用 `-ModelAffinity off`。仓库检查有数量和超时边界，并且每次路由只扫描一次；`-RepositoryContextMode off` 可关闭检查，`-Explain` 会报告检查模式、耗时和是否截断。
+CLI 任务正文通过 UTF-8 stdin 传入，不出现在子进程命令行参数中。`-Model sol`、`-Model terra` 或完整受信 Codex ID 可以显式覆盖本次选择，但不会修改全局配置。默认使用 `-ModelAffinity off`、`-RepositoryContextMode off` 和 `-OrchestrationPolicy direct`，也不加载活动策略或写反馈。分别使用 `-ModelAffinity auto`、`-RepositoryContextMode auto`、`-OrchestrationPolicy auto`、`-EnableLearningPolicy` 或 `-EnableFeedback` 显式开启。
 
 只做零模型调用的本地 DryRun：
 
@@ -340,7 +340,7 @@ Desktop 多角色计划遵守以下规则：
 
 ### 保存什么
 
-默认 `observe` 模式会把 CLI 的隐私最小化结果写入 `~/.codex/auto-router/feedback.jsonl`：
+传入 `-EnableFeedback` 后，配置的 `observe` 或 `guarded` 模式才会把 CLI 的隐私最小化结果写入 `~/.codex/auto-router/feedback.jsonl`：
 
 - route ID、策略、effort、能力层和模型
 - SHA-256 工作区标识、拓扑、变体、角色模型策略和预计角色层切换次数
@@ -349,14 +349,14 @@ Desktop 多角色计划遵守以下规则：
 - 退出码、耗时、验证状态和尝试次数
 - CLI 实际暴露的聚合 input、cached input、cache-write、output 和 reasoning output Token，以及单独归属于最终选中模型、仅供黏性判断使用的 Token 切片
 
-无法观测的 Token 保持 `null`。反馈不保存原始工作区路径、任务正文、模型回复、工具输出或凭据。工作区摘要与近期缓存遥测只用于有界模型黏性，Token 仍不能作为质量标签。默认黏性在 `observe` 和 `guarded` 下都会读取这份证据，因此启用黏性时，状态目录和反馈文件必须位于所有子进程可写根之外。在 `observe` 和 `guarded` 下，每次学习循环都会原子保留最近 90 天、最多 5000 个路由的最后结果与人工标签。`status.feedbackStorage` 会显示事件数、字节数和待清理数量。可以先只读检查，再显式应用自定义窗口：
+无法观测的 Token 保持 `null`。反馈不保存原始工作区路径、任务正文、模型回复、工具输出或凭据。显式启用反馈、活动学习策略或模型黏性时，状态目录和反馈文件必须位于所有子进程可写根之外。在 `observe` 和 `guarded` 下，每次学习循环都会原子保留最近 90 天、最多 5000 个路由的最后结果与人工标签。`status.feedbackStorage` 会显示事件数、字节数和待清理数量。可以先只读检查，再显式应用自定义窗口：
 
 ```powershell
 python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" feedback
 python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" feedback --maximum-routes 2000 --retention-days 30 --apply
 ```
 
-第一条命令不会写文件。压缩过程使用反馈追加锁和原子替换，保留 route/label 配对，结果仍明确返回 `storesTaskText=false` 与 `modelCalls=0`。使用 `-NoFeedback` 关闭本次记录，使用 `configure --mode off` 全局关闭持久化，使用 `-StateDir` 或 `-FeedbackFile` 隔离状态。
+第一条命令不会写文件。压缩过程使用反馈追加锁和原子替换，保留 route/label 配对，结果仍明确返回 `storesTaskText=false` 与 `modelCalls=0`。默认不记录；只有传入 `-EnableFeedback` 才会启用，`-FeedbackFile` 也要求该开关。`-NoFeedback` 继续作为兼容参数接受，`-StateDir` 可隔离状态。
 
 Desktop 执行报告 ID 使用独立的无正文幂等标记。已完成标记同样默认保留 90 天、最多 5000 个；pending/incomplete 标记永不自动删除，并明确提示需要人工检查。由于这是有界精确窗口，标记过期后再次提交相同报告会按新报告处理。可以先检查，再显式应用自定义窗口：
 

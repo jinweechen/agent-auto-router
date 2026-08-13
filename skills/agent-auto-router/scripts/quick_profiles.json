@@ -7,7 +7,7 @@
       "strategy": "balance",
       "sandbox": "read-only",
       "contextMode": "lean",
-      "repositoryContextMode": "auto",
+      "repositoryContextMode": "off",
       "modelAffinity": "off",
       "noFeedback": true
     },
@@ -16,9 +16,9 @@
       "strategy": "balance",
       "sandbox": "workspace-write",
       "contextMode": "lean",
-      "repositoryContextMode": "auto",
-      "modelAffinity": "auto",
-      "noFeedback": false
+      "repositoryContextMode": "off",
+      "modelAffinity": "off",
+      "noFeedback": true
     }
   }
 }

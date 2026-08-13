@@ -4,9 +4,9 @@
 
 A local, deterministic model-routing plugin and Skill for Codex, Claude Code, and generic agent hosts.
 
-Before execution, it selects a trusted model from task complexity, risk, constraint level, repository size, and reasoning effort, then produces either a direct-execution plan or a bounded multi-role orchestration plan. Routing itself makes no model call, does not change global Codex configuration, and never reads or forwards login credentials.
+Before execution, it selects a trusted model from task complexity, risk, constraint level, and reasoning effort, then produces a direct-execution plan. Repository inspection, learned policy, model affinity, feedback, and multi-role orchestration are optional expert features. Routing itself makes no model call, does not change global Codex configuration, and never reads or forwards login credentials.
 
-Current project version: `0.15.0+codex.20260811`.
+Current project version: `0.15.0+codex.20260813015724`.
 
 ## At a glance
 
@@ -14,7 +14,7 @@ Current project version: `0.15.0+codex.20260811`.
 - The default `balance` strategy selects among the `fast`, `balanced`, and `frontier` capability tiers.
 - Codex Desktop executes through the native child-agent protocol; CLI mode uses an official CLI in which the user is already signed in.
 - Desktop plans omit the task body, and every execution is constrained by current host permissions, a call budget, and the single-writer rule.
-- The default learning mode is `observe`: privacy-minimized route outcomes are recorded, but thresholds never change automatically until `guarded` is explicitly enabled.
+- Standard routing is stateless: it does not scan the repository, load learned policy, read affinity feedback, persist outcomes, or auto-orchestrate. Each feature has a separate explicit opt-in.
 - New models can be tested explicitly before entering Auto. An unavailable model fails explicitly instead of silently falling back.
 
 ## Capabilities
@@ -95,7 +95,7 @@ Run it after reviewing the route:
   -Workdir "D:/path/to/project"
 ```
 
-`standard` is the default profile and limits writes to `Workdir`; the default global `observe` mode records privacy-minimized routing metadata and enables model affinity. Use `-Profile safe` for read-only inspection with both feedback and cross-run model affinity disabled. These are fixed, validated presets rather than user-editable permission shortcuts. Stop here for ordinary local use; use the full entrypoints only for Desktop host integration, explicit models, orchestration, validation escalation, or learning administration.
+`standard` is the default profile and limits writes to `Workdir`; `-Profile safe` is read-only. Both are stateless direct routes with repository inspection, learned policy, feedback, and model affinity disabled. These are fixed, validated presets rather than user-editable permission shortcuts. Stop here for ordinary local use; use the full entrypoints only for Desktop host integration, explicit models, repository-aware routing, orchestration, validation escalation, or learning administration.
 
 The diagnostic prints a concise summary by default. Add `-Json` through `aar.ps1`, or run `doctor.py --json`, for machine-readable details. It never reads tasks, prints environment values, inspects credentials, or calls a model. `--verbose-paths` is an additional explicit troubleshooting option.
 
@@ -206,9 +206,9 @@ ASCII keywords use lexical-boundary matching to avoid false positives such as `t
 | E | direct | `balanced` direct |
 | F | direct | `fast` direct |
 
-A, E, and F are direct variants. The default `auto` orchestration policy selects B, C, or D only when a low-risk task has explicit parallel signals, enough scale, and a positive deterministic utility score after model-call and model-tier-switch overhead. The plan exposes the score, threshold, component points, estimated additional calls, and estimated tier switches without echoing the task. `recommended=true` means the utility and selected policy favor orchestration; under `auto` the plan may already be orchestrated, while `requiresExplicitOptIn=true` is reserved for `recommend` mode or a high-risk confirmation gate. `direct` suppresses both flags. Marginal cases stay direct. High-risk tasks stay direct and expose the worker topology only as a recommendation; expert callers must pass `-ConfirmHighRiskOrchestration` to authorize it. Expert callers can select `direct`, `recommend`, or `auto`. Low-risk A/E/F and D omit a grader by default; B/C and high-risk tasks retain independent validation.
+A, E, and F are direct variants. The standard entrypoint defaults to `direct`; expert callers must select `recommend` or `auto` to evaluate or use B, C, or D. Under `auto`, a worker plan requires a low-risk task with explicit parallel signals, enough scale, and a positive deterministic utility score after model-call and model-tier-switch overhead. The plan exposes the score, threshold, component points, estimated additional calls, and estimated tier switches without echoing the task. High-risk tasks remain direct unless an expert caller also passes `-ConfirmHighRiskOrchestration`. The dedicated orchestration entrypoint is itself an explicit advanced workflow.
 
-Model affinity is enabled by default. Within one orchestration, every role prefers the already selected model when that model is trusted, role-capable, and no weaker than the profile requirement; otherwise the exact profile model is used. Across runs, Auto may retain the most recent successful model for the same hashed workspace and strategy for up to 30 minutes. Same-tier retention is immediate; retaining a model one tier stronger requires at least a 15% observed cache signal from cached-input plus cache-write telemetry attributed to that selected model, never aggregate telemetry from other role models. A weaker model is never retained, a jump of more than one tier is rejected, and three usable samples below 5% return role assignment to the profile policy. These ratios are routing evidence, not provider billing estimates.
+Model affinity is disabled on the standard route and can be enabled with `-ModelAffinity auto`. When enabled, it may retain the most recent successful model for the same hashed workspace and strategy for up to 30 minutes, subject to the existing tier and cache-signal safeguards. These ratios are routing evidence, not provider billing estimates.
 
 Role defaults come from [orchestration_profiles.json](skills/agent-auto-router/scripts/orchestration_profiles.json).
 
@@ -261,7 +261,7 @@ Host integrations should pass a trusted permission snapshot generated by the cur
   -Explain
 ```
 
-The CLI task body is passed over UTF-8 stdin and does not appear in child-process command-line arguments. `-Model sol`, `-Model terra`, or a full trusted Codex ID can explicitly override selection for one run without changing global configuration. `-ModelAffinity auto` is the default; use `-ModelAffinity off` for a stateless, profile-exact run. Repository inspection is bounded and performed once per route; `-RepositoryContextMode off` disables it, while `-Explain` reports its mode, elapsed time, and truncation state.
+The CLI task body is passed over UTF-8 stdin and does not appear in child-process command-line arguments. `-Model sol`, `-Model terra`, or a full trusted Codex ID can explicitly override selection for one run without changing global configuration. The default route uses `-ModelAffinity off`, `-RepositoryContextMode off`, and `-OrchestrationPolicy direct`, and does not load active policy or persist feedback. Enable those features explicitly with `-ModelAffinity auto`, `-RepositoryContextMode auto`, `-OrchestrationPolicy auto`, `-EnableLearningPolicy`, or `-EnableFeedback`.
 
 Run a local DryRun with zero model calls:
 
@@ -342,7 +342,7 @@ Desktop multi-role plans enforce these rules:
 
 ### Stored data
 
-The default `observe` mode writes privacy-minimized CLI results to `~/.codex/auto-router/feedback.jsonl`:
+With `-EnableFeedback`, the configured `observe` or `guarded` mode writes privacy-minimized CLI results to `~/.codex/auto-router/feedback.jsonl`:
 
 - route ID, strategy, effort, capability tier, and model
 - a SHA-256 workspace identity, topology, variant, role-model policy, and estimated role-tier switches
@@ -351,14 +351,14 @@ The default `observe` mode writes privacy-minimized CLI results to `~/.codex/aut
 - exit code, duration, validation status, and attempt count
 - aggregate input, cached-input, cache-write, output, and reasoning-output tokens actually exposed by the CLI, plus the final selected model's separately attributed token slice for affinity
 
-Unobservable token counts remain `null`. Feedback never stores the raw workspace path, task text, model responses, tool output, or credentials. The workspace digest and recent cache telemetry support the bounded affinity policy even though tokens remain ineligible as quality labels. Because default affinity reads this evidence in `observe` as well as `guarded`, the state directory and feedback file must stay outside every child-writable root whenever affinity is enabled. In `observe` and `guarded`, each learning cycle atomically keeps the latest outcome and label for routes seen in the last 90 days, capped at 5,000 routes. `status.feedbackStorage` previews counts, bytes, and pending removals. Inspect or explicitly apply a custom retention window with:
+Unobservable token counts remain `null`. Feedback never stores the raw workspace path, task text, model responses, tool output, or credentials. When feedback, active learning policy, or affinity is explicitly enabled, the state directory and feedback file must stay outside every child-writable root. In `observe` and `guarded`, each learning cycle atomically keeps the latest outcome and label for routes seen in the last 90 days, capped at 5,000 routes. `status.feedbackStorage` previews counts, bytes, and pending removals. Inspect or explicitly apply a custom retention window with:
 
 ```powershell
 python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" feedback
 python "$HOME/.codex/skills/agent-auto-router/scripts/guarded_auto.py" feedback --maximum-routes 2000 --retention-days 30 --apply
 ```
 
-The first command is read-only. Compaction uses the feedback append lock and an atomic replacement, preserves route/label pairs, and still reports `storesTaskText=false` and `modelCalls=0`. Use `-NoFeedback` to disable recording for one run, configure `--mode off` to disable persistence globally, and use `-StateDir` or `-FeedbackFile` to isolate state.
+The first command is read-only. Compaction uses the feedback append lock and an atomic replacement, preserves route/label pairs, and still reports `storesTaskText=false` and `modelCalls=0`. Recording is off unless `-EnableFeedback` is supplied; `-FeedbackFile` requires that switch. `-NoFeedback` remains accepted for compatibility. Use `-StateDir` to isolate state.
 
 Desktop execution-report IDs use separate content-free idempotency markers. Completed markers have the same default 90-day / 5,000-marker window; pending and incomplete markers are never removed automatically and are surfaced for operator review. Because this is a bounded exact window, a report repeated after its marker expires is treated as new. Inspect or explicitly apply a custom window with:
 

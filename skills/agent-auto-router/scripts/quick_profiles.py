@@ -110,17 +110,22 @@ def load_quick_profiles(path: pathlib.Path | None = None) -> QuickProfiles:
         or safe.sandbox != "read-only"
         or not safe.noFeedback
         or safe.modelAffinity != "off"
+        or safe.repositoryContextMode != "off"
     ):
         raise ValueError(
-            "safe profile must be read-only with feedback and model affinity disabled"
+            "safe profile must be read-only with repository inspection, feedback, "
+            "and model affinity disabled"
         )
     if (
         standard is None
         or standard.sandbox != "workspace-write"
-        or standard.modelAffinity != "auto"
+        or not standard.noFeedback
+        or standard.modelAffinity != "off"
+        or standard.repositoryContextMode != "off"
     ):
         raise ValueError(
-            "standard profile must be workspace-write with model affinity enabled"
+            "standard profile must be workspace-write with repository inspection, "
+            "feedback, and model affinity disabled"
         )
     return QuickProfiles(default_profile, profiles, str(source))
 

@@ -1,6 +1,6 @@
 {
   "name": "agent-auto-router",
-  "version": "0.15.0+codex.20260811",
+  "version": "0.15.0+codex.20260813015724",
   "description": "Deterministic model routing and bounded orchestration for Codex and compatible agent hosts.",
   "author": {
     "name": "jinweechen",

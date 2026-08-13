@@ -26,8 +26,12 @@ class DoctorTests(unittest.TestCase):
         self.assertTrue(result["readyForLocalRouting"])
         self.assertTrue(result["readyForCliExecution"])
         self.assertEqual(result["modelCalls"], 0)
-        self.assertEqual(result["defaults"]["learningMode"], "observe")
-        self.assertEqual(result["defaults"]["orchestrationPolicy"], "auto")
+        self.assertEqual(result["defaults"]["learningMode"], "off")
+        self.assertEqual(result["defaults"]["configuredLearningMode"], "observe")
+        self.assertEqual(result["defaults"]["feedback"], "off")
+        self.assertEqual(result["defaults"]["repositoryContext"], "off")
+        self.assertEqual(result["defaults"]["modelAffinity"], "off")
+        self.assertEqual(result["defaults"]["orchestrationPolicy"], "direct")
         self.assertEqual(result["defaults"]["quickExecutionTopology"], "direct")
         self.assertNotIn("environment", result)
         self.assertFalse(result["privacy"]["pathsIncluded"])
@@ -76,8 +80,8 @@ class DoctorTests(unittest.TestCase):
                 },
                 "issues": [],
                 "defaults": {
-                    "learningMode": "observe",
-                    "orchestrationPolicy": "auto",
+                    "learningMode": "off",
+                    "orchestrationPolicy": "direct",
                     "quickExecutionTopology": "direct",
                 },
                 "modelCalls": 0,
@@ -87,7 +91,7 @@ class DoctorTests(unittest.TestCase):
         summary = output.getvalue()
         self.assertIn("Agent Auto Router doctor: READY", summary)
         self.assertIn("Quick profiles: safe, standard", summary)
-        self.assertIn("Defaults: learning=observe, orchestration=auto, quick=direct", summary)
+        self.assertIn("Defaults: learning=off, orchestration=direct, quick=direct", summary)
         self.assertNotIn('"schema"', summary)
 
     def test_json_cli_preserves_machine_readable_output(self) -> None:

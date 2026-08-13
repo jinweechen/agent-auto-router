@@ -14,12 +14,10 @@ from pathlib import Path
 from model_registry import load_model_registry, registry_digest
 from benchmark_priors import benchmark_priors_digest, load_benchmark_priors
 from execution_plan import (
-    DEFAULT_ORCHESTRATION_POLICY,
     ORCHESTRATION_POLICIES,
     build_execution_plan,
 )
 from model_affinity import (
-    DEFAULT_MODEL_AFFINITY_MODE,
     MODEL_AFFINITY_MODES,
     resolve_model_affinity,
     workspace_identity,
@@ -56,21 +54,23 @@ def main() -> int:
     parser.add_argument("--feedback-file", type=Path)
     parser.add_argument("--workdir", type=Path)
     parser.add_argument(
-        "--repository-context", choices=("auto", "off"), default="auto"
+        "--repository-context", choices=("auto", "off"), default="off"
     )
-    parser.add_argument("--ignore-active-policy", action="store_true")
+    policy_source_group = parser.add_mutually_exclusive_group()
+    policy_source_group.add_argument("--use-active-policy", action="store_true")
+    policy_source_group.add_argument("--ignore-active-policy", action="store_true")
     parser.add_argument("--available-backends", default="auto")
     parser.add_argument("--validation-configured", action="store_true")
     parser.add_argument(
         "--orchestration-policy",
         choices=ORCHESTRATION_POLICIES,
-        default=DEFAULT_ORCHESTRATION_POLICY,
+        default="direct",
     )
     parser.add_argument("--confirm-high-risk-orchestration", action="store_true")
     parser.add_argument(
         "--model-affinity",
         choices=MODEL_AFFINITY_MODES,
-        default=DEFAULT_MODEL_AFFINITY_MODE,
+        default="off",
     )
     route_input = parser.add_mutually_exclusive_group(required=True)
     route_input.add_argument("--text")
@@ -84,16 +84,16 @@ def main() -> int:
         if args.policy_file:
             policy = load_policy_file(args.policy_file)
             policy_source = str(args.policy_file)
-        elif args.ignore_active_policy:
-            policy = RoutingPolicy()
-            policy_source = "builtin"
-        else:
+        elif args.use_active_policy:
             policy, policy_source = load_policy_for_route(
                 args.state_dir,
                 route_id,
                 registry_digest_value=registry_digest(registry),
                 benchmark_priors_digest_value=benchmark_priors_digest(benchmark_priors),
             )
+        else:
+            policy = RoutingPolicy()
+            policy_source = "builtin"
 
         # Resolve available backends
         if args.available_backends == "auto":

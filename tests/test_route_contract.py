@@ -68,6 +68,33 @@ class RouteDecisionContractTests(unittest.TestCase):
         )
         self.assertNotIn("Reply with OK", json.dumps(cli_route["routeDecision"]))
 
+    def test_selector_defaults_to_stateless_direct_routing_without_repo_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            feedback = root / "feedback.jsonl"
+            feedback.write_text("not-json\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "select_auto_model.py"),
+                    "--text", "Implement a routine change",
+                    "--workdir", str(root),
+                    "--feedback-file", str(feedback),
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=True,
+            )
+            route = json.loads(completed.stdout)["routeDecision"]
+        self.assertEqual(route["policy"]["source"], "builtin")
+        self.assertEqual(route["repository"]["mode"], "off")
+        self.assertTrue(route["repository"]["metadata"]["inspection_disabled"])
+        self.assertEqual(route["repository"]["metadata"]["scan_duration_ms"], 0)
+        self.assertEqual(route["modelAffinity"]["mode"], "off")
+        self.assertEqual(route["executionPlan"]["orchestrationPolicy"], "direct")
+        self.assertEqual(route["executionPlan"]["topology"], "direct")
+
     def test_explicit_override_preserves_selector_and_selected_identity(self) -> None:
         route = self.select(
             "--text", "Reply with exactly OK", "--model-choice", "sol"

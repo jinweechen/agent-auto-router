@@ -13,11 +13,11 @@ param(
     [ValidateSet('lean', 'full')]
     [string]$ContextMode = 'lean',
     [ValidateSet('auto', 'off')]
-    [string]$RepositoryContextMode = 'auto',
+    [string]$RepositoryContextMode = 'off',
     [ValidateSet('direct', 'recommend', 'auto')]
-    [string]$OrchestrationPolicy = 'auto',
+    [string]$OrchestrationPolicy = 'direct',
     [ValidateSet('auto', 'off')]
-    [string]$ModelAffinity = 'auto',
+    [string]$ModelAffinity = 'off',
     [switch]$ConfirmHighRiskOrchestration,
     [ValidateSet('cli', 'desktop')]
     [string]$ExecutionBackend = 'cli',
@@ -29,6 +29,8 @@ param(
     [string]$FeedbackFile = '',
     [string[]]$ValidationCommand = @(),
     [switch]$EscalateOnValidationFailure,
+    [switch]$EnableLearningPolicy,
+    [switch]$EnableFeedback,
     [switch]$NoFeedback,
     [switch]$DryRun,
     [switch]$Explain,
@@ -65,6 +67,13 @@ if ($ExecutionBackend -eq 'desktop' -and $ContextMode -ne 'lean') {
 if ($ExecutionBackend -eq 'desktop' -and $FeedbackFile) {
     throw 'Desktop v3 cannot write execution feedback; -FeedbackFile is CLI-only.'
 }
+if ($EnableFeedback -and $NoFeedback) {
+    throw '-EnableFeedback and -NoFeedback cannot be used together.'
+}
+if ($FeedbackFile -and -not $EnableFeedback) {
+    throw '-FeedbackFile requires -EnableFeedback.'
+}
+$feedbackEnabled = [bool]$EnableFeedback
 $resolvedWorkdir = (Resolve-Path -LiteralPath $Workdir).Path
 if ($EscalateOnValidationFailure -and $ModelChoice -ne 'auto') {
     throw 'Validation-driven escalation requires -Model auto so the trusted route determines the next tier.'
@@ -87,6 +96,9 @@ if ($ValidationCommand.Count -gt 0) {
 if ($ConfirmHighRiskOrchestration) {
     $selectorArguments += '--confirm-high-risk-orchestration'
 }
+if ($EnableLearningPolicy) {
+    $selectorArguments += '--use-active-policy'
+}
 if (-not $DryRun -and -not $HostPermissionsJson -and $Sandbox -eq 'inherit') {
     throw 'Automatic permission inheritance requires -HostPermissionsJson from the current host runtime.'
 }
@@ -96,7 +108,8 @@ if ($ExecutionBackend -eq 'desktop' -and -not $HostPermissionsJson) {
 # Both built-in execution backends are Codex-only. Desktop availability comes
 # from the current runtime metadata and must never be inferred from CLI PATH.
 $selectorArguments += @('--available-backends', 'codex')
-if (-not $DryRun) {
+$usesProtectedRouterState = $EnableLearningPolicy -or $feedbackEnabled -or $ModelAffinity -ne 'off'
+if (-not $DryRun -and $ExecutionBackend -eq 'cli' -and $usesProtectedRouterState) {
     $boundaryPermissionsJson = $HostPermissionsJson
     if (-not $boundaryPermissionsJson) {
         $explicitRoots = if ($Sandbox -eq 'workspace-write') { @($resolvedWorkdir) } else { @() }
@@ -187,7 +200,7 @@ if ($ExecutionBackend -eq 'desktop') {
         $desktopArguments += @('--available-model', $availableModel)
     }
     if ($DryRun) { $desktopArguments += '--dry-run' }
-    if ($NoFeedback) { $desktopArguments += '--no-feedback' }
+    if (-not $feedbackEnabled) { $desktopArguments += '--no-feedback' }
     $previousOutputEncoding = $OutputEncoding
     $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
     try {
@@ -197,6 +210,44 @@ if ($ExecutionBackend -eq 'desktop') {
         $OutputEncoding = $previousOutputEncoding
     }
     if (-not $desktopPlanRaw) { throw 'Desktop execution planning failed without a plan.' }
+    $desktopPlan = $desktopPlanRaw | ConvertFrom-Json
+    if ($desktopExitCode -eq 0 -and -not $DryRun -and $usesProtectedRouterState) {
+        $boundaryArguments = @(
+            $guardedPath, 'check-boundary', '--state-dir', $StateDir,
+            '--host-permissions-json', $HostPermissionsJson,
+            '--requested-sandbox', $Sandbox, '--model-affinity', $ModelAffinity
+        )
+        $boundaryResult = & $python.Source @boundaryArguments 2>&1
+        $boundaryExitCode = $LASTEXITCODE
+        if ($boundaryExitCode -ne 0) {
+            $boundaryText = $boundaryResult -join [Environment]::NewLine
+            try {
+                $boundaryBlock = $boundaryText | ConvertFrom-Json
+            } catch {
+                $boundaryBlock = [pscustomobject]@{
+                    reason = 'guarded-auto-boundary-invalid-response'
+                    message = 'Guarded automatic learning boundary returned an invalid response.'
+                    modelCalls = 0
+                }
+            }
+            $desktopPlan.status = 'blocked'
+            $desktopPlan.executionRequested = $false
+            $desktopPlan.plannedAgentCalls = 0
+            $desktopPlan.agents = @()
+            $desktopPlan.stages = @()
+            $desktopPlan.hostContract.action = 'blocked'
+            $desktopPlan.hostContract.maxAgents = 0
+            $desktopPlan.hostContract.maxParallelAgents = 0
+            $desktopPlan.hostContract.onlyWriter = $null
+            $desktopPlan.blocked = [pscustomobject]@{
+                code = [string]$boundaryBlock.reason
+                message = [string]$boundaryBlock.message
+                modelCalls = 0
+            }
+            $desktopPlan | ConvertTo-Json -Depth 32 -Compress | Write-Output
+            exit 2
+        }
+    }
     $desktopPlanRaw | Write-Output
     exit $desktopExitCode
 }
@@ -351,7 +402,7 @@ if ($attemptResults.Count -gt 0) {
     }
 }
 
-if (-not $NoFeedback) {
+if ($feedbackEnabled) {
     $resolvedFeedbackFile = if ($FeedbackFile) { $FeedbackFile } else { Join-Path $StateDir 'feedback.jsonl' }
     $feedbackPayload = [ordered]@{
         route_id = $routeId

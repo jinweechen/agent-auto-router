@@ -182,13 +182,18 @@ def build_desktop_plan(
     resolved_workdir = pathlib.Path(workdir).resolve(strict=True)
     if not resolved_workdir.is_dir():
         raise ValueError(f"workdir must be a directory: {resolved_workdir}")
-    permissions = (
-        host_permissions
-        if isinstance(host_permissions, HostPermissions)
-        else parse_host_permissions(host_permissions)
-        if host_permissions is not None
-        else None
-    )
+    permission_error: str | None = None
+    try:
+        permissions = (
+            host_permissions
+            if isinstance(host_permissions, HostPermissions)
+            else parse_host_permissions(host_permissions)
+            if host_permissions is not None
+            else None
+        )
+    except ValueError as exc:
+        permissions = None
+        permission_error = str(exc)
     permission_plan = permissions.as_plan(requested_sandbox) if permissions else None
     effective_sandbox = permission_plan["effectiveSandbox"] if permission_plan else "read-only"
     would_write = effective_sandbox != "read-only"
@@ -236,9 +241,9 @@ def build_desktop_plan(
             "silentModelOrProviderFallback": False,
             "roleModelResolution": "profile-exact-or-declared-runtime-tier-upgrade",
             "workspaceSharing": "shared",
-            "readOnlyRoleEnforcement": "instructions-plus-workspace-state-check",
+            "readOnlyRoleEnforcement": "instructions-plus-host-runtime",
             "terminalReconciliation": "required",
-            "workspaceChangeReporting": "coordinator-authoritative",
+            "workspaceChangeReporting": "host-native",
         },
         "coordination": {
             "mode": "staged-dag",
@@ -280,9 +285,19 @@ def build_desktop_plan(
                 "advisorySignals": ["list_agents"],
                 "conflictPolicy": "authoritative-terminal-wins",
                 "staleRunningPolicy": "record_without_relaunch",
+                "hostUiStatusIsAdvisory": True,
+                "completedChildMissingParentCompletionActivityPolicy": "record-stale-host-ui",
+                "neverInterruptOrRelaunchAuthoritativelyTerminalChild": True,
                 "lateTerminalAfterTimeoutPolicy": "record_child_terminal_preserve_timeout_outcome",
                 "requiredBeforeDependentStage": True,
                 "requiredBeforeFinalResponse": True,
+            },
+            "checkpointPolicy": {
+                "maximumOpenRunsPerParentTurn": 1,
+                "newRunRequiresPreviousTerminalReconciliation": True,
+                "scopeExpansionPolicy": "defer-to-next-parent-turn",
+                "closeParentTurnAfterRun": True,
+                "interruptedChildWithoutFinalOutcome": "incomplete",
             },
             "cleanupPolicy": {
                 "mode": "try-finally",
@@ -300,24 +315,15 @@ def build_desktop_plan(
                 "unresolvedAfterInterruptState": "orphaned",
             },
             "workspaceChangeReconciliation": {
-                "sourceOfTruth": "coordinator-workdir",
-                "captureBaselineBeforeFirstSpawn": True,
-                "captureFinalAfterCleanup": True,
+                "owner": "host-runtime",
+                "requiredByRouter": False,
+                "automaticSnapshot": False,
+                "captureBaselineBeforeFirstSpawn": False,
+                "captureFinalAfterCleanup": False,
                 "snapshotTool": "scripts/desktop_workspace_snapshot.py",
-                "baselineStorage": "outside-child-writable-roots",
-                "forbiddenRootsSource": "effective-permissions-writableRoots",
-                "protectedPathValidation": True,
-                "manifestFormat": "path-type-mode-size-sha256-plus-git-status-v1",
-                "gitPathEnumeration": "ls-files-cached-others-exclude-standard-z",
-                "gitStatusFormat": "porcelain-v1-z-untracked-files-all",
-                "nonGitFallback": "deterministic-path-content-manifest",
-                "comparison": "baseline-to-final-content-identity",
-                "childPatchEvents": "advisory-only",
-                "authoritativeChangedPaths": "runChangedPaths",
-                "authoritativeChangedFileCount": "runChangedFileCount",
-                "reportPreexistingDirtyPaths": True,
-                "reportFinalDirtyPaths": True,
-                "failOnUnexpectedReadOnlyChange": True,
+                "snapshotUse": "explicit-host-diagnostic-only",
+                "automaticRetry": False,
+                "routerBlocksOnSnapshotAbsence": False,
             },
             "writerClaim": {
                 "mode": "exclusive",
@@ -352,12 +358,20 @@ def build_desktop_plan(
         "blocked": None,
     }
 
+    if permission_error is not None:
+        return _blocked(
+            plan,
+            "invalid-host-permissions",
+            permission_error,
+        )
+
     if permissions is None:
         return _blocked(
             plan,
             "desktop_host_permissions_required",
             "Automatic Desktop execution requires a trusted current-turn host permission snapshot.",
         )
+
     if would_write and not workdir_is_writable(resolved_workdir, permissions):
         return _blocked(
             plan,

@@ -73,6 +73,26 @@ class DesktopExecutionTests(unittest.TestCase):
         self.assertEqual(plan["status"], "blocked")
         self.assertEqual(plan["blocked"]["code"], "desktop_host_permissions_required")
 
+    def test_invalid_host_permissions_return_structured_blocked_plan(self) -> None:
+        route = route_for("Implement a routine change")
+        permissions = host_permissions()
+        permissions.pop("source")
+        plan = build_desktop_plan(
+            route,
+            [_bare(route["selectedModel"])],
+            workdir=SCRIPTS.parents[2],
+            host_permissions=permissions,
+            max_parallel_children=3,
+        )
+        self.assertEqual(plan["status"], "blocked")
+        self.assertFalse(plan["executionRequested"])
+        self.assertEqual(plan["plannedAgentCalls"], 0)
+        self.assertEqual(plan["agents"], [])
+        self.assertEqual(plan["stages"], [])
+        self.assertEqual(plan["blocked"]["code"], "invalid-host-permissions")
+        self.assertIn("source", plan["blocked"]["message"])
+        self.assertEqual(plan["modelCalls"], 0)
+
     def test_read_only_host_cannot_produce_a_writer(self) -> None:
         route = route_for("Review a routine change")
         plan = build_desktop_plan(
@@ -158,6 +178,7 @@ class DesktopExecutionTests(unittest.TestCase):
         coordination = plan["coordination"]
         timeout = coordination["timeoutPolicy"]
         terminal = coordination["terminalReconciliation"]
+        checkpoint = coordination["checkpointPolicy"]
         cleanup = coordination["cleanupPolicy"]
         direct = agent_for(plan, "direct")
 
@@ -181,6 +202,19 @@ class DesktopExecutionTests(unittest.TestCase):
         self.assertEqual(terminal["advisorySignals"], ["list_agents"])
         self.assertEqual(terminal["conflictPolicy"], "authoritative-terminal-wins")
         self.assertEqual(terminal["staleRunningPolicy"], "record_without_relaunch")
+        self.assertTrue(terminal["hostUiStatusIsAdvisory"])
+        self.assertEqual(
+            terminal["completedChildMissingParentCompletionActivityPolicy"],
+            "record-stale-host-ui",
+        )
+        self.assertTrue(terminal["neverInterruptOrRelaunchAuthoritativelyTerminalChild"])
+        self.assertEqual(checkpoint["maximumOpenRunsPerParentTurn"], 1)
+        self.assertTrue(checkpoint["newRunRequiresPreviousTerminalReconciliation"])
+        self.assertEqual(checkpoint["scopeExpansionPolicy"], "defer-to-next-parent-turn")
+        self.assertTrue(checkpoint["closeParentTurnAfterRun"])
+        self.assertEqual(
+            checkpoint["interruptedChildWithoutFinalOutcome"], "incomplete"
+        )
         self.assertEqual(cleanup["mode"], "try-finally")
         self.assertTrue(cleanup["interruptUnresolvedAgents"])
         self.assertTrue(cleanup["skipAuthoritativelyTerminalAgents"])
@@ -197,7 +231,7 @@ class DesktopExecutionTests(unittest.TestCase):
         self.assertIn("terminal_reconciled", coordination["auditEventTypes"])
         self.assertIn("workspace_reconciled", coordination["auditEventTypes"])
 
-    def test_desktop_plan_makes_parent_workspace_change_count_authoritative(self) -> None:
+    def test_desktop_plan_delegates_workspace_change_detection_to_host(self) -> None:
         route = route_for(
             "Implement API and tests for several independent components",
             criteria=["API", "tests", "docs", "rollback"],
@@ -213,36 +247,18 @@ class DesktopExecutionTests(unittest.TestCase):
         self.assertEqual(plan["hostContract"]["workspaceSharing"], "shared")
         self.assertEqual(
             plan["hostContract"]["workspaceChangeReporting"],
-            "coordinator-authoritative",
+            "host-native",
         )
-        self.assertEqual(reconciliation["sourceOfTruth"], "coordinator-workdir")
-        self.assertTrue(reconciliation["captureBaselineBeforeFirstSpawn"])
-        self.assertTrue(reconciliation["captureFinalAfterCleanup"])
+        self.assertEqual(reconciliation["owner"], "host-runtime")
+        self.assertFalse(reconciliation["requiredByRouter"])
+        self.assertFalse(reconciliation["automaticSnapshot"])
+        self.assertFalse(reconciliation["captureBaselineBeforeFirstSpawn"])
+        self.assertFalse(reconciliation["captureFinalAfterCleanup"])
         self.assertEqual(
-            reconciliation["manifestFormat"],
-            "path-type-mode-size-sha256-plus-git-status-v1",
+            reconciliation["snapshotUse"], "explicit-host-diagnostic-only"
         )
-        self.assertEqual(
-            reconciliation["gitStatusFormat"],
-            "porcelain-v1-z-untracked-files-all",
-        )
-        self.assertEqual(
-            reconciliation["comparison"],
-            "baseline-to-final-content-identity",
-        )
-        self.assertEqual(
-            reconciliation["forbiddenRootsSource"],
-            "effective-permissions-writableRoots",
-        )
-        self.assertTrue(reconciliation["protectedPathValidation"])
-        self.assertEqual(reconciliation["childPatchEvents"], "advisory-only")
-        self.assertEqual(reconciliation["authoritativeChangedPaths"], "runChangedPaths")
-        self.assertEqual(
-            reconciliation["authoritativeChangedFileCount"],
-            "runChangedFileCount",
-        )
-        self.assertTrue(reconciliation["reportPreexistingDirtyPaths"])
-        self.assertTrue(reconciliation["reportFinalDirtyPaths"])
+        self.assertFalse(reconciliation["automaticRetry"])
+        self.assertFalse(reconciliation["routerBlocksOnSnapshotAbsence"])
 
     def test_extended_reasoning_effort_gets_extended_but_bounded_timeout(self) -> None:
         route = route_for("Implement a routine change")
@@ -587,7 +603,7 @@ class DesktopExecutionTests(unittest.TestCase):
         repository = SCRIPTS.parents[2].resolve()
         command = (
             f"& '{script}' -Task 'Implement a routine change' "
-            "-ExecutionBackend desktop -DryRun -Explain -Json -NoFeedback "
+            "-ExecutionBackend desktop -DryRun -Explain -Json "
             "-DesktopAvailableModels @('gpt-5.6-sol','gpt-5.6-terra') "
             "-DesktopMaxParallelChildren 3 "
             f"-Workdir '{repository}' -HostPermissionsJson '{json.dumps(host_permissions())}'"
@@ -610,6 +626,93 @@ class DesktopExecutionTests(unittest.TestCase):
         self.assertTrue(agent_for(plan, "direct")["wouldWrite"])
         self.assertEqual(plan["hostContract"]["action"], "report_plan")
         self.assertEqual(plan["hostContract"]["maxAgents"], 0)
+        self.assertEqual(plan["learning"]["mode"], "off")
+        self.assertTrue(plan["learning"]["disabledByInvocation"])
+
+    def test_desktop_entrypoint_missing_permission_source_is_structured(self) -> None:
+        powershell = shutil.which("pwsh") or shutil.which("powershell")
+        self.assertIsNotNone(powershell)
+        script = SCRIPTS / "invoke_auto_task.ps1"
+        repository = SCRIPTS.parents[2].resolve()
+        permissions = host_permissions()
+        permissions.pop("source")
+        command = (
+            f"& '{script}' -Task 'Implement a routine change' "
+            "-ExecutionBackend desktop -DryRun -NoFeedback "
+            "-DesktopAvailableModels @('gpt-5.6-sol','gpt-5.6-terra') "
+            "-DesktopMaxParallelChildren 3 "
+            f"-Workdir '{repository}' -HostPermissionsJson '{json.dumps(permissions)}'"
+        )
+        completed = subprocess.run(
+            [powershell, "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        plan = json.loads(completed.stdout.strip())
+        self.assertEqual(plan["status"], "blocked")
+        self.assertEqual(plan["blocked"]["code"], "invalid-host-permissions")
+        self.assertEqual(plan["plannedAgentCalls"], 0)
+        self.assertEqual(plan["modelCalls"], 0)
+        self.assertNotIn("usage:", completed.stderr.lower())
+
+    def test_desktop_guarded_full_access_boundary_is_structured(self) -> None:
+        powershell = shutil.which("pwsh") or shutil.which("powershell")
+        self.assertIsNotNone(powershell)
+        script = SCRIPTS / "invoke_auto_task.ps1"
+        guarded = SCRIPTS / "guarded_auto.py"
+        repository = SCRIPTS.parents[2].resolve()
+        permissions = host_permissions("danger-full-access")
+        permissions["networkAccess"] = True
+        with tempfile.TemporaryDirectory() as temp:
+            state_dir = pathlib.Path(temp) / "state"
+            configured = subprocess.run(
+                [
+                    sys.executable,
+                    str(guarded),
+                    "configure",
+                    "--state-dir",
+                    str(state_dir),
+                    "--mode",
+                    "guarded",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(configured.returncode, 0, configured.stderr)
+            command = (
+                f"& '{script}' -Task 'Implement a routine change' "
+                "-ExecutionBackend desktop -EnableLearningPolicy -NoFeedback "
+                "-DesktopAvailableModels @('gpt-5.6-sol','gpt-5.6-terra') "
+                "-DesktopMaxParallelChildren 3 "
+                f"-StateDir '{state_dir}' -Workdir '{repository}' "
+                f"-HostPermissionsJson '{json.dumps(permissions)}'"
+            )
+            completed = subprocess.run(
+                [powershell, "-NoProfile", "-NonInteractive", "-Command", command],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+        self.assertNotEqual(completed.returncode, 0, completed.stderr)
+        plan = json.loads(completed.stdout.strip())
+        self.assertEqual(plan["status"], "blocked")
+        self.assertFalse(plan["executionRequested"])
+        self.assertEqual(plan["plannedAgentCalls"], 0)
+        self.assertEqual(plan["agents"], [])
+        self.assertEqual(plan["stages"], [])
+        self.assertEqual(
+            plan["blocked"]["code"], "guarded-auto-state-writable-by-child"
+        )
+        self.assertEqual(plan["blocked"]["modelCalls"], 0)
+        self.assertNotIn("usage:", completed.stderr.lower())
 
     def test_desktop_entrypoint_routes_parallel_task_to_multi_agent_plan(self) -> None:
         powershell = shutil.which("pwsh") or shutil.which("powershell")
@@ -622,7 +725,7 @@ class DesktopExecutionTests(unittest.TestCase):
         )
         command = (
             f"& '{script}' -Task '{task}' "
-            "-ExecutionBackend desktop -DryRun -Json -NoFeedback "
+            "-ExecutionBackend desktop -DryRun -Json -NoFeedback -OrchestrationPolicy auto "
             "-DesktopAvailableModels @('gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna') "
             "-DesktopMaxParallelChildren 3 "
             f"-Workdir '{repository}' -HostPermissionsJson '{json.dumps(host_permissions())}'"
@@ -655,7 +758,7 @@ class DesktopExecutionTests(unittest.TestCase):
         task = "并行审查多个独立模块，覆盖调试、长上下文和多文件任务，最后统一审查"
         command = (
             f"& '{script}' -Task '{task}' "
-            "-ExecutionBackend desktop -DryRun -Json -NoFeedback "
+            "-ExecutionBackend desktop -DryRun -Json -NoFeedback -OrchestrationPolicy auto "
             "-DesktopAvailableModels @('gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna') "
             "-DesktopMaxParallelChildren 3 "
             f"-Workdir '{repository}' -HostPermissionsJson '{json.dumps(host_permissions())}'"

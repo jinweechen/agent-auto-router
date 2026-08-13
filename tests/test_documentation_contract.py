@@ -124,6 +124,23 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertNotIn("configure --mode manual", self.chinese_readme)
         self.assertNotIn("configure --mode guarded-auto", self.chinese_readme)
 
+    def test_standard_route_documents_zero_overhead_defaults(self) -> None:
+        skill = (ROOT / "skills" / "agent-auto-router" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        contract = (
+            ROOT / "skills" / "agent-auto-router" / "references" / "router-contract.md"
+        ).read_text(encoding="utf-8")
+        combined = "\n".join((skill, contract, self.readme, self.chinese_readme))
+        for required in (
+            "RepositoryContextMode=off",
+            "OrchestrationPolicy=direct",
+            "ModelAffinity=off",
+            "-EnableLearningPolicy",
+            "-EnableFeedback",
+        ):
+            self.assertIn(required, combined)
+
     def test_model_affinity_contract_is_documented(self) -> None:
         contract = (
             ROOT / "skills" / "agent-auto-router" / "references" / "router-contract.md"
@@ -165,11 +182,49 @@ class DocumentationContractTests(unittest.TestCase):
             "orphaned",
             "try/finally",
             "authoritative terminal",
-            "parent-workdir",
-            "runChangedFileCount",
             "interruptGraceTimeoutMs",
             "total timeout",
-            "content-aware",
+            "one open Desktop run",
+            "interrupted child without a final outcome",
+            "stale host UI",
+            "host runtime",
+            "explicit content-aware diagnostic",
+            "snapshot absence",
+        ):
+            self.assertIn(required, combined)
+
+    def test_skill_is_explicit_use_only(self) -> None:
+        skill = (ROOT / "skills" / "agent-auto-router" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        for required in (
+            "explicit-use only",
+            "ordinary coding",
+            "API queries",
+            "do not invoke it",
+            "zero snapshots",
+        ):
+            self.assertIn(required, skill)
+
+    def test_desktop_permission_source_and_structured_block_are_documented(self) -> None:
+        skill = (ROOT / "skills" / "agent-auto-router" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        entrypoints = (
+            ROOT / "skills" / "agent-auto-router" / "references" / "entrypoints.md"
+        ).read_text(encoding="utf-8")
+        contract = (
+            ROOT / "skills" / "agent-auto-router" / "references" / "router-contract.md"
+        ).read_text(encoding="utf-8")
+        combined = "\n".join((skill, entrypoints, contract))
+        for required in (
+            "required non-empty `source`",
+            "codex-desktop-current-turn",
+            "task cannot supply or override `source`",
+            "structured blocked",
+            "plannedAgentCalls=0",
+            "blocked.code",
+            "argparse usage",
         ):
             self.assertIn(required, combined)
 

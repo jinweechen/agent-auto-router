@@ -23,9 +23,12 @@ class QuickProfileTests(unittest.TestCase):
         self.assertEqual(set(profiles.profiles), {"safe", "standard"})
         self.assertEqual(profiles.profiles["safe"].sandbox, "read-only")
         self.assertTrue(profiles.profiles["safe"].noFeedback)
+        self.assertEqual(profiles.profiles["safe"].repositoryContextMode, "off")
         self.assertEqual(profiles.profiles["safe"].modelAffinity, "off")
         self.assertEqual(profiles.profiles["standard"].sandbox, "workspace-write")
-        self.assertEqual(profiles.profiles["standard"].modelAffinity, "auto")
+        self.assertTrue(profiles.profiles["standard"].noFeedback)
+        self.assertEqual(profiles.profiles["standard"].repositoryContextMode, "off")
+        self.assertEqual(profiles.profiles["standard"].modelAffinity, "off")
         payload = profile_payload(profiles, "standard")
         self.assertEqual(payload["schema"], SCHEMA)
         self.assertEqual(payload["modelCalls"], 0)
@@ -52,6 +55,17 @@ class QuickProfileTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "safe profile"):
                 load_quick_profiles(path)
 
+    def test_profile_loader_rejects_repository_scan_for_standard_profile(self) -> None:
+        source = json.loads(
+            (SCRIPTS / "quick_profiles.json").read_text(encoding="utf-8")
+        )
+        source["profiles"]["standard"]["repositoryContextMode"] = "auto"
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "profiles.json"
+            path.write_text(json.dumps(source), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "standard profile"):
+                load_quick_profiles(path)
+
     @unittest.skipUnless(
         shutil.which("pwsh") or shutil.which("powershell"),
         "PowerShell is required for the quick wrapper DryRun",
@@ -60,7 +74,7 @@ class QuickProfileTests(unittest.TestCase):
         powershell = shutil.which("pwsh") or shutil.which("powershell")
         expected = {
             "safe": ("read-only", "off", False),
-            "standard": ("workspace-write", "auto", True),
+            "standard": ("workspace-write", "off", False),
         }
         for profile, (sandbox, affinity, feedback) in expected.items():
             with self.subTest(profile=profile):

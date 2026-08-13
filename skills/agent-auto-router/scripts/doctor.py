@@ -13,7 +13,6 @@ from typing import Any
 
 from benchmark_priors import load_benchmark_priors
 from codex_cli_adapter import codex_cli_available, resolve_codex_command
-from execution_plan import DEFAULT_ORCHESTRATION_POLICY
 from guarded_auto import DEFAULT_CONFIG
 from model_registry import load_model_registry
 from orchestration_profiles import load_orchestration_profiles
@@ -118,8 +117,12 @@ def build_diagnostic(
             "commandDiscoveryUsesPath": True,
         },
         "defaults": {
-            "learningMode": DEFAULT_CONFIG["mode"],
-            "orchestrationPolicy": DEFAULT_ORCHESTRATION_POLICY,
+            "learningMode": "off",
+            "configuredLearningMode": DEFAULT_CONFIG["mode"],
+            "feedback": "off",
+            "repositoryContext": "off",
+            "modelAffinity": "off",
+            "orchestrationPolicy": "direct",
             "quickExecutionTopology": "direct",
         },
         "modelCalls": 0,

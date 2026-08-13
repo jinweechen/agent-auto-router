@@ -1757,7 +1757,16 @@ def main() -> int:
                 args.candidate,
             )
         elif args.command == "check-boundary":
-            permissions = parse_host_permissions(args.host_permissions_json)
+            try:
+                permissions = parse_host_permissions(args.host_permissions_json)
+            except (ValueError, json.JSONDecodeError) as exc:
+                print(json.dumps({
+                    "protected": False,
+                    "reason": "invalid-host-permissions",
+                    "message": str(exc),
+                    "modelCalls": 0,
+                }, ensure_ascii=True, indent=2))
+                return 2
             try:
                 issue = learning_boundary_issue(
                     args.state_dir,
@@ -1790,6 +1799,14 @@ def main() -> int:
         else:
             result = status(args.state_dir, args.feedback_file)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
+        if args.command == "check-boundary":
+            print(json.dumps({
+                "protected": False,
+                "reason": "guarded-auto-boundary-check-failed",
+                "message": str(exc),
+                "modelCalls": 0,
+            }, ensure_ascii=True, indent=2))
+            return 2
         parser.error(str(exc))
     print(json.dumps(result, ensure_ascii=True, indent=2))
     return 0

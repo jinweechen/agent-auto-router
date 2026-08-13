@@ -1,6 +1,6 @@
 [project]
 name = "agent-auto-router"
-version = "0.15.0+codex.20260811"
+version = "0.15.0+codex.20260813015724"
 description = "Deterministic, registry-driven routing for Codex, Claude Code, and generic agent hosts"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }

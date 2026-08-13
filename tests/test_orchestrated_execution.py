@@ -221,6 +221,8 @@ class OrchestratedExecutionPolicyTests(unittest.TestCase):
                     "off",
                     "--feedback-file",
                     str(feedback_file),
+                    "--model-affinity",
+                    "auto",
                     "--ignore-active-policy",
                 ],
                 capture_output=True,
