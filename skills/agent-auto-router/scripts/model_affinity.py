@@ -9,11 +9,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from model_registry import TIER_RANK, ModelRegistry
+from protocol_schemas import MODEL_AFFINITY_SCHEMA
 
 
-MODEL_AFFINITY_SCHEMA = "agent-auto-router.model-affinity.v1"
-MODEL_AFFINITY_MODES = ("auto", "off")
-DEFAULT_MODEL_AFFINITY_MODE = "auto"
+MODEL_AFFINITY_MODES = ("session", "auto", "off")
+DEFAULT_MODEL_AFFINITY_MODE = "session"
 ROLE_MODEL_POLICY_AFFINITY = "selected-model-preferred"
 ROLE_MODEL_POLICY_PROFILE = "profile"
 AFFINITY_TTL_SECONDS = 30 * 60
@@ -106,7 +106,7 @@ def resolve_model_affinity(
 ) -> dict[str, Any]:
     """Choose an affinity model without ever retaining a weaker capability tier."""
     if mode not in MODEL_AFFINITY_MODES:
-        raise ValueError("model affinity mode must be auto or off")
+        raise ValueError("model affinity mode must be session, auto, or off")
     current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     result: dict[str, Any] = {
         "schema": MODEL_AFFINITY_SCHEMA,
@@ -118,7 +118,11 @@ def resolve_model_affinity(
         "targetTier": target_tier,
         "selectedTier": target_tier,
         "applied": False,
-        "reason": "disabled" if mode == "off" else "no-recent-workspace-evidence",
+        "reason": (
+            "disabled" if mode == "off"
+            else "session-role-reuse" if mode == "session"
+            else "no-recent-workspace-evidence"
+        ),
         "retainedStrongerTier": False,
         "previousModel": None,
         "previousModelAgeSeconds": None,
@@ -129,7 +133,7 @@ def resolve_model_affinity(
         "evidence": _cache_summary(()),
         "modelCalls": 0,
     }
-    if mode == "off" or workspace_key is None:
+    if mode in {"off", "session"} or workspace_key is None:
         return result
 
     recent: list[tuple[datetime, dict[str, Any]]] = []

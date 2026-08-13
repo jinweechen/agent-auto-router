@@ -9,14 +9,15 @@ import pathlib
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from protocol_schemas import QUICK_PROFILES_SCHEMA
 
-SCHEMA = "agent-auto-router.quick-profiles.v1"
+SCHEMA = QUICK_PROFILES_SCHEMA
 DEFAULT_PATH = pathlib.Path(__file__).with_name("quick_profiles.json")
 STRATEGIES = frozenset({"intelligence", "balance", "cost"})
 SANDBOXES = frozenset({"read-only", "workspace-write"})
 CONTEXT_MODES = frozenset({"lean", "full"})
-REPOSITORY_CONTEXT_MODES = frozenset({"auto", "off"})
-MODEL_AFFINITY_MODES = frozenset({"auto", "off"})
+REPOSITORY_CONTEXT_MODES = frozenset({"adaptive", "auto", "off"})
+MODEL_AFFINITY_MODES = frozenset({"session", "auto", "off"})
 PROFILE_KEYS = frozenset({
     "description", "strategy", "sandbox", "contextMode",
     "repositoryContextMode", "modelAffinity", "noFeedback",
@@ -120,12 +121,12 @@ def load_quick_profiles(path: pathlib.Path | None = None) -> QuickProfiles:
         standard is None
         or standard.sandbox != "workspace-write"
         or not standard.noFeedback
-        or standard.modelAffinity != "off"
-        or standard.repositoryContextMode != "off"
+        or standard.modelAffinity != "session"
+        or standard.repositoryContextMode != "adaptive"
     ):
         raise ValueError(
-            "standard profile must be workspace-write with repository inspection, "
-            "feedback, and model affinity disabled"
+            "standard profile must be workspace-write with adaptive repository inspection, "
+            "session-only affinity, and feedback disabled"
         )
     return QuickProfiles(default_profile, profiles, str(source))
 

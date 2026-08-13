@@ -8,7 +8,7 @@ param(
     [string]$Variant = 'auto',
     [ValidateSet('direct', 'recommend', 'auto')]
     [string]$OrchestrationPolicy = 'auto',
-    [ValidateSet('auto', 'off')]
+    [ValidateSet('session', 'auto', 'off')]
     [string]$ModelAffinity = 'auto',
     [switch]$ConfirmHighRiskOrchestration,
     [ValidateSet('', 'none', 'low', 'medium', 'high', 'xhigh', 'max')]
@@ -28,7 +28,7 @@ param(
     [string]$GraderPolicy = 'auto',
     [ValidateSet('lean', 'full')]
     [string]$ContextMode = 'lean',
-    [ValidateSet('auto', 'off')]
+    [ValidateSet('adaptive', 'auto', 'off')]
     [string]$RepositoryContextMode = 'auto',
     [ValidateSet('inherit', 'read-only', 'workspace-write', 'danger-full-access')]
     [string]$Sandbox = 'inherit',

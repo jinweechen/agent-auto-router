@@ -25,7 +25,6 @@ from cli_arguments import positive_int
 from codex_cli_adapter import CodexCliAdapter
 from execution_plan import ORCHESTRATION_POLICIES
 from model_affinity import (
-    DEFAULT_MODEL_AFFINITY_MODE,
     MODEL_AFFINITY_MODES,
     workspace_identity,
 )
@@ -45,9 +44,11 @@ from orchestration_engine import run_variant
 from orchestration_profiles import load_orchestration_profiles
 from policy_learning import append_route_event, default_feedback_path, load_maintained_feedback
 from repository_context import (
+    REPOSITORY_CONTEXT_MODES,
     build_repository_context,
     disabled_repository_inspection,
     inspect_repository,
+    should_inspect_repository,
 )
 from route_contract import (
     enrich_route_decision,
@@ -613,7 +614,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-affinity",
         choices=MODEL_AFFINITY_MODES,
-        default=DEFAULT_MODEL_AFFINITY_MODE,
+        # Calling this dedicated advanced entrypoint is the explicit opt-in.
+        default="auto",
     )
     parser.add_argument("--effort", choices=EFFORTS, default=None)
     parser.add_argument("--max-workers", type=positive_int, default=2)
@@ -641,7 +643,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-progress", action="store_true")
     parser.add_argument("--context-mode", choices=("lean", "full"), default="lean")
     parser.add_argument(
-        "--repository-context", choices=("auto", "off"), default="auto"
+        "--repository-context", choices=REPOSITORY_CONTEXT_MODES, default="auto"
     )
     parser.add_argument("--backend", default=None, help="Execute the whole orchestration on one backend (e.g. codex, claude). Default: all declared backends, codex-first.")
     parser.add_argument(
@@ -877,15 +879,18 @@ def main() -> int:
         "acceptance_criteria": criteria,
         "workspace_key": workspace_identity(args.workdir),
     }
+    repository_scan_enabled = should_inspect_repository(
+        prompt, args.repository_context
+    )
     repository_inspection = (
         inspect_repository(args.workdir, prompt)
-        if args.repository_context == "auto"
+        if repository_scan_enabled
         else disabled_repository_inspection()
     )
     repository_features = dict(repository_inspection)
     repository_features.pop("files", None)
     case["repository_features"] = repository_features
-    routing_effort = args.effort or args.planner_effort or "medium"
+    routing_effort = args.effort or args.planner_effort
     registry = load_model_registry()
     benchmark_priors = load_benchmark_priors(registry=registry)
     policy_route_id = (
@@ -944,7 +949,7 @@ def main() -> int:
     else:
         # Selecting a backend does not authorize models marked explicit-only.
         # This path has no explicit model parameter, so Auto honors autoEligible.
-        if args.model_affinity == "off":
+        if args.model_affinity != "auto":
             affinity_events = []
             affinity_error = None
         else:
@@ -984,7 +989,7 @@ def main() -> int:
             )
             return 2
     context_budget = routing["execution_plan"]["context"]
-    if args.repository_context == "auto":
+    if repository_scan_enabled:
         repository_context, repository_context_metadata = build_repository_context(
             args.workdir,
             prompt,

@@ -26,7 +26,7 @@ For a human-started task using an already signed-in CLI, use the fixed presets i
   "Implement the requested change" -Workdir "C:/path/to/repo"
 ```
 
-`standard` is the default and grants the child only `workspace-write` for the selected workdir; `-Profile safe` is read-only. Both keep Auto model selection, the balance strategy, lean context, and direct execution while disabling repository inspection, active-policy loading, feedback persistence, and model affinity. The wrapper never accepts arbitrary model, sandbox, writable-root, learning, report, or orchestration configuration; use the expert entrypoints below when those controls are genuinely required. A host must not use this wrapper to bypass trusted runtime permission metadata.
+`standard` is the default and grants the child only `workspace-write` for the selected workdir. It uses adaptive repository inspection, recommendation-only orchestration, session-only model reuse, the built-in policy, and no feedback. `-Profile safe` is read-only with repository inspection and affinity off. The wrapper never accepts arbitrary model, sandbox, writable-root, learning, report, or orchestration configuration; use the expert entrypoints below when those controls are genuinely required. A host must not use this wrapper to bypass trusted runtime permission metadata.
 
 ## Codex Desktop workflow
 
@@ -38,16 +38,17 @@ Inside Codex Desktop, use `scripts/invoke_auto_task.ps1` as a planner and set th
   -ExecutionBackend desktop `
   -DesktopAvailableModels @('gpt-5.6-sol', 'gpt-5.6-terra') `
   -DesktopMaxParallelChildren 3 `
+  -DesktopSpawnCapabilitiesJson $currentSpawnCapabilitiesJson `
   -HostPermissionsJson $currentTurnPermissionsJson `
   -Workdir "C:/path/to/repo" `
   -Explain
 ```
 
-The available-model list, maximum parallel child count, and permission snapshot must come from the current Desktop runtime. `DesktopMaxParallelChildren` counts child slots and excludes the primary coordinator. Build the permission snapshot as `agent-auto-router.host-permissions.v1` from trusted turn metadata. It requires a non-empty `source` provenance label assigned by the trusted host adapter (for example, `codex-desktop-current-turn`) plus `sandbox`, `approvalPolicy`, `networkAccess`, `writableRoots`, optional `profileId`, and `canRequestPermissions`. The task cannot supply or override `source`; never derive permission values from the task or untrusted environment variables.
+The available-model list, maximum parallel child count, permission snapshot, and spawn-capability snapshot must come from the current Desktop runtime. `DesktopMaxParallelChildren` counts child slots and excludes the primary coordinator. Build the permission snapshot as `agent-auto-router.host-permissions` from trusted turn metadata. Build `agent-auto-router.desktop-spawn-capabilities` from the live `spawn_agent` argument schema, declaring the current workdir and boolean support for `model`, `reasoningEffort`, `forkTurns`, `workdir`, and `sandbox`. Both snapshots require the same non-empty `source` provenance label assigned by the trusted host adapter. The task cannot supply or override `source`, and cannot supply or override either snapshot; never derive these values from task text or arbitrary environment variables.
 
 ```powershell
 $currentHostPermissionsJson = [ordered]@{
-  schema = 'agent-auto-router.host-permissions.v1'
+  schema = 'agent-auto-router.host-permissions'
   source = 'codex-desktop-current-turn'
   sandbox = $currentTurnSandbox
   approvalPolicy = $currentTurnApprovalPolicy
@@ -56,11 +57,24 @@ $currentHostPermissionsJson = [ordered]@{
   profileId = $currentTurnProfileId
   canRequestPermissions = $currentTurnCanRequestPermissions
 } | ConvertTo-Json -Compress
+
+$currentSpawnCapabilitiesJson = [ordered]@{
+  schema = 'agent-auto-router.desktop-spawn-capabilities'
+  source = 'codex-desktop-current-turn'
+  currentWorkdir = $currentTurnWorkdir
+  arguments = [ordered]@{
+    model = $spawnSupportsModel
+    reasoningEffort = $spawnSupportsReasoningEffort
+    forkTurns = $spawnSupportsForkTurns
+    workdir = $spawnSupportsWorkdir
+    sandbox = $spawnSupportsSandbox
+  }
+} | ConvertTo-Json -Depth 3 -Compress
 ```
 
-Invalid permission metadata and unsafe protected-state boundaries return a structured blocked Desktop plan with `executionRequested=false`, `plannedAgentCalls=0`, `blocked.code`, and `modelCalls=0`. They never launch a child and do not emit argparse usage text.
+Invalid permission/capability metadata and unsafe protected-state boundaries return a structured blocked Desktop plan with `executionRequested=false`, `plannedAgentCalls=0`, `blocked.code`, and `modelCalls=0`. A host without `workdir` or `sandbox` arguments may use only the exact inherited current workdir and sandbox; stricter direct isolation or read-only orchestration roles otherwise block before launch. They never launch a child and do not emit argparse usage text.
 
-The commands below reference model IDs as they appear in the Desktop runtime (bare IDs such as `gpt-5.6-sol`) or CLI (`codex exec --model`). Internally, the router uses backend-qualified IDs. The command prints one `agent-auto-router.desktop-plan.v3` JSON object and makes no model or CLI call. The plan excludes the task body while carrying the normalized workdir, role models, staged dependencies, effective permissions, call budget, idempotency keys, and lifecycle states.
+The commands below reference model IDs as they appear in the Desktop runtime (bare IDs such as `gpt-5.6-sol`) or CLI (`codex exec --model`). Internally, the router uses backend-qualified IDs. The command prints one `agent-auto-router.desktop-plan` JSON object and makes no model or CLI call. The plan excludes the task body while carrying the normalized workdir, role models, staged dependencies, effective permissions, call budget, idempotency keys, and lifecycle states.
 
 For `executionRequested=false`, report the plan and launch nothing. For `status=blocked`, launch nothing and report the structured reason. Otherwise the primary executes dependency-ready `stages`: serial planner/dispatcher, bounded parallel workers, one final reviewer, and an optional read-only grader. A/E/F usually contain only `direct`; high-risk direct work may add a grader. Use the exact role model, effort, `forkTurns=none`, workdir, and instance bounds. The primary provides the original task and upstream results because children receive no full-history fork.
 
@@ -72,11 +86,11 @@ Wrap the entire DAG in `try/finally`. On a stage deadline, mark the instance `ti
 
 Workspace-change detection belongs to the host runtime. The router never automatically invokes, retries, or waits for `desktop_workspace_snapshot.py`; the bundled tool remains available only when a user or host explicitly requests content-aware diagnostics. Snapshot absence never blocks routing or model execution.
 
-After a non-DryRun execution terminates, use `learning.route` unchanged, add a unique report ID and trusted host name, and fill the required result metadata from the actual run. Submit `agent-auto-router.execution-report.v1` to `guarded_auto.py report --stdin`. Do not submit task text, agent output, tool output, or a DryRun. Report ingestion is idempotent and advances guarded learning with zero model calls.
+After a non-DryRun execution terminates, use `learning.route` unchanged, add a unique report ID and trusted host name, and fill the required result metadata from the actual run. Submit `agent-auto-router.execution-report` to `guarded_auto.py report --stdin`. Do not submit task text, agent output, tool output, or a DryRun. Report ingestion is idempotent and advances guarded learning with zero model calls.
 
-Desktop `-DryRun` still requires all runtime metadata and emits the same plan schema with `executionRequested=false`, `plannedAgentCalls=0`, and `hostContract.action=report_plan`. `wouldPlanAgentCalls` retains the non-executable minimum/maximum estimate. Lifecycle, timeout, cleanup, workspace-reconciliation, model-affinity, and planned-switch fields remain visible so the protocol can be audited without launching children. `-Json` and `-NoFeedback` are idempotent: Desktop output is already JSON and Desktop v3 never records child output. `-FeedbackFile`, validation commands/escalation, and `-ContextMode full` are rejected as CLI-only or unsupported. Desktop never accesses credentials or app-server stdio and never falls back to CLI, another provider, lower model tier, effort, or permission level. A non-direct role may reuse the selected model only with `modelResolution=selected-model-affinity` and a satisfied tier/capability floor; otherwise a same-or-higher-tier runtime substitute must explicitly declare `modelResolution=runtime-tier-upgrade`.
+Desktop `-DryRun` still requires all runtime metadata and emits the same plan schema with `executionRequested=false`, `plannedAgentCalls=0`, and `hostContract.action=report_plan`. `wouldPlanAgentCalls` retains the non-executable minimum/maximum estimate. Lifecycle, timeout, cleanup, workspace-reconciliation, model-affinity, and planned-switch fields remain visible so the protocol can be audited without launching children. `-Json` and `-NoFeedback` are idempotent: Desktop output is already JSON and the Desktop protocol never records child output. `-FeedbackFile`, validation commands/escalation, and `-ContextMode full` are rejected as CLI-only or unsupported. Desktop never accesses credentials or app-server stdio and never falls back to CLI, another provider, lower model tier, effort, or permission level. A non-direct role may reuse the selected model only with `modelResolution=selected-model-affinity` and a satisfied tier/capability floor; otherwise a same-or-higher-tier runtime substitute must explicitly declare `modelResolution=runtime-tier-upgrade`.
 
-`invoke_auto_task.ps1` defaults to `-OrchestrationPolicy direct`. Select `recommend` to report an eligible worker plan while executing directly, or `auto` to allow B/C/D. A high-risk route remains direct under `auto` and sets `blockedByRiskGate=true`; pass `-ConfirmHighRiskOrchestration` explicitly to authorize the recommended worker plan. The dedicated `invoke_orchestrated_task.ps1` entrypoint remains an explicit advanced workflow.
+`invoke_auto_task.ps1` defaults to `-OrchestrationPolicy recommend`: it reports an eligible worker plan while executing directly with no extra model calls. Select `direct` to suppress recommendations or `auto` to allow B/C/D. A high-risk route remains direct under `auto` and sets `blockedByRiskGate=true`; pass `-ConfirmHighRiskOrchestration` explicitly to authorize the recommended worker plan. The dedicated `invoke_orchestrated_task.ps1` entrypoint remains an explicit advanced workflow.
 
 In route explanations, `recommended=true` means the utility gate and selected policy favor orchestration; under `auto`, the effective topology may already be orchestrated. `requiresExplicitOptIn=true` appears only for advisory `recommend` mode or the high-risk confirmation gate. Variant route labels are backend-neutral; use the backend-qualified selected and resolved role-model fields for exact model identity.
 
@@ -95,7 +109,7 @@ Use `scripts/invoke_auto_task.ps1 -ExecutionBackend cli` for expert controls. It
   -Explain
 ```
 
-Use `-DryRun` for a route explanation without a model call and `-Json` for JSONL execution output. The explanation includes selector and final model, role-model policy, effort, topology, context budget, bounded escalation eligibility, and the exact packaged rule terms that matched. It never repeats the full task or workspace path. Task text travels over UTF-8 stdin. The standard route is stateless and direct: repository context, active-policy loading, model affinity, feedback, and orchestration are off. Enable them separately with `-RepositoryContextMode auto`, `-EnableLearningPolicy`, `-ModelAffinity auto`, `-EnableFeedback`, or `-OrchestrationPolicy auto`.
+Use `-DryRun` for a route explanation without a model call and `-Json` for JSONL execution output. The explanation includes selector and final model, role-model policy, effort, topology, context budget, bounded escalation eligibility, and the exact packaged rule terms that matched. It never repeats the full task or workspace path. Task text travels over UTF-8 stdin. The standard route uses `-RepositoryContextMode adaptive`, `-OrchestrationPolicy recommend`, and `-ModelAffinity session`: plain-answer tasks skip scanning, execution remains direct, and no feedback is read or written. Use `auto` explicitly for forced scanning, cross-run affinity, or multi-agent execution. Active-policy loading and feedback persistence still require `-EnableLearningPolicy` and `-EnableFeedback`.
 
 Repository inspection injects aggregate statistics and deterministically ranked candidate paths, not file bodies. A complete relative path explicitly present in the task is pinned ahead of generic term matches, including hidden paths such as `.codex-plugin/plugin.json`. The model must still use its permitted read tools to inspect file contents. A successful CLI exit does not prove exact-output acceptance; use a deterministic validation command when formatting or content must be enforced, and opt into escalation separately if desired.
 
@@ -157,6 +171,8 @@ python "$HOME/.codex/skills/agent-auto-router/scripts/evaluate_development_route
 ```
 
 The summary reports acceptance, token coverage, observed tokens per accepted case only with complete coverage, and matched pairwise token deltas only where both routes passed. It does not estimate billing cost.
+
+The repository-only development harness also defaults to direct routing. Add `--orchestration-policy auto` only when the benchmark is explicitly evaluating Auto topology selection; `--routing-mode balance` by itself selects a model tier but does not enable orchestration or affinity.
 
 ## Zero-call diagnostics
 
@@ -223,11 +239,11 @@ Keep `--state-dir` and any `--feedback-file` outside every child-writable root w
 
 ## Conversation boundary
 
-Neither backend adds `Auto` to the Desktop picker or switches the current conversation model. CLI starts separate signed-in CLI tasks. Desktop starts only the bounded child calls declared by a ready v3 plan and otherwise blocks explicitly.
+Neither backend adds `Auto` to the Desktop picker or switches the current conversation model. CLI starts separate signed-in CLI tasks. Desktop starts only the bounded child calls declared by a ready plan and otherwise blocks explicitly.
 
 ## Generic host plan
 
-Consumes `agent-auto-router.host-request.v1` and emits `agent-auto-router.host-plan.v3` for Codex, Claude Code, and other capable hosts. The request contains the current task and its bound `routeDecision`; the plan omits the task body. A host may execute the task itself, invoke a declared CLI backend, or run multi-role orchestration. Automatic execution requires a trusted permission snapshot and includes the normalized effective permissions in both the host contract and action.
+Consumes `agent-auto-router.host-request` and emits `agent-auto-router.host-plan` for Codex, Claude Code, and other capable hosts. The request contains the current task and its bound `routeDecision`; the plan omits the task body. A host may execute the task itself, invoke a declared CLI backend, or run multi-role orchestration. Automatic execution requires a trusted permission snapshot and includes the normalized effective permissions in both the host contract and action.
 
 ```powershell
 python "<skill-dir>/scripts/host_execution_plan.py" --workdir <dir> --host-permissions-json <json> [--available-backends codex|claude] [--dry-run]
@@ -236,6 +252,6 @@ python "<skill-dir>/scripts/host_execution_plan.py" --workdir <dir> --host-permi
 Hosts act on `action.kind`:
 - `cli` — invoke the selected backend CLI with the model and effort.
 - `host_execute` — the host executes the task with its own model and surfaces approximate accuracy.
-- `orchestrate` — materialize the plan's `agent-auto-router.execution-envelope.v1` stdin template with the current task, then dispatch multi-role orchestration through the selected CLI backend. The route and permission snapshot are never carried in argv. The entrypoint verifies the task/workspace bindings and reuses the decision without rerouting; never switch models, effort, strategy, variant, or backend silently.
+- `orchestrate` — materialize the plan's `agent-auto-router.execution-envelope` stdin template with the current task, then dispatch multi-role orchestration through the selected CLI backend. The route and permission snapshot are never carried in argv. The entrypoint verifies the task/workspace bindings and reuses the decision without rerouting; never switch models, effort, strategy, variant, or backend silently.
 
 `--available-backends` accepts a comma-separated list (`codex,claude`) or `auto` (default; probes PATH). `--dry-run` emits the same plan schema with `executionRequested=false` and `plannedCalls=0`.

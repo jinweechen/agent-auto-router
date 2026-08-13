@@ -119,7 +119,7 @@ def _route(
 
 def _permissions(sandbox: str = "workspace-write") -> dict:
     return {
-        "schema": "agent-auto-router.host-permissions.v1",
+        "schema": "agent-auto-router.host-permissions",
         "source": "test-host-turn",
         "sandbox": sandbox,
         "approvalPolicy": "never",
@@ -165,7 +165,7 @@ class HostExecutionPlanTests(unittest.TestCase):
         plan = build_host_plan(
             _route(), task_text=TASK, workdir=".", available_backends=["codex"], host_permissions=_permissions()
         )
-        self.assertEqual(plan["schema"], "agent-auto-router.host-plan.v3")
+        self.assertEqual(plan["schema"], "agent-auto-router.host-plan")
         self.assertEqual(plan["executionBackend"], "host")
         self.assertEqual(plan["action"]["kind"], "cli")
         self.assertEqual(plan["action"]["backend"], "codex")
@@ -205,7 +205,7 @@ class HostExecutionPlanTests(unittest.TestCase):
         self.assertNotIn("--Variant", plan["action"]["argv"])
         self.assertIn("--workdir", plan["action"]["argv"])
         forwarded = template["hostPermissions"]
-        self.assertEqual(forwarded["schema"], "agent-auto-router.host-permissions.v1")
+        self.assertEqual(forwarded["schema"], "agent-auto-router.host-permissions")
         self.assertEqual(forwarded["sandbox"], "workspace-write")
         self.assertNotIn(TASK, json.dumps(plan))
 
@@ -348,7 +348,7 @@ class HostExecutionPlanTests(unittest.TestCase):
         self.assertEqual(generated.returncode, 0, generated.stderr)
         selected = json.loads(generated.stdout)
         request = {
-            "schema": "agent-auto-router.host-request.v1",
+            "schema": "agent-auto-router.host-request",
             "task": "Implement a routine change",
             "routeDecision": selected["routeDecision"],
         }

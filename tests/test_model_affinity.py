@@ -64,8 +64,28 @@ class ModelAffinityTests(unittest.TestCase):
             target_tier=tier,
             registry=self.registry,
             available_backends=("codex",),
+            mode="auto",
             now=self.now,
         )
+
+    def test_session_mode_reuses_selected_model_within_run_without_evidence(self) -> None:
+        result = resolve_model_affinity(
+            (),
+            workspace_key=self.workspace_key,
+            strategy="balance",
+            selector_model="codex:gpt-5.6-terra",
+            target_tier="balanced",
+            registry=self.registry,
+            available_backends=("codex",),
+            mode="session",
+            now=self.now,
+        )
+        self.assertEqual(result["mode"], "session")
+        self.assertEqual(result["selectedModel"], "codex:gpt-5.6-terra")
+        self.assertEqual(result["roleModelPolicy"], ROLE_MODEL_POLICY_AFFINITY)
+        self.assertEqual(result["reason"], "session-role-reuse")
+        self.assertFalse(result["applied"])
+        self.assertEqual(result["evidence"]["samples"], 0)
 
     def test_workspace_identity_never_contains_the_path(self) -> None:
         self.assertRegex(self.workspace_key, r"^[0-9a-f]{64}$")

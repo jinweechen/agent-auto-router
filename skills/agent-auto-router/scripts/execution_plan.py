@@ -28,7 +28,7 @@ CONTEXT_BUDGETS = {
     },
 }
 ORCHESTRATION_POLICIES = ("direct", "recommend", "auto")
-DEFAULT_ORCHESTRATION_POLICY = "auto"
+DEFAULT_ORCHESTRATION_POLICY = "recommend"
 ORCHESTRATED_VARIANTS = frozenset({"B", "C", "D"})
 MAX_MODEL_CALLS = {"A": 2, "B": 6, "C": 7, "D": 5, "E": 1, "F": 1}
 MINIMUM_ORCHESTRATION_UTILITY = 1

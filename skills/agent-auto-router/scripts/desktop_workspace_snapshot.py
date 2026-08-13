@@ -13,10 +13,11 @@ import subprocess
 import tempfile
 from typing import Any, Iterable
 
+from protocol_schemas import WORKSPACE_COMPARISON_SCHEMA, WORKSPACE_SNAPSHOT_SCHEMA
 
-SNAPSHOT_SCHEMA = "agent-auto-router.workspace-snapshot.v1"
-COMPARISON_SCHEMA = "agent-auto-router.workspace-comparison.v1"
-MANIFEST_FORMAT = "path-type-mode-size-sha256-plus-git-status-v1"
+SNAPSHOT_SCHEMA = WORKSPACE_SNAPSHOT_SCHEMA
+COMPARISON_SCHEMA = WORKSPACE_COMPARISON_SCHEMA
+MANIFEST_FORMAT = "path-type-mode-size-sha256-plus-git-status"
 
 
 def _git(workdir: pathlib.Path, *arguments: str) -> bytes:
@@ -157,7 +158,7 @@ def capture_snapshot(workdir: str | os.PathLike[str]) -> dict[str, Any]:
 
 def compare_snapshots(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
     if before.get("schema") != SNAPSHOT_SCHEMA or after.get("schema") != SNAPSHOT_SCHEMA:
-        raise ValueError("Both inputs must use the workspace snapshot v1 schema")
+        raise ValueError("Both inputs must use the workspace snapshot schema")
     if before.get("workdir") != after.get("workdir"):
         raise ValueError("Workspace snapshots refer to different workdirs")
     before_entries = before.get("entries")

@@ -16,6 +16,7 @@ from codex_cli_adapter import codex_cli_available, resolve_codex_command
 from guarded_auto import DEFAULT_CONFIG
 from model_registry import load_model_registry
 from orchestration_profiles import load_orchestration_profiles
+from protocol_schemas import DOCTOR_SCHEMA, QUICK_PROFILES_SCHEMA
 from quick_profiles import load_quick_profiles
 from validate_model_registry import validate_registry_and_profiles
 
@@ -62,7 +63,7 @@ def build_diagnostic(
         )
         quick_profiles = load_quick_profiles()
         validation["quickProfiles"] = {
-            "schema": "agent-auto-router.quick-profiles.v1",
+            "schema": QUICK_PROFILES_SCHEMA,
             "default": quick_profiles.default_profile,
             "available": sorted(quick_profiles.profiles),
             "source": quick_profiles.source,
@@ -90,7 +91,7 @@ def build_diagnostic(
     if not codex_available and not claude_available:
         issues.append("no_supported_cli_detected")
     result = {
-        "schema": "agent-auto-router.doctor.v1",
+        "schema": DOCTOR_SCHEMA,
         "platform": platform.system().lower(),
         "python": {
             "version": platform.python_version(),

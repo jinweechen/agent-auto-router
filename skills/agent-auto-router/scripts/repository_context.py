@@ -38,6 +38,21 @@ PATH_HINT_PATTERN = re.compile(
 )
 REPOSITORY_COMMAND_TIMEOUT_SECONDS = 5
 MAX_FALLBACK_FILES = 50_000
+REPOSITORY_CONTEXT_MODES = ("adaptive", "auto", "off")
+CODE_ACTION_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])(?:add|analyze|build|change|create|debug|delete|diagnose|"
+    r"fix|implement|inspect|migrate|modify|refactor|remove|repair|review|test|"
+    r"update)(?![A-Za-z0-9_])"
+)
+CODE_TARGET_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])(?:api|bug|build|class|code|config|feature|file|function|"
+    r"module|plugin|repo|repository|script|service|skill|source|test)(?![A-Za-z0-9_])"
+)
+CJK_CODE_ACTION_TERMS = (
+    "修复", "实现", "重构", "修改", "添加", "删除", "迁移", "测试", "构建", "更新",
+    "检查", "分析", "诊断", "审查",
+)
+CJK_CODE_TARGET_TERMS = ("代码", "文件", "模块", "服务", "接口", "类", "函数", "测试", "缺陷", "仓库", "脚本", "配置", "插件", "技能")
 
 
 def _run(command: list[str], workdir: pathlib.Path) -> subprocess.CompletedProcess[str]:
@@ -123,6 +138,34 @@ def disabled_repository_inspection() -> dict[str, Any]:
         "scan_duration_ms": 0,
         "inspection_disabled": True,
     }
+
+
+def should_inspect_repository(task: str, mode: str = "adaptive") -> bool:
+    """Decide whether a route needs bounded repository inspection before scanning."""
+    if mode not in REPOSITORY_CONTEXT_MODES:
+        raise ValueError("repository context mode must be adaptive, auto, or off")
+    if mode == "auto":
+        return True
+    if mode == "off":
+        return False
+    if _task_path_hints(task):
+        return True
+    lowered = task.lower()
+    ascii_code_change = bool(
+        CODE_ACTION_PATTERN.search(lowered) and CODE_TARGET_PATTERN.search(lowered)
+    )
+    cjk_code_change = (
+        any(term in task for term in CJK_CODE_ACTION_TERMS)
+        and any(term in task for term in CJK_CODE_TARGET_TERMS)
+    )
+    diagnostic_signal = any(
+        term in lowered
+        for term in (
+            "root cause", "failing test", "stack trace", "regression", "multi-file",
+            "multiple files", "monorepo", "call chain", "dependency graph",
+        )
+    ) or any(term in task for term in ("根因", "调用链", "多文件", "跨模块", "回归"))
+    return ascii_code_change or cjk_code_change or diagnostic_signal
 
 
 def inspect_repository(workdir: pathlib.Path, task: str = "") -> dict[str, Any]:

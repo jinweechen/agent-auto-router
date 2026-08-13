@@ -53,7 +53,7 @@ class BenchmarkArtifactLayoutTests(unittest.TestCase):
             with self.assertRaisesRegex(FileExistsError, "must be empty"):
                 prepare_explicit_run_directory(target)
 
-    def test_manifest_is_schema_versioned(self) -> None:
+    def test_manifest_uses_stable_schema_name(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             target = pathlib.Path(temp)
             manifest_path = write_manifest(target, {"runId": "test", "status": "completed"})
@@ -88,6 +88,53 @@ class BenchmarkArtifactLayoutTests(unittest.TestCase):
             )
             self.assertEqual(manifest["status"], "completed")
             self.assertEqual(manifest["modelCalls"], 0)
+            self.assertEqual(manifest["orchestrationPolicy"], "direct")
+            self.assertEqual(manifest["modelAffinity"], "off")
+            report = json.loads(
+                (run_directory / "route-report.json").read_text(encoding="utf-8")
+            )
+            route = report["results"][0]["routing"]
+            self.assertEqual(route["execution_plan"]["orchestrationPolicy"], "direct")
+            self.assertEqual(route["model_affinity"]["mode"], "off")
+
+    def test_route_only_requires_explicit_auto_orchestration(self) -> None:
+        case = [{
+            "id": "parallel",
+            "prompt": "Implement API and tests for several independent components",
+            "acceptance_criteria": ["API", "tests", "docs", "rollback"],
+        }]
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            cases_path = root / "cases.json"
+            cases_path.write_text(json.dumps(case), encoding="utf-8")
+            run_directory = root / "route-check"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(TOOLS / "codex_cli_orchestration_eval.py"),
+                    "--route-only",
+                    "--routing-mode",
+                    "balance",
+                    "--orchestration-policy",
+                    "auto",
+                    "--cases",
+                    str(cases_path),
+                    "--results-dir",
+                    str(run_directory),
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(
+                (run_directory / "route-report.json").read_text(encoding="utf-8")
+            )
+            route = report["results"][0]["routing"]
+            self.assertEqual(route["variant"], "D")
+            self.assertEqual(route["execution_plan"]["orchestrationPolicy"], "auto")
+            self.assertEqual(route["model_affinity"]["mode"], "off")
 
 
 if __name__ == "__main__":

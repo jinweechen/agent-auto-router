@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import asdict, replace
 from typing import Any, Iterable, Sequence
 
-from model_affinity import resolve_model_affinity
+from model_affinity import DEFAULT_MODEL_AFFINITY_MODE, resolve_model_affinity
 from model_registry import ModelRegistry, load_model_registry
-from execution_plan import build_execution_plan
+from execution_plan import DEFAULT_ORCHESTRATION_POLICY, build_execution_plan
 from route_contract import ROUTE_DECISION_SCHEMA, build_route_decision
 from routing_policy import STRATEGIES, RoutingPolicy, matched_signal_terms, select_model
 
@@ -22,15 +22,15 @@ VARIANT_LABELS = {
 def route_case(
     case: dict[str, Any],
     mode: str = "balance",
-    effort: str = "medium",
+    effort: str | None = None,
     policy: RoutingPolicy | None = None,
     registry: ModelRegistry | None = None,
     backends: Sequence[str] | None = None,
     allow_explicit_only: bool = False,
-    orchestration_policy: str = "auto",
+    orchestration_policy: str = DEFAULT_ORCHESTRATION_POLICY,
     confirm_high_risk_orchestration: bool = False,
     affinity_events: Iterable[dict[str, Any]] = (),
-    model_affinity_mode: str = "auto",
+    model_affinity_mode: str = DEFAULT_MODEL_AFFINITY_MODE,
     explicit_variant: str | None = None,
 ) -> dict[str, Any]:
     if mode not in VALID_MODES:
@@ -40,10 +40,11 @@ def route_case(
     criteria = case.get("acceptance_criteria", [])
     acceptance_criteria = criteria if isinstance(criteria, list) else []
     repository_features = case.get("repository_features")
+    routing_effort = effort or "medium"
     decision = select_model(
         prompt,
         mode,
-        effort,
+        routing_effort,
         acceptance_criteria,
         policy,
         registry,
@@ -126,7 +127,7 @@ def route_case(
         route_id=route_id,
         task_text=prompt,
         strategy=mode,
-        effort=decision.effort,
+        effort=str(execution_plan["effort"]),
         selected_model=selected_spec.model_id,
         selected_tier=selected_spec.tier,
         selector_model=decision.model,
@@ -158,7 +159,7 @@ def route_case(
         "registry_digest": decision.registry_digest,
         "feature_schema_version": decision.feature_schema_version,
         "mode": mode,
-        "effort": decision.effort,
+        "effort": str(execution_plan["effort"]),
         "variant": variant,
         "recommended_variant": recommended_variant,
         "route": VARIANT_LABELS[variant],

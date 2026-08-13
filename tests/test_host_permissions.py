@@ -15,7 +15,7 @@ from host_permissions import cli_permission_issue, parse_host_permissions, workd
 def snapshot(sandbox: str, roots: list[str] | None = None) -> dict:
     default_roots = [str(SCRIPTS.parents[2].resolve())] if sandbox == "workspace-write" else []
     return {
-        "schema": "agent-auto-router.host-permissions.v1",
+        "schema": "agent-auto-router.host-permissions",
         "source": "test-host-turn",
         "sandbox": sandbox,
         "approvalPolicy": "never",

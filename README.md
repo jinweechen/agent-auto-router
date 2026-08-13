@@ -4,9 +4,9 @@
 
 A local, deterministic model-routing plugin and Skill for Codex, Claude Code, and generic agent hosts.
 
-Before execution, it selects a trusted model from task complexity, risk, constraint level, and reasoning effort, then produces a direct-execution plan. Repository inspection, learned policy, model affinity, feedback, and multi-role orchestration are optional expert features. Routing itself makes no model call, does not change global Codex configuration, and never reads or forwards login credentials.
+Before execution, it selects a trusted model from task complexity, risk, constraint level, and reasoning effort, then produces a bounded execution plan. Standard routing safely enables adaptive repository inspection, orchestration recommendations, and within-plan model reuse without reading historical state or starting extra agents. Cross-run affinity, learned policy, feedback writes, and multi-role execution remain explicit opt-ins. Routing itself makes no model call, does not change global Codex configuration, and never reads or forwards login credentials.
 
-Current project version: `0.15.0+codex.20260813015724`.
+Current project version: `0.15.0+codex.20260813062845`.
 
 ## At a glance
 
@@ -14,7 +14,7 @@ Current project version: `0.15.0+codex.20260813015724`.
 - The default `balance` strategy selects among the `fast`, `balanced`, and `frontier` capability tiers.
 - Codex Desktop executes through the native child-agent protocol; CLI mode uses an official CLI in which the user is already signed in.
 - Desktop plans omit the task body, and every execution is constrained by current host permissions, a call budget, and the single-writer rule.
-- Standard routing is stateless: it does not scan the repository, load learned policy, read affinity feedback, persist outcomes, or auto-orchestrate. Each feature has a separate explicit opt-in.
+- Standard routing is zero-state: adaptive inspection skips plain-answer tasks and performs one bounded scan for code, path, dependency, or debugging tasks. It does not load learned policy, read affinity feedback, persist outcomes, or auto-orchestrate.
 - New models can be tested explicitly before entering Auto. An unavailable model fails explicitly instead of silently falling back.
 
 ## Capabilities
@@ -22,11 +22,11 @@ Current project version: `0.15.0+codex.20260813015724`.
 | Capability | Description |
 | --- | --- |
 | Automatic model selection | Selects a model, effort, capability tier, and context budget from a versioned trusted registry |
-| Canonical route decisions | Emits strict `agent-auto-router.route-decision.v2` objects with task and workspace bindings |
-| Desktop execution plans | Emits `agent-auto-router.desktop-plan.v3`, which the current primary agent executes as a bounded DAG |
+| Canonical route decisions | Emits strict `agent-auto-router.route-decision` objects with task and workspace bindings |
+| Desktop execution plans | Emits `agent-auto-router.desktop-plan`, which the current primary agent executes as a bounded DAG |
 | CLI execution | Invokes a signed-in Codex CLI or orchestration backend through UTF-8 stdin |
 | Multi-role orchestration | Supports planner, dispatcher, worker, reviewer, and grader roles while enforcing a single writer |
-| Generic host protocol | Emits `agent-auto-router.host-plan.v3` with stdin execution-envelope templates |
+| Generic host protocol | Emits `agent-auto-router.host-plan` with stdin execution-envelope templates |
 | Model registry | Separates `enabled` from `autoEligible` for controlled extensions and explicit trials |
 | Privacy-minimized feedback | Stores routing metadata, validation status, duration, and observable tokens, but not tasks or responses |
 | Guarded learning | Uses explicit `off / observe / guarded` modes with canary, probation, and automatic rollback |
@@ -50,7 +50,7 @@ See [router-contract.md](skills/agent-auto-router/references/router-contract.md)
 ```text
 Task
   -> deterministic local feature extraction
-  -> active policy and offline benchmark priors
+  -> built-in policy and offline benchmark priors; optionally load an active policy
   -> tier, model, effort, context, and A-F variant selection
   -> host-permission, model-availability, call-budget, and workspace checks
   -> Desktop: emit a staged plan without the task body
@@ -60,6 +60,8 @@ Task
 ```
 
 Routing and execution are separate phases. Routing is entirely local; only execution can produce a model call.
+
+The orchestration modes are `direct`, `recommend`, and `auto`. Standard routing uses `recommend`, which may explain a useful role split but still emits a one-call direct plan; only explicit `auto` may plan multi-agent execution.
 
 ## Quick start
 
@@ -95,7 +97,7 @@ Run it after reviewing the route:
   -Workdir "D:/path/to/project"
 ```
 
-`standard` is the default profile and limits writes to `Workdir`; `-Profile safe` is read-only. Both are stateless direct routes with repository inspection, learned policy, feedback, and model affinity disabled. These are fixed, validated presets rather than user-editable permission shortcuts. Stop here for ordinary local use; use the full entrypoints only for Desktop host integration, explicit models, repository-aware routing, orchestration, validation escalation, or learning administration.
+`standard` is the default profile and limits writes to `Workdir`. It adaptively inspects repositories only for code/path/debugging tasks, reports orchestration recommendations without executing them, and reuses the selected model only within the current run. `-Profile safe` is read-only with repository inspection and affinity disabled. Neither profile loads learned policy, writes feedback, or starts multi-agent execution. These are fixed, validated presets rather than user-editable permission shortcuts.
 
 The diagnostic prints a concise summary by default. Add `-Json` through `aar.ps1`, or run `doctor.py --json`, for machine-readable details. It never reads tasks, prints environment values, inspects credentials, or calls a model. `--verbose-paths` is an additional explicit troubleshooting option.
 
@@ -206,9 +208,9 @@ ASCII keywords use lexical-boundary matching to avoid false positives such as `t
 | E | direct | `balanced` direct |
 | F | direct | `fast` direct |
 
-A, E, and F are direct variants. The standard entrypoint defaults to `direct`; expert callers must select `recommend` or `auto` to evaluate or use B, C, or D. Under `auto`, a worker plan requires a low-risk task with explicit parallel signals, enough scale, and a positive deterministic utility score after model-call and model-tier-switch overhead. The plan exposes the score, threshold, component points, estimated additional calls, and estimated tier switches without echoing the task. High-risk tasks remain direct unless an expert caller also passes `-ConfirmHighRiskOrchestration`. The dedicated orchestration entrypoint is itself an explicit advanced workflow.
+A, E, and F are direct variants. The standard entrypoint and reusable Python APIs default to `recommend`: they evaluate B, C, or D and expose a recommendation, but still execute directly with no extra model calls. Expert callers must select `auto` to start multi-agent execution. Python affinity defaults to `session`, and omitted effort uses the selected tier's recommendation rather than acting like an explicit `medium`. Under `auto`, a worker plan requires a low-risk task with explicit parallel signals, enough scale, and a positive deterministic utility score after model-call and model-tier-switch overhead. High-risk tasks remain direct unless an expert caller also passes `-ConfirmHighRiskOrchestration`. The dedicated orchestration entrypoint is itself an explicit advanced workflow.
 
-Model affinity is disabled on the standard route and can be enabled with `-ModelAffinity auto`. When enabled, it may retain the most recent successful model for the same hashed workspace and strategy for up to 30 minutes, subject to the existing tier and cache-signal safeguards. These ratios are routing evidence, not provider billing estimates.
+Default `-ModelAffinity session` reuses the selected model only among compatible roles in the current plan and reads no historical state. Explicit `-ModelAffinity auto` may retain the most recent successful model for the same hashed workspace and strategy for up to 30 minutes, subject to the existing tier and cache-signal safeguards. `-ModelAffinity off` uses exact profile role assignments. These ratios are routing evidence, not provider billing estimates.
 
 Role defaults come from [orchestration_profiles.json](skills/agent-auto-router/scripts/orchestration_profiles.json).
 
@@ -218,7 +220,7 @@ Role defaults come from [orchestration_profiles.json](skills/agent-auto-router/s
 
 Desktop execution is a host protocol, not a hidden CLI login flow.
 
-The primary agent gives the router the model IDs explicitly exposed by the current runtime, parallel child-agent capacity, and an `agent-auto-router.host-permissions.v1` permission snapshot. The router returns:
+The primary agent gives the router the model IDs and argument support explicitly exposed by the current runtime, parallel child-agent capacity, an `agent-auto-router.host-permissions` permission snapshot, and a source-bound `agent-auto-router.desktop-spawn-capabilities` snapshot. The router returns:
 
 - exact role models and reasoning effort
 - a staged DAG and dependency order
@@ -228,6 +230,8 @@ The primary agent gives the router the model IDs explicitly exposed by the curre
 - a privacy-safe post-execution report template
 
 Desktop currently supports only the Codex backend. The default `selected-model-preferred` role policy first reuses the route's selected model when it satisfies the role and tier floor. Otherwise it resolves the profile model, allowing only a runtime-declared, registry-trusted Codex model at the same or a higher tier; every substitution is explicit. Otherwise the router returns a structured block.
+
+The capability snapshot is closed and derived from the live `spawn_agent` tool schema. If the host cannot pass a per-child workdir or sandbox, only an exact inherited boundary is executable; isolated workdirs, stricter direct sandboxes, or read-only orchestration stages block before any model call.
 
 See [entrypoints.md](skills/agent-auto-router/references/entrypoints.md) for the complete host execution procedure.
 
@@ -261,7 +265,7 @@ Host integrations should pass a trusted permission snapshot generated by the cur
   -Explain
 ```
 
-The CLI task body is passed over UTF-8 stdin and does not appear in child-process command-line arguments. `-Model sol`, `-Model terra`, or a full trusted Codex ID can explicitly override selection for one run without changing global configuration. The default route uses `-ModelAffinity off`, `-RepositoryContextMode off`, and `-OrchestrationPolicy direct`, and does not load active policy or persist feedback. Enable those features explicitly with `-ModelAffinity auto`, `-RepositoryContextMode auto`, `-OrchestrationPolicy auto`, `-EnableLearningPolicy`, or `-EnableFeedback`.
+The CLI task body is passed over UTF-8 stdin and does not appear in child-process command-line arguments. `-Model sol`, `-Model terra`, or a full trusted Codex ID can explicitly override selection for one run without changing global configuration. The default route uses `-ModelAffinity session`, `-RepositoryContextMode adaptive`, and `-OrchestrationPolicy recommend`; it reads no feedback, loads no active policy, persists nothing, and starts no extra agents. Adaptive mode skips plain-answer tasks with `scan_duration_ms=0` and scans code/path/debugging tasks once. Use `-ModelAffinity auto`, `-RepositoryContextMode auto`, or `-OrchestrationPolicy auto` for cross-run affinity, forced inspection, or multi-agent execution. `-EnableLearningPolicy` and `-EnableFeedback` remain explicit.
 
 Run a local DryRun with zero model calls:
 
@@ -296,8 +300,8 @@ Common controls:
 | `-Backend codex|claude` | Restrict one orchestration run to one backend |
 | `-DryRun` | Emit routing without calling a model |
 | `-Sandbox read-only` | Prevent the final role from writing |
-| `-RepositoryContextMode auto|off` | Use bounded one-pass repository inspection or disable it |
-| `-ModelAffinity auto|off` | Prefer one capable model and bounded same-workspace reuse, or disable affinity |
+| `-RepositoryContextMode adaptive|auto|off` | Scan only code/path/debugging tasks, force one bounded scan, or disable inspection |
+| `-ModelAffinity session|auto|off` | Reuse within one plan, read bounded same-workspace evidence, or use exact role profiles |
 | `-AllowDirty` | Explicitly accept the risk of running in a dirty Git worktree |
 | `-AllowNoChanges` | Allow a write task to succeed without a Git status change |
 | `-MaxTotalTokens` | Set a soft budget for CLI-observable tokens |
@@ -310,17 +314,17 @@ Formal orchestration requires a clean Git worktree by default. Git status is bou
 
 ### Generic hosts
 
-`host_execution_plan.py` builds `agent-auto-router.host-plan.v3` from a v1 host request containing the current task and its bound route plus a trusted permission snapshot, without starting a process or returning the task body. The host acts on `action.kind`:
+`host_execution_plan.py` builds `agent-auto-router.host-plan` from a host request containing the current task and its bound route plus a trusted permission snapshot, without starting a process or returning the task body. The host acts on `action.kind`:
 
 - `cli`: invoke the declared backend and model.
 - `host_execute`: execute through the host's native model and disclose the approximate-model boundary.
-- `orchestrate`: materialize the declared `execution-envelope.v1` stdin template with the current task, then invoke the local multi-role entrypoint. The route and permission snapshot never travel in process argv, and the entrypoint verifies the task and workspace bindings instead of routing again.
+- `orchestrate`: materialize the declared `execution-envelope` stdin template with the current task, then invoke the local multi-role entrypoint. The route and permission snapshot never travel in process argv, and the entrypoint verifies the task and workspace bindings instead of routing again.
 
 A generic host must not copy connectors, signed-in sessions, or credentials into an independent CLI.
 
 ## Permissions and the single-writer boundary
 
-Automatic execution uses `agent-auto-router.host-permissions.v1`. A trusted snapshot contains:
+Automatic execution uses `agent-auto-router.host-permissions`. A trusted snapshot contains:
 
 - sandbox and approval policy
 - network access
@@ -552,7 +556,7 @@ CI runs the core suite on Windows, Ubuntu, and macOS with Python 3.10 and 3.12. 
         ├── quick_profiles.json    # Fixed safe and standard presets
         ├── invoke_auto_task.ps1   # Desktop and CLI expert entrypoint
         ├── invoke_orchestrated_task.ps1
-        ├── route_contract.py      # Strict route-decision.v2 and execution-envelope contracts
+        ├── route_contract.py      # Strict route-decision and execution-envelope contracts
         ├── doctor.py              # Privacy-safe zero-call diagnostics
         ├── host_execution_plan.py # Generic host plan
         ├── model_registry.json

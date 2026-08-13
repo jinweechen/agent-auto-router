@@ -129,7 +129,7 @@ class ControlPlaneStoreTests(unittest.TestCase):
                     )
 
             permissions = json.dumps({
-                "schema": "agent-auto-router.host-permissions.v1",
+                "schema": "agent-auto-router.host-permissions",
                 "source": "unit-test",
                 "sandbox": "read-only",
                 "approvalPolicy": "never",
@@ -161,7 +161,7 @@ class ControlPlaneStoreTests(unittest.TestCase):
 
     def test_boundary_cli_reports_invalid_permissions_without_usage_text(self) -> None:
         permissions = json.dumps({
-            "schema": "agent-auto-router.host-permissions.v1",
+            "schema": "agent-auto-router.host-permissions",
             "sandbox": "read-only",
             "approvalPolicy": "never",
             "networkAccess": False,

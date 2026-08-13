@@ -6,7 +6,6 @@ Development evaluation follows one directory contract:
 benchmarks/                         # Version-controlled evaluation assets
 ├── README.md
 ├── cases/                          # Reproducible task inputs only
-├── research/                       # Versioned design and benchmark research notes
 └── tools/                          # Evaluation and simulation programs
 
 <user-state>/agent-auto-router/evaluations/
@@ -49,11 +48,15 @@ python ./benchmarks/tools/codex_cli_orchestration_eval.py `
   --routing-mode balance
 ```
 
+This route check remains direct. To evaluate Auto orchestration selection explicitly, add
+`--orchestration-policy auto`. Model affinity stays off in this stateless harness.
+
 Example with an explicit empty run directory:
 
 ```powershell
 python ./benchmarks/tools/codex_cli_orchestration_eval.py `
   --route-only `
   --routing-mode balance `
+  --orchestration-policy auto `
   --results-dir "$env:TEMP/agent-auto-router-routes/manual-check"
 ```

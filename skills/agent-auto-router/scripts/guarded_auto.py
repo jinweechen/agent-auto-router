@@ -28,6 +28,7 @@ from control_plane_store import (
 from host_permissions import HostPermissions, parse_host_permissions
 from model_registry import TIER_RANK, ModelRegistry, load_model_registry, registry_digest
 from model_affinity import MODEL_AFFINITY_MODES
+from protocol_schemas import EXECUTION_REPORT_SCHEMA, POLICY_SHADOW_SCHEMA
 from policy_learning import (
     DEFAULT_FEEDBACK_RETENTION_DAYS,
     DEFAULT_MAX_FEEDBACK_ROUTES,
@@ -55,7 +56,6 @@ from routing_policy import (
 from state_lock import append_lock, control_plane_lock
 
 
-EXECUTION_REPORT_SCHEMA = "agent-auto-router.execution-report.v1"
 CONFIG_SCHEMA_VERSION = 2
 STATE_SCHEMA_VERSION = 2
 MODES = frozenset({"off", "observe", "guarded"})
@@ -185,7 +185,7 @@ def learning_boundary_issue(
 ) -> str | None:
     """Return why routing evidence is writable by the child, or None when protected."""
     if model_affinity_mode not in MODEL_AFFINITY_MODES:
-        raise ValueError("model affinity mode must be auto or off")
+        raise ValueError("model affinity mode must be session, auto, or off")
     learning = load_config(state_dir)["mode"]
     if learning != "guarded" and model_affinity_mode != "auto":
         return None
@@ -1521,7 +1521,7 @@ def policy_shadow(
         if candidate_path is None:
             if lifecycle.get("status") not in {"canary", "probation"}:
                 return {
-                    "schema": "agent-auto-router.policy-shadow.v1",
+                    "schema": POLICY_SHADOW_SCHEMA,
                     "assessment": "no-candidate",
                     "activationAuthorized": False,
                     "storesTaskText": False,

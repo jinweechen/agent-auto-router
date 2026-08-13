@@ -21,6 +21,7 @@ from codex_cli_adapter import (
 )
 from host_permissions import cli_permission_issue, parse_host_permissions, workdir_is_writable
 from model_registry import strip_backend_prefix
+from protocol_schemas import RUNNER_INPUT_SCHEMA
 from repository_context import build_repository_context
 
 
@@ -49,8 +50,8 @@ def parse_runner_input(
         payload = json.loads(raw_input)
     except json.JSONDecodeError as exc:
         raise ValueError(f"runner envelope must be valid JSON: {exc.msg}") from exc
-    if not isinstance(payload, dict) or payload.get("schema") != "agent-auto-router.runner-input.v1":
-        raise ValueError("runner envelope schema must be agent-auto-router.runner-input.v1")
+    if not isinstance(payload, dict) or payload.get("schema") != RUNNER_INPUT_SCHEMA:
+        raise ValueError(f"runner envelope schema must be {RUNNER_INPUT_SCHEMA}")
     task = payload.get("task")
     repository_context = payload.get("repositoryContext")
     repository_metadata = payload.get("repositoryMetadata")

@@ -9,14 +9,18 @@ import pathlib
 import sys
 from typing import Any, Iterable
 
+from desktop_spawn_capabilities import (
+    DesktopSpawnCapabilities,
+    parse_desktop_spawn_capabilities,
+)
 from host_permissions import HostPermissions, parse_host_permissions, workdir_is_writable
 from model_registry import TIER_RANK, load_model_registry, registry_digest, strip_backend_prefix
 from orchestration_profiles import load_orchestration_profiles, resolve_role_with_affinity
 from policy_learning import ROUTE_FEATURES
+from protocol_schemas import DESKTOP_PLAN_SCHEMA, EXECUTION_REPORT_SCHEMA
 
 
-SCHEMA = "agent-auto-router.desktop-plan.v3"
-EXECUTION_REPORT_SCHEMA = "agent-auto-router.execution-report.v1"
+SCHEMA = DESKTOP_PLAN_SCHEMA
 DIRECT_VARIANTS = frozenset({"A", "E", "F"})
 ORCHESTRATED_VARIANTS = frozenset({"B", "C", "D"})
 DEFAULT_WORKER_LIMIT = {"B": 3, "C": 3, "D": 2}
@@ -150,6 +154,7 @@ def build_desktop_plan(
     *,
     workdir: pathlib.Path | str,
     host_permissions: HostPermissions | dict[str, Any] | str | None,
+    spawn_capabilities: DesktopSpawnCapabilities | dict[str, Any] | str | None = None,
     max_parallel_children: int,
     requested_sandbox: str = "inherit",
     dry_run: bool = False,
@@ -197,6 +202,18 @@ def build_desktop_plan(
     permission_plan = permissions.as_plan(requested_sandbox) if permissions else None
     effective_sandbox = permission_plan["effectiveSandbox"] if permission_plan else "read-only"
     would_write = effective_sandbox != "read-only"
+    spawn_capability_error: str | None = None
+    try:
+        capabilities = (
+            spawn_capabilities
+            if isinstance(spawn_capabilities, DesktopSpawnCapabilities)
+            else parse_desktop_spawn_capabilities(spawn_capabilities)
+            if spawn_capabilities is not None
+            else None
+        )
+    except (OSError, ValueError) as exc:
+        capabilities = None
+        spawn_capability_error = str(exc)
 
     plan: dict[str, Any] = {
         "schema": SCHEMA,
@@ -237,6 +254,7 @@ def build_desktop_plan(
             "declaredMaxParallelChildren": child_capacity,
             "onlyWriter": None,
             "permissions": permission_plan,
+            "spawnCapabilities": capabilities.as_plan() if capabilities else None,
             "fullHistoryForkAllowed": False,
             "silentModelOrProviderFallback": False,
             "roleModelResolution": "profile-exact-or-declared-runtime-tier-upgrade",
@@ -372,6 +390,36 @@ def build_desktop_plan(
             "Automatic Desktop execution requires a trusted current-turn host permission snapshot.",
         )
 
+    if spawn_capability_error is not None:
+        return _blocked(
+            plan,
+            "invalid-desktop-spawn-capabilities",
+            spawn_capability_error,
+        )
+
+    if capabilities is None:
+        return _blocked(
+            plan,
+            "desktop_spawn_capabilities_required",
+            "Automatic Desktop execution requires trusted capabilities from the current spawn_agent tool schema.",
+        )
+
+    if capabilities.source != permissions.source:
+        return _blocked(
+            plan,
+            "desktop_spawn_capability_source_mismatch",
+            "Desktop spawn capabilities and host permissions must come from the same trusted turn source.",
+        )
+
+    basic_capability_issues = capabilities.basic_issues(resolved_workdir)
+    if basic_capability_issues:
+        return _blocked(
+            plan,
+            "desktop_spawn_capabilities_insufficient",
+            "The current spawn_agent tool cannot honor required child arguments: "
+            + ", ".join(basic_capability_issues),
+        )
+
     if would_write and not workdir_is_writable(resolved_workdir, permissions):
         return _blocked(
             plan,
@@ -394,7 +442,7 @@ def build_desktop_plan(
         return _blocked(
             plan,
             "desktop_backend_unsupported",
-            f"Desktop v3 supports only the codex backend; selected model: {selected_model}",
+            f"The Desktop protocol supports only the codex backend; selected model: {selected_model}",
         )
     available = _normalized_models(available_models)
     if selected_bare not in available:
@@ -410,7 +458,7 @@ def build_desktop_plan(
         return _blocked(
             plan,
             "desktop_registry_digest_required",
-            "Desktop v3 requires the selector's trusted model-registry digest.",
+            "The Desktop protocol requires the selector's trusted model-registry digest.",
         )
     if expected_registry_digest != registry_digest(registry):
         return _blocked(
@@ -438,6 +486,17 @@ def build_desktop_plan(
     include_grader = _grader_enabled(decision, str(variant))
     roles = _role_order(str(variant), include_grader)
     final_role = "direct" if variant in DIRECT_VARIANTS else "reviewer"
+    requires_read_only_roles = any(role != final_role for role in roles)
+    if capabilities.sandbox_issue(
+        host_sandbox=permissions.sandbox,
+        effective_sandbox=effective_sandbox,
+        requires_read_only_roles=requires_read_only_roles,
+    ):
+        return _blocked(
+            plan,
+            "desktop_spawn_capabilities_insufficient",
+            "The current spawn_agent tool cannot honor the required per-child sandbox boundary.",
+        )
     minimum_calls = len(roles)
     if minimum_calls > max_model_calls:
         return _blocked(
@@ -637,6 +696,7 @@ def main() -> int:
         default="inherit",
     )
     parser.add_argument("--host-permissions-json", required=True)
+    parser.add_argument("--spawn-capabilities-json")
     args = parser.parse_args()
     try:
         route = json.load(sys.stdin)
@@ -647,6 +707,7 @@ def main() -> int:
             args.available_model,
             workdir=args.workdir,
             host_permissions=args.host_permissions_json,
+            spawn_capabilities=args.spawn_capabilities_json,
             max_parallel_children=args.max_parallel_children,
             requested_sandbox=args.sandbox,
             dry_run=args.dry_run,

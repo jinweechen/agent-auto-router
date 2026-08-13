@@ -12,12 +12,15 @@ import secrets
 from typing import Any, Mapping
 
 from model_registry import ModelRegistry, registry_digest
+from protocol_schemas import (
+    EXECUTION_ENVELOPE_SCHEMA,
+    HOST_REQUEST_SCHEMA,
+    MODEL_AFFINITY_SCHEMA,
+    ROUTE_DECISION_SCHEMA,
+    TASK_BINDING_SCHEMA,
+)
 
 
-ROUTE_DECISION_SCHEMA = "agent-auto-router.route-decision.v2"
-TASK_BINDING_SCHEMA = "agent-auto-router.task-binding.v1"
-EXECUTION_ENVELOPE_SCHEMA = "agent-auto-router.execution-envelope.v1"
-HOST_REQUEST_SCHEMA = "agent-auto-router.host-request.v1"
 MAX_ROUTE_DECISION_BYTES = 64 * 1024
 MAX_TASK_BYTES = 4 * 1024 * 1024
 WORKSPACE_KEY_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -493,9 +496,9 @@ def validate_route_decision(
             raise ValueError(f"route {owner} source is not privacy-safe")
     affinity = value["modelAffinity"]
     if affinity:
-        if affinity.get("schema") != "agent-auto-router.model-affinity.v1":
+        if affinity.get("schema") != MODEL_AFFINITY_SCHEMA:
             raise ValueError("route affinity schema is invalid")
-        if affinity.get("mode") not in {"auto", "off"}:
+        if affinity.get("mode") not in {"session", "auto", "off"}:
             raise ValueError("route affinity mode is invalid")
         if affinity.get("modelCalls") != 0:
             raise ValueError("route affinity must declare zero model calls")
@@ -650,7 +653,7 @@ def build_route_decision(
     workspace_key: str | None = None,
     model_affinity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return the stable, content-free route-decision.v2 envelope."""
+    """Return the stable, content-free route-decision envelope."""
     result = {
         "schema": ROUTE_DECISION_SCHEMA,
         "routeId": str(route_id),

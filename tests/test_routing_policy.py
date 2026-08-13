@@ -63,7 +63,7 @@ class RoutingPolicyTests(unittest.TestCase):
             "prompt": "Implement API and tests for several independent components",
             "acceptance_criteria": ["API", "tests", "docs", "rollback"],
         }
-        result = route_case(case, "balance")
+        result = route_case(case, "balance", orchestration_policy="auto")
         self.assertEqual(result["selected_model"], "codex:gpt-5.6-terra")
         self.assertEqual(result["variant"], "D")
         utility = result["execution_plan"]["orchestrationRecommendation"]["utility"]
@@ -78,17 +78,22 @@ class RoutingPolicyTests(unittest.TestCase):
             "prompt": "Implement API and tests for several independent components",
             "acceptance_criteria": ["API", "tests", "docs", "rollback"],
         }
-        result = route_case(case, "balance", orchestration_policy="recommend")
+        result = route_case(
+            case,
+            "balance",
+            orchestration_policy="recommend",
+            model_affinity_mode="off",
+        )
         recommendation = result["execution_plan"]["orchestrationRecommendation"]
         self.assertEqual(result["variant"], "E")
         self.assertEqual(result["recommended_variant"], "D")
         self.assertTrue(recommendation["recommended"])
         self.assertTrue(recommendation["requiresExplicitOptIn"])
         self.assertEqual(recommendation["estimatedMaximumModelCalls"], 5)
-        self.assertEqual(recommendation["utility"]["estimatedRoleTierSwitches"], 0)
+        self.assertEqual(recommendation["utility"]["estimatedRoleTierSwitches"], 2)
         self.assertEqual(recommendation["utility"]["estimatedProfileTierSwitches"], 2)
         self.assertEqual(
-            recommendation["utility"]["roleModelPolicy"], "selected-model-preferred"
+            recommendation["utility"]["roleModelPolicy"], "profile"
         )
 
     def test_direct_policy_suppresses_eligible_orchestration(self) -> None:
@@ -179,7 +184,13 @@ class RoutingPolicyTests(unittest.TestCase):
                 "cache_write": 0,
             },
         }
-        result = route_case(case, "balance", affinity_events=[affinity_event])
+        result = route_case(
+            case,
+            "balance",
+            orchestration_policy="auto",
+            affinity_events=[affinity_event],
+            model_affinity_mode="auto",
+        )
         self.assertEqual(result["selector_model"], "codex:gpt-5.6-terra")
         self.assertEqual(result["selected_model"], "codex:gpt-5.6-sol")
         self.assertEqual(result["target_tier"], "balanced")
@@ -190,7 +201,7 @@ class RoutingPolicyTests(unittest.TestCase):
         case = {
             "prompt": "并行审查多个独立模块，覆盖调试、长上下文和多文件任务，最后统一审查",
         }
-        result = route_case(case, "balance")
+        result = route_case(case, "balance", orchestration_policy="auto")
         self.assertTrue(result["features"]["parallelizable"])
         self.assertTrue(result["features"]["orchestration_eligible"])
         self.assertEqual(result["variant"], "D")
@@ -289,6 +300,35 @@ class RoutingPolicyTests(unittest.TestCase):
         result = route_case({"prompt": "Implement a routine change"}, "balance", "xhigh")
         self.assertEqual(result["effort"], "xhigh")
         self.assertEqual(result["selected_model"], "codex:gpt-5.6-sol")
+
+    def test_library_defaults_recommend_without_extra_calls_or_state(self) -> None:
+        result = route_case({
+            "prompt": "Implement API and tests for several independent components",
+            "acceptance_criteria": ["API", "tests", "docs", "rollback"],
+        })
+        self.assertEqual(result["variant"], "E")
+        self.assertEqual(result["execution_plan"]["orchestrationPolicy"], "recommend")
+        self.assertEqual(result["model_affinity"]["mode"], "session")
+        self.assertEqual(result["model_affinity"]["evidence"]["samples"], 0)
+        self.assertEqual(
+            result["execution_plan"]["roleModelPolicy"], "selected-model-preferred"
+        )
+
+    def test_unspecified_effort_uses_frontier_recommendation(self) -> None:
+        result = route_case({
+            "prompt": "Review production authentication for authorization bypass",
+        })
+        self.assertEqual(result["selected_model"], "codex:gpt-5.6-sol")
+        self.assertEqual(result["effort"], "high")
+        self.assertEqual(result["execution_plan"]["effort"], "high")
+        self.assertEqual(result["routeDecision"]["effort"], "high")
+
+        explicit = route_case(
+            {"prompt": "Review production authentication for authorization bypass"},
+            effort="medium",
+        )
+        self.assertEqual(explicit["effort"], "medium")
+        self.assertEqual(explicit["execution_plan"]["effortSource"], "explicit")
 
     def test_cost_strategy_uses_terra_for_complex_non_risk_work(self) -> None:
         prompt = "Redesign the distributed architecture and concurrency model"

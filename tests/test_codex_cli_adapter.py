@@ -43,7 +43,7 @@ class CodexCommandResolutionTests(unittest.TestCase):
 
         repository = SCRIPTS.parents[2].resolve()
         permissions = {
-            "schema": "agent-auto-router.host-permissions.v1",
+            "schema": "agent-auto-router.host-permissions",
             "source": "test-codex-turn",
             "sandbox": "workspace-write",
             "approvalPolicy": "never",
@@ -83,7 +83,7 @@ class CodexCommandResolutionTests(unittest.TestCase):
     def test_orchestration_never_adds_writable_roots_to_read_only_roles(self) -> None:
         repository = SCRIPTS.parents[2].resolve()
         permissions = parse_host_permissions({
-            "schema": "agent-auto-router.host-permissions.v1",
+            "schema": "agent-auto-router.host-permissions",
             "source": "test-codex-turn",
             "sandbox": "workspace-write",
             "approvalPolicy": "never",

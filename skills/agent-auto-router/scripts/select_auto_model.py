@@ -25,9 +25,11 @@ from model_affinity import (
 from policy_learning import default_feedback_path, load_maintained_feedback
 from route_contract import ROUTE_DECISION_SCHEMA, build_route_decision
 from repository_context import (
+    REPOSITORY_CONTEXT_MODES,
     build_repository_context,
     disabled_repository_inspection,
     inspect_repository,
+    should_inspect_repository,
 )
 from routing_policy import (
     EFFORTS,
@@ -54,7 +56,7 @@ def main() -> int:
     parser.add_argument("--feedback-file", type=Path)
     parser.add_argument("--workdir", type=Path)
     parser.add_argument(
-        "--repository-context", choices=("auto", "off"), default="off"
+        "--repository-context", choices=REPOSITORY_CONTEXT_MODES, default="adaptive"
     )
     policy_source_group = parser.add_mutually_exclusive_group()
     policy_source_group.add_argument("--use-active-policy", action="store_true")
@@ -64,13 +66,13 @@ def main() -> int:
     parser.add_argument(
         "--orchestration-policy",
         choices=ORCHESTRATION_POLICIES,
-        default="direct",
+        default="recommend",
     )
     parser.add_argument("--confirm-high-risk-orchestration", action="store_true")
     parser.add_argument(
         "--model-affinity",
         choices=MODEL_AFFINITY_MODES,
-        default="off",
+        default="session",
     )
     route_input = parser.add_mutually_exclusive_group(required=True)
     route_input.add_argument("--text")
@@ -120,7 +122,11 @@ def main() -> int:
         # names one through --model-choice.
         allow_explicit = args.model_choice != "auto"
         repository_inspection = None
-        if args.workdir and args.repository_context == "auto":
+        repository_scan_enabled = bool(
+            args.workdir
+            and should_inspect_repository(prompt or "", args.repository_context)
+        )
+        if repository_scan_enabled:
             repository_inspection = inspect_repository(args.workdir, prompt or "")
             repository_features = dict(repository_inspection)
         elif args.workdir:
@@ -166,7 +172,7 @@ def main() -> int:
             })
         else:
             explicit_override = False
-            if args.model_affinity == "off":
+            if args.model_affinity != "auto":
                 events = []
                 affinity_error = None
             else:
@@ -239,7 +245,7 @@ def main() -> int:
             )
     repository_context = None
     if args.workdir and repository_inspection is not None:
-        if args.repository_context == "auto":
+        if repository_scan_enabled:
             context_text, context_metadata = build_repository_context(
                 args.workdir,
                 prompt or "",

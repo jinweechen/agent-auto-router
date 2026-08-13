@@ -4,9 +4,9 @@
 
 面向 Codex、Claude Code 和通用 Agent 宿主的本地确定性模型路由插件与 Skill。
 
-它在执行前根据任务复杂度、风险、约束程度和 reasoning effort 选择受信模型，并生成直接执行计划。仓库检查、学习策略、模型黏性、反馈和多角色编排都是可显式开启的专家能力。路由过程本身不调用模型，不修改 Codex 全局配置，也不读取或转发登录凭据。
+它在执行前根据任务复杂度、风险、约束程度和 reasoning effort 选择受信模型，并生成有界执行计划。标准路由会安全启用自适应仓库检查、编排建议和本次计划内模型复用，但不读取历史状态，也不启动额外智能体。跨任务黏性、学习策略、反馈写入和多角色执行仍需显式开启。路由过程本身不调用模型，不修改 Codex 全局配置，也不读取或转发登录凭据。
 
-当前项目版本：`0.15.0+codex.20260813015724`。
+当前项目版本：`0.15.0+codex.20260813062845`。
 
 ## 先看结论
 
@@ -14,7 +14,7 @@
 - 默认 `balance` 策略在 `fast / balanced / frontier` 三个能力层之间选择模型。
 - Codex Desktop 通过原生子代理协议执行；CLI 模式使用用户已经登录的官方 CLI。
 - Desktop 计划不包含任务正文，所有执行都受当前宿主权限、调用预算和单写入者规则约束。
-- 标准路由是无状态的：不扫描仓库、不加载学习策略、不读黏性反馈、不持久化结果，也不自动编排；每项高级能力都需要单独显式开启。
+- 标准路由是零状态的：普通回答不扫描仓库；代码、路径、依赖或调试任务会执行一次有界自适应扫描。它不加载学习策略、不读黏性反馈、不持久化结果，也不自动编排。
 - 新模型可以先显式试用，验证后再进入 Auto；模型不可用时明确失败，不静默回退。
 
 ## 能做什么
@@ -22,11 +22,11 @@
 | 能力 | 说明 |
 | --- | --- |
 | 自动选模 | 从版本化受信注册表选择模型、effort、能力层和上下文预算 |
-| 统一路由协议 | Python 与 PowerShell 入口统一消费带任务及工作区绑定的严格 `agent-auto-router.route-decision.v2` |
-| Desktop 执行计划 | 输出 `agent-auto-router.desktop-plan.v3`，由当前主代理执行有界 DAG |
+| 统一路由协议 | Python 与 PowerShell 入口统一消费带任务及工作区绑定的严格 `agent-auto-router.route-decision` |
+| Desktop 执行计划 | 输出 `agent-auto-router.desktop-plan`，由当前主代理执行有界 DAG |
 | CLI 执行 | 通过 UTF-8 stdin 调用已登录的 Codex CLI 或编排后端 |
 | 多角色编排 | 支持 planner、dispatcher、worker、reviewer、grader，并保证只有一个写入者 |
-| 通用宿主协议 | 输出带 stdin 执行信封模板的 `agent-auto-router.host-plan.v3` |
+| 通用宿主协议 | 输出带 stdin 执行信封模板的 `agent-auto-router.host-plan` |
 | 模型注册表 | 分离 `enabled` 与 `autoEligible`，支持受控扩展和显式试用 |
 | 隐私最小化反馈 | 只保存路由元数据、验证状态、耗时和可观测 Token，不保存任务与回复 |
 | 受控学习 | 使用明确的 `off / observe / guarded` 模式，并提供 canary、probation 和自动回滚 |
@@ -50,7 +50,7 @@
 ```text
 任务
   -> 本地确定性特征提取
-  -> 读取活动策略与离线评测先验
+  -> 使用内置策略与离线评测先验；可选加载活动策略
   -> 选择 tier、model、effort、context 和 A-F 变体
   -> 校验宿主权限、模型可用性、调用预算和工作区边界
   -> Desktop：输出无任务正文的 staged plan
@@ -60,6 +60,8 @@
 ```
 
 路由与执行是两个阶段：路由只做本地计算；只有执行阶段才可能产生模型调用。
+
+编排模式为 `direct`、`recommend`、`auto`。标准路由使用 `recommend`，可以说明有价值的角色拆分，但仍只输出单次调用的直接计划；只有显式 `auto` 才可能规划多智能体执行。
 
 ## 快速开始
 
@@ -95,7 +97,7 @@ Python 路由器仅使用标准库，没有第三方运行时依赖。
   -Workdir "D:/path/to/project"
 ```
 
-默认 `standard` 预设只允许写入 `Workdir`，`-Profile safe` 是只读模式。两者都是无状态直连路由，关闭仓库检查、学习策略、反馈和模型黏性。这两个预设是经过校验的固定安全组合，不是可任意改写权限的捷径。普通本地使用到这里即可；只有 Desktop 宿主集成、显式模型、仓库感知路由、多角色编排、验证升级或学习管理才需要下面的完整入口。
+默认 `standard` 预设只允许写入 `Workdir`：仅在代码、路径或调试任务需要时自适应检查仓库，只报告编排建议而不执行，并只在本次运行内复用所选模型。`-Profile safe` 是只读模式，同时关闭仓库检查和模型黏性。两者都不加载学习策略、不写反馈、不启动多智能体执行。这些预设是经过校验的固定安全组合，不是可任意改写权限的捷径。
 
 诊断默认只输出简洁摘要。通过 `aar.ps1 -Json`，或运行 `doctor.py --json`，可获得机器可读详情；它不读取任务、不打印环境变量值、不检查凭据，也不会调用模型。`--verbose-paths` 是额外的显式排障选项。
 
@@ -204,9 +206,9 @@ ASCII 关键词按词法边界匹配，避免 `tokenizer`/`token`、`information
 | E | direct | `balanced` direct |
 | F | direct | `fast` direct |
 
-A/E/F 是直接执行。标准入口默认使用 `direct`；专家调用者必须显式选择 `recommend` 或 `auto` 才会评估或使用 B/C/D。`auto` 仍要求低风险任务具有明确并行信号、足够规模，并且扣除模型调用与层切换开销后收益为正。高风险任务还必须显式传入 `-ConfirmHighRiskOrchestration`。专用编排入口本身就是显式高级工作流。
+A/E/F 是直接执行。标准入口和可复用 Python API 默认使用 `recommend`：评估并展示 B/C/D 建议，但仍直接执行且不增加模型调用；只有显式选择 `auto` 才启动多智能体。Python 模型黏性默认 `session`，未指定 effort 时使用所选层级的推荐值，而不是被视为显式 `medium`。`auto` 仍要求低风险任务具有明确并行信号、足够规模，并且扣除模型调用与层切换开销后收益为正。高风险任务还必须显式传入 `-ConfirmHighRiskOrchestration`。
 
-标准路由默认关闭模型黏性，可用 `-ModelAffinity auto` 显式开启。开启后，Auto 只能在同一工作区摘要、同一策略下复用最近 30 分钟内成功使用的模型，并继续受既有 tier 与缓存信号边界约束。这些比例只用于路由，不是供应商账单估算。
+默认 `-ModelAffinity session` 只在当前计划的兼容角色间复用所选模型，不读取历史状态，并使用 `selected-model-preferred` 角色策略。显式 `-ModelAffinity auto` 才会在同一工作区摘要、同一策略下复用最近 30 分钟内成功使用的模型，并继续受既有 tier 与缓存信号边界约束；`-ModelAffinity off` 使用精确角色预设。这些比例只用于路由，不是供应商账单估算。
 
 角色默认值来自 [orchestration_profiles.json](skills/agent-auto-router/scripts/orchestration_profiles.json)。
 
@@ -216,7 +218,7 @@ A/E/F 是直接执行。标准入口默认使用 `direct`；专家调用者必�
 
 Desktop 是宿主协议，不是隐藏的 CLI 登录流程。
 
-主代理把当前 runtime 明确声明的模型、并行子代理容量和 `agent-auto-router.host-permissions.v1` 权限快照交给路由器。路由器返回：
+主代理把当前 runtime 明确声明的模型与参数能力、并行子代理容量、`agent-auto-router.host-permissions` 权限快照，以及同源的 `agent-auto-router.desktop-spawn-capabilities` 快照交给路由器。路由器返回：
 
 - 确切的角色模型和 effort
 - staged DAG 与依赖顺序
@@ -226,6 +228,8 @@ Desktop 是宿主协议，不是隐藏的 CLI 登录流程。
 - 执行后的隐私安全回执模板
 
 Desktop 当前只支持 Codex 后端。默认 `selected-model-preferred` 角色策略会先复用本次路由选中的模型，但前提是满足角色能力和 tier 下限；否则解析 profile 模型，并且只允许在 runtime 已声明且注册表受信的 Codex 模型中做同 tier 或更高 tier 的显式替代。所有替代都会明示；无法满足时返回结构化阻断。
+
+能力快照是闭集，并且必须来自当前 `spawn_agent` 工具 schema。若宿主不能逐子代理传递 workdir 或 sandbox，则只能执行与当前宿主边界完全一致的继承计划；隔离工作目录、更严格的 direct 沙箱或只读编排阶段都会在模型调用前阻断。
 
 详细宿主执行步骤见 [entrypoints.md](skills/agent-auto-router/references/entrypoints.md)。
 
@@ -259,7 +263,7 @@ Desktop 当前只支持 Codex 后端。默认 `selected-model-preferred` 角色�
   -Explain
 ```
 
-CLI 任务正文通过 UTF-8 stdin 传入，不出现在子进程命令行参数中。`-Model sol`、`-Model terra` 或完整受信 Codex ID 可以显式覆盖本次选择，但不会修改全局配置。默认使用 `-ModelAffinity off`、`-RepositoryContextMode off` 和 `-OrchestrationPolicy direct`，也不加载活动策略或写反馈。分别使用 `-ModelAffinity auto`、`-RepositoryContextMode auto`、`-OrchestrationPolicy auto`、`-EnableLearningPolicy` 或 `-EnableFeedback` 显式开启。
+CLI 任务正文通过 UTF-8 stdin 传入，不出现在子进程命令行参数中。`-Model sol`、`-Model terra` 或完整受信 Codex ID 可以显式覆盖本次选择，但不会修改全局配置。默认使用 `-ModelAffinity session`、`-RepositoryContextMode adaptive` 和 `-OrchestrationPolicy recommend`：不读反馈、不加载活动策略、不写状态、不启动额外智能体。自适应模式对普通回答保持 `scan_duration_ms=0`，只对代码、路径或调试任务执行一次有界扫描。跨任务黏性、强制扫描、多智能体执行、活动策略和反馈仍分别需要 `auto` 或显式开关。
 
 只做零模型调用的本地 DryRun：
 
@@ -294,8 +298,8 @@ CLI 任务正文通过 UTF-8 stdin 传入，不出现在子进程命令行参数
 | `-Backend codex|claude` | 将一次编排限定到单一后端 |
 | `-DryRun` | 只输出路由，不调用模型 |
 | `-Sandbox read-only` | 禁止最终角色写入 |
-| `-RepositoryContextMode auto|off` | 使用有界单次仓库检查或关闭检查 |
-| `-ModelAffinity auto|off` | 优先复用一个能力足够的模型并进行有界同工作区复用，或关闭黏性 |
+| `-RepositoryContextMode adaptive|auto|off` | 仅为代码/路径/调试任务扫描、强制有界单次扫描或关闭检查 |
+| `-ModelAffinity session|auto|off` | 本次计划内复用、读取有界同工作区证据或使用精确角色预设 |
 | `-AllowDirty` | 明确接受在非干净 Git 工作区执行的风险 |
 | `-AllowNoChanges` | 允许写任务成功但 Git 状态无变化 |
 | `-MaxTotalTokens` | 对 CLI 可观测 Token 设置软预算 |
@@ -308,17 +312,17 @@ CLI 任务正文通过 UTF-8 stdin 传入，不出现在子进程命令行参数
 
 ### 通用宿主
 
-`host_execution_plan.py` 从包含当前任务及其绑定路由的 v1 宿主请求和可信权限快照生成 `agent-auto-router.host-plan.v3`，但不启动任何进程，也不会在输出中返回任务正文。宿主根据 `action.kind` 决定：
+`host_execution_plan.py` 从包含当前任务及其绑定路由的宿主请求和可信权限快照生成 `agent-auto-router.host-plan`，但不启动任何进程，也不会在输出中返回任务正文。宿主根据 `action.kind` 决定：
 
 - `cli`：调用声明的后端和模型。
 - `host_execute`：由宿主原生模型近似执行，并明确标记准确度边界。
-- `orchestrate`：用当前任务实例化声明的 `execution-envelope.v1` stdin 模板，再调用本地多角色编排入口。路由和权限快照不再进入进程 argv；入口校验任务及工作区绑定，不再二次路由。
+- `orchestrate`：用当前任务实例化声明的 `execution-envelope` stdin 模板，再调用本地多角色编排入口。路由和权限快照不再进入进程 argv；入口校验任务及工作区绑定，不再二次路由。
 
 通用宿主不得把连接器、登录会话或凭据复制到独立 CLI。
 
 ## 权限与单写入者边界
 
-自动执行使用 `agent-auto-router.host-permissions.v1`。可信快照包含：
+自动执行使用 `agent-auto-router.host-permissions`。可信快照包含：
 
 - sandbox 与 approval policy
 - network access
@@ -550,7 +554,7 @@ CI 在 Windows、Ubuntu 与 macOS、Python 3.10 与 3.12 上运行核心测试�
         ├── quick_profiles.json    # 固定 safe/standard 预设
         ├── invoke_auto_task.ps1   # Desktop/CLI 专家入口
         ├── invoke_orchestrated_task.ps1
-        ├── route_contract.py      # 严格 route-decision.v2 与执行信封协议
+        ├── route_contract.py      # 严格 route-decision 与执行信封协议
         ├── doctor.py              # 隐私安全的零调用诊断
         ├── host_execution_plan.py # 通用宿主计划
         ├── model_registry.json

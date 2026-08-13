@@ -18,6 +18,7 @@ from typing import Any, Iterable
 
 from efficiency_metrics import summarize_feedback
 from model_affinity import ROLE_MODEL_POLICY_AFFINITY, ROLE_MODEL_POLICY_PROFILE
+from protocol_schemas import POLICY_SHADOW_SCHEMA
 
 from benchmark_priors import (
     BenchmarkPriors,
@@ -929,7 +930,7 @@ def shadow_policy_comparison(
     else:
         assessment = "neutral"
     return {
-        "schema": "agent-auto-router.policy-shadow.v1",
+        "schema": POLICY_SHADOW_SCHEMA,
         "assessment": assessment,
         "dataset": {
             "samples": len(samples),

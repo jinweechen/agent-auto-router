@@ -21,13 +21,21 @@ from model_registry import load_model_registry, registry_digest  # noqa: E402
 from routing_policy import select_model  # noqa: E402
 
 
-def route_for(task: str, *, criteria: list[str] | None = None) -> dict[str, object]:
+def route_for(
+    task: str,
+    *,
+    criteria: list[str] | None = None,
+    orchestration_policy: str = "direct",
+) -> dict[str, object]:
     decision = select_model(task, "balance", acceptance_criteria=criteria or [])
     return {
         "routeId": "route-test",
         "decision": asdict(decision),
         "selectedModel": decision.model,
-        "executionPlan": build_execution_plan(decision),
+        "executionPlan": build_execution_plan(
+            decision,
+            orchestration_policy=orchestration_policy,
+        ),
         "policy": {
             "version": decision.policy_version,
             "digest": decision.policy_digest,
@@ -50,13 +58,34 @@ def agent_for(plan: dict[str, object], role: str) -> dict[str, object]:
 
 def host_permissions(sandbox: str = "workspace-write") -> dict[str, object]:
     return {
-        "schema": "agent-auto-router.host-permissions.v1",
+        "schema": "agent-auto-router.host-permissions",
         "source": "test-desktop-turn",
         "sandbox": sandbox,
         "approvalPolicy": "never",
         "networkAccess": False,
         "writableRoots": [str(SCRIPTS.parents[2].resolve())] if sandbox == "workspace-write" else [],
         "canRequestPermissions": False,
+    }
+
+
+def desktop_spawn_capabilities(
+    current_workdir: pathlib.Path | None = None,
+    *,
+    workdir: bool = True,
+    sandbox: bool = True,
+    source: str = "test-desktop-turn",
+) -> dict[str, object]:
+    return {
+        "schema": "agent-auto-router.desktop-spawn-capabilities",
+        "source": source,
+        "currentWorkdir": str((current_workdir or SCRIPTS.parents[2]).resolve()),
+        "arguments": {
+            "model": True,
+            "reasoningEffort": True,
+            "forkTurns": True,
+            "workdir": workdir,
+            "sandbox": sandbox,
+        },
     }
 
 
@@ -68,6 +97,7 @@ class DesktopExecutionTests(unittest.TestCase):
             [_bare(route["selectedModel"])],
             workdir=SCRIPTS.parents[2],
             host_permissions=None,
+            spawn_capabilities=desktop_spawn_capabilities(),
             max_parallel_children=3,
         )
         self.assertEqual(plan["status"], "blocked")
@@ -82,6 +112,7 @@ class DesktopExecutionTests(unittest.TestCase):
             [_bare(route["selectedModel"])],
             workdir=SCRIPTS.parents[2],
             host_permissions=permissions,
+            spawn_capabilities=desktop_spawn_capabilities(),
             max_parallel_children=3,
         )
         self.assertEqual(plan["status"], "blocked")
@@ -93,12 +124,126 @@ class DesktopExecutionTests(unittest.TestCase):
         self.assertIn("source", plan["blocked"]["message"])
         self.assertEqual(plan["modelCalls"], 0)
 
+    def test_automatic_execution_requires_trusted_spawn_capabilities(self) -> None:
+        route = route_for("Implement a routine change")
+        plan = build_desktop_plan(
+            route,
+            [_bare(route["selectedModel"])],
+            workdir=SCRIPTS.parents[2],
+            host_permissions=host_permissions(),
+            max_parallel_children=3,
+        )
+        self.assertEqual(plan["status"], "blocked")
+        self.assertEqual(
+            plan["blocked"]["code"], "desktop_spawn_capabilities_required"
+        )
+        self.assertEqual(plan["plannedAgentCalls"], 0)
+
+    def test_spawn_capabilities_are_closed_and_share_permission_source(self) -> None:
+        route = route_for("Implement a routine change")
+        invalid = desktop_spawn_capabilities()
+        invalid["unexpected"] = True
+        plan = build_desktop_plan(
+            route,
+            [_bare(route["selectedModel"])],
+            workdir=SCRIPTS.parents[2],
+            host_permissions=host_permissions(),
+            spawn_capabilities=invalid,
+            max_parallel_children=3,
+        )
+        self.assertEqual(plan["blocked"]["code"], "invalid-desktop-spawn-capabilities")
+
+        mismatched = desktop_spawn_capabilities(source="another-turn")
+        plan = build_desktop_plan(
+            route,
+            [_bare(route["selectedModel"])],
+            workdir=SCRIPTS.parents[2],
+            host_permissions=host_permissions(),
+            spawn_capabilities=mismatched,
+            max_parallel_children=3,
+        )
+        self.assertEqual(
+            plan["blocked"]["code"], "desktop_spawn_capability_source_mismatch"
+        )
+
+    def test_inherit_only_spawn_tool_can_run_matching_direct_plan(self) -> None:
+        route = route_for("Implement a routine change")
+        capabilities = desktop_spawn_capabilities(workdir=False, sandbox=False)
+        plan = build_desktop_plan(
+            route,
+            [_bare(route["selectedModel"])],
+            workdir=SCRIPTS.parents[2],
+            host_permissions=host_permissions(),
+            spawn_capabilities=capabilities,
+            max_parallel_children=3,
+        )
+        self.assertEqual(plan["status"], "ready")
+        self.assertEqual(plan["hostContract"]["spawnCapabilities"], capabilities)
+
+    def test_inherit_only_spawn_tool_blocks_isolated_workdir(self) -> None:
+        route = route_for("Review a routine change")
+        capabilities = desktop_spawn_capabilities(workdir=False, sandbox=False)
+        with tempfile.TemporaryDirectory() as temp:
+            plan = build_desktop_plan(
+                route,
+                [_bare(route["selectedModel"])],
+                workdir=temp,
+                host_permissions=host_permissions("danger-full-access"),
+                spawn_capabilities=capabilities,
+                max_parallel_children=3,
+            )
+        self.assertEqual(
+            plan["blocked"]["code"], "desktop_spawn_capabilities_insufficient"
+        )
+        self.assertIn("workdir", plan["blocked"]["message"])
+        self.assertEqual(plan["plannedAgentCalls"], 0)
+
+    def test_inherit_only_spawn_tool_blocks_tightened_sandbox(self) -> None:
+        route = route_for("Review a routine change")
+        plan = build_desktop_plan(
+            route,
+            [_bare(route["selectedModel"])],
+            workdir=SCRIPTS.parents[2],
+            host_permissions=host_permissions(),
+            spawn_capabilities=desktop_spawn_capabilities(
+                workdir=False, sandbox=False
+            ),
+            requested_sandbox="read-only",
+            max_parallel_children=3,
+        )
+        self.assertEqual(
+            plan["blocked"]["code"], "desktop_spawn_capabilities_insufficient"
+        )
+        self.assertIn("sandbox", plan["blocked"]["message"])
+
+    def test_inherit_only_spawn_tool_blocks_read_only_orchestration_roles(self) -> None:
+        route = route_for(
+            "Implement API and tests for several independent components",
+            criteria=["API", "tests", "docs", "rollback"],
+            orchestration_policy="auto",
+        )
+        plan = build_desktop_plan(
+            route,
+            all_desktop_models(),
+            workdir=SCRIPTS.parents[2],
+            host_permissions=host_permissions(),
+            spawn_capabilities=desktop_spawn_capabilities(
+                workdir=False, sandbox=False
+            ),
+            max_parallel_children=3,
+        )
+        self.assertEqual(
+            plan["blocked"]["code"], "desktop_spawn_capabilities_insufficient"
+        )
+        self.assertIn("sandbox", plan["blocked"]["message"])
+
     def test_read_only_host_cannot_produce_a_writer(self) -> None:
         route = route_for("Review a routine change")
         plan = build_desktop_plan(
             route,
             [_bare(route["selectedModel"])],
             host_permissions=host_permissions("read-only"),
+            spawn_capabilities=desktop_spawn_capabilities(),
             workdir=SCRIPTS.parents[2],
             max_parallel_children=3,
         )
@@ -113,10 +258,11 @@ class DesktopExecutionTests(unittest.TestCase):
             route,
             [_bare(route["selectedModel"])],
             host_permissions=host_permissions(),
+            spawn_capabilities=desktop_spawn_capabilities(),
             workdir=SCRIPTS.parents[2],
             max_parallel_children=3,
         )
-        self.assertEqual(plan["schema"], "agent-auto-router.desktop-plan.v3")
+        self.assertEqual(plan["schema"], "agent-auto-router.desktop-plan")
         self.assertEqual(plan["status"], "ready")
         self.assertEqual(plan["hostContract"]["action"], "spawn_agent")
         self.assertEqual(plan["hostContract"]["maxAgents"], 1)
@@ -141,7 +287,7 @@ class DesktopExecutionTests(unittest.TestCase):
         self.assertFalse(plan["privacy"]["credentialsRead"])
         self.assertEqual(
             plan["learning"]["reportSchema"],
-            "agent-auto-router.execution-report.v1",
+            "agent-auto-router.execution-report",
         )
         self.assertTrue(plan["learning"]["submitAfterExecution"])
         self.assertEqual(plan["learning"]["route"]["selectorModel"], route["decision"]["model"])
@@ -159,6 +305,7 @@ class DesktopExecutionTests(unittest.TestCase):
             route,
             [_bare(route["selectedModel"])],
             host_permissions=host_permissions(),
+            spawn_capabilities=desktop_spawn_capabilities(),
             workdir=SCRIPTS.parents[2],
             max_parallel_children=3,
             feedback_enabled=False,
@@ -172,6 +319,7 @@ class DesktopExecutionTests(unittest.TestCase):
             route,
             [_bare(route["selectedModel"])],
             host_permissions=host_permissions(),
+            spawn_capabilities=desktop_spawn_capabilities(),
             workdir=SCRIPTS.parents[2],
             max_parallel_children=3,
         )
@@ -240,6 +388,7 @@ class DesktopExecutionTests(unittest.TestCase):
             route,
             all_desktop_models(),
             host_permissions=host_permissions(),
+            spawn_capabilities=desktop_spawn_capabilities(),
             workdir=SCRIPTS.parents[2],
             max_parallel_children=3,
         )
@@ -267,6 +416,7 @@ class DesktopExecutionTests(unittest.TestCase):
             route,
             [_bare(route["selectedModel"])],
             host_permissions=host_permissions(),
+            spawn_capabilities=desktop_spawn_capabilities(),
             workdir=SCRIPTS.parents[2],
             max_parallel_children=3,
         )
@@ -281,6 +431,7 @@ class DesktopExecutionTests(unittest.TestCase):
             route,
             ["gpt-other"],
             host_permissions=host_permissions(),
+            spawn_capabilities=desktop_spawn_capabilities(),
             workdir=SCRIPTS.parents[2],
             max_parallel_children=3,
         )
@@ -301,6 +452,7 @@ class DesktopExecutionTests(unittest.TestCase):
                     route,
                     [_bare(route["selectedModel"])],
                     host_permissions=host_permissions(),
+                    spawn_capabilities=desktop_spawn_capabilities(),
                     workdir=SCRIPTS.parents[2],
                     max_parallel_children=3,
                 )
@@ -321,6 +473,7 @@ class DesktopExecutionTests(unittest.TestCase):
             route,
             ["sonnet"],
             host_permissions=host_permissions(),
+            spawn_capabilities=desktop_spawn_capabilities(),
             workdir=SCRIPTS.parents[2],
             max_parallel_children=3,
         )
@@ -333,17 +486,19 @@ class DesktopExecutionTests(unittest.TestCase):
         route = route_for(
             "Implement API and tests for several independent components",
             criteria=["API", "tests", "docs", "rollback"],
+            orchestration_policy="auto",
         )
         self.assertEqual(route["executionPlan"]["topology"], "orchestrated")
         plan = build_desktop_plan(
             route,
             all_desktop_models(),
             host_permissions=host_permissions(),
+            spawn_capabilities=desktop_spawn_capabilities(),
             workdir=SCRIPTS.parents[2],
             max_parallel_children=3,
         )
         self.assertEqual(plan["status"], "ready")
-        self.assertEqual(plan["schema"], "agent-auto-router.desktop-plan.v3")
+        self.assertEqual(plan["schema"], "agent-auto-router.desktop-plan")
         self.assertEqual(plan["hostContract"]["action"], "spawn_agents")
         self.assertEqual(plan["hostContract"]["onlyWriter"], "reviewer")
         self.assertEqual(plan["hostContract"]["maxParallelAgents"], 2)
@@ -369,11 +524,13 @@ class DesktopExecutionTests(unittest.TestCase):
         route = route_for(
             "Implement API and tests for several independent components",
             criteria=["API", "tests", "docs", "rollback"],
+            orchestration_policy="auto",
         )
         plan = build_desktop_plan(
             route,
             ["gpt-5.6-sol", "gpt-5.6-terra"],
             host_permissions=host_permissions(),
+            spawn_capabilities=desktop_spawn_capabilities(),
             workdir=SCRIPTS.parents[2],
             max_parallel_children=3,
         )
@@ -387,12 +544,14 @@ class DesktopExecutionTests(unittest.TestCase):
         route = route_for(
             "Implement API and tests for several independent components",
             criteria=["API", "tests", "docs", "rollback"],
+            orchestration_policy="auto",
         )
         route["executionPlan"]["roleModelPolicy"] = "profile"
         plan = build_desktop_plan(
             route,
             all_desktop_models(),
             host_permissions=host_permissions(),
+            spawn_capabilities=desktop_spawn_capabilities(),
             workdir=SCRIPTS.parents[2],
             max_parallel_children=3,
         )
@@ -412,11 +571,13 @@ class DesktopExecutionTests(unittest.TestCase):
         route = route_for(
             "Implement API and tests for several independent components",
             criteria=["API", "tests", "docs", "rollback"],
+            orchestration_policy="auto",
         )
         plan = build_desktop_plan(
             route,
             all_desktop_models(),
             host_permissions=host_permissions(),
+            spawn_capabilities=desktop_spawn_capabilities(),
             workdir=SCRIPTS.parents[2],
             max_parallel_children=1,
         )
@@ -441,6 +602,7 @@ class DesktopExecutionTests(unittest.TestCase):
             route,
             all_desktop_models(),
             host_permissions=host_permissions(),
+            spawn_capabilities=desktop_spawn_capabilities(),
             workdir=SCRIPTS.parents[2],
             max_parallel_children=3,
         )
@@ -469,6 +631,7 @@ class DesktopExecutionTests(unittest.TestCase):
             route,
             all_desktop_models(),
             host_permissions=host_permissions(),
+            spawn_capabilities=desktop_spawn_capabilities(),
             workdir=SCRIPTS.parents[2],
             max_parallel_children=3,
         )
@@ -482,6 +645,7 @@ class DesktopExecutionTests(unittest.TestCase):
             [_bare(route["selectedModel"])],
             workdir=SCRIPTS.parents[2],
             host_permissions=host_permissions("danger-full-access"),
+            spawn_capabilities=desktop_spawn_capabilities(),
             max_parallel_children=3,
         )
         self.assertEqual(plan["status"], "ready")
@@ -500,6 +664,7 @@ class DesktopExecutionTests(unittest.TestCase):
         self.assertIn("[ValidateSet('cli', 'desktop')]", script)
         self.assertIn("[string[]]$DesktopAvailableModels", script)
         self.assertIn("[int]$DesktopMaxParallelChildren", script)
+        self.assertIn("[string]$DesktopSpawnCapabilitiesJson", script)
         self.assertIn("desktop_execution.py", script)
         self.assertIn("$ExecutionBackend -eq 'cli'", script)
         desktop_branch = script.split("if ($ExecutionBackend -eq 'desktop')", 1)[1]
@@ -528,6 +693,7 @@ class DesktopExecutionTests(unittest.TestCase):
                 "-ExecutionBackend desktop "
                 "-DesktopAvailableModels @('gpt-5.6-sol','gpt-5.6-terra') "
                 "-DesktopMaxParallelChildren 3 "
+                f"-DesktopSpawnCapabilitiesJson '{json.dumps(desktop_spawn_capabilities())}' "
                 f"-Workdir '{repository}' -HostPermissionsJson '{json.dumps(host_permissions())}' -NoFeedback"
             )
             completed = subprocess.run(
@@ -572,6 +738,7 @@ class DesktopExecutionTests(unittest.TestCase):
                 "-ExecutionBackend desktop -DryRun -NoFeedback "
                 "-DesktopAvailableModels @('gpt-5.6-sol','gpt-5.6-terra') "
                 "-DesktopMaxParallelChildren 3 "
+                f"-DesktopSpawnCapabilitiesJson '{json.dumps(desktop_spawn_capabilities())}' "
                 f"-Workdir '{repository}' -HostPermissionsJson '{json.dumps(host_permissions())}'"
             )
             completed = subprocess.run(
@@ -606,6 +773,7 @@ class DesktopExecutionTests(unittest.TestCase):
             "-ExecutionBackend desktop -DryRun -Explain -Json "
             "-DesktopAvailableModels @('gpt-5.6-sol','gpt-5.6-terra') "
             "-DesktopMaxParallelChildren 3 "
+            f"-DesktopSpawnCapabilitiesJson '{json.dumps(desktop_spawn_capabilities())}' "
             f"-Workdir '{repository}' -HostPermissionsJson '{json.dumps(host_permissions())}'"
         )
         completed = subprocess.run(
@@ -618,7 +786,7 @@ class DesktopExecutionTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         plan = json.loads(completed.stdout.strip())
-        self.assertEqual(plan["schema"], "agent-auto-router.desktop-plan.v3")
+        self.assertEqual(plan["schema"], "agent-auto-router.desktop-plan")
         self.assertEqual(plan["status"], "ready")
         self.assertFalse(plan["executionRequested"])
         self.assertEqual(plan["plannedAgentCalls"], 0)
@@ -690,6 +858,7 @@ class DesktopExecutionTests(unittest.TestCase):
                 "-ExecutionBackend desktop -EnableLearningPolicy -NoFeedback "
                 "-DesktopAvailableModels @('gpt-5.6-sol','gpt-5.6-terra') "
                 "-DesktopMaxParallelChildren 3 "
+                f"-DesktopSpawnCapabilitiesJson '{json.dumps(desktop_spawn_capabilities())}' "
                 f"-StateDir '{state_dir}' -Workdir '{repository}' "
                 f"-HostPermissionsJson '{json.dumps(permissions)}'"
             )
@@ -728,6 +897,7 @@ class DesktopExecutionTests(unittest.TestCase):
             "-ExecutionBackend desktop -DryRun -Json -NoFeedback -OrchestrationPolicy auto "
             "-DesktopAvailableModels @('gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna') "
             "-DesktopMaxParallelChildren 3 "
+            f"-DesktopSpawnCapabilitiesJson '{json.dumps(desktop_spawn_capabilities())}' "
             f"-Workdir '{repository}' -HostPermissionsJson '{json.dumps(host_permissions())}'"
         )
         completed = subprocess.run(
@@ -761,6 +931,7 @@ class DesktopExecutionTests(unittest.TestCase):
             "-ExecutionBackend desktop -DryRun -Json -NoFeedback -OrchestrationPolicy auto "
             "-DesktopAvailableModels @('gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna') "
             "-DesktopMaxParallelChildren 3 "
+            f"-DesktopSpawnCapabilitiesJson '{json.dumps(desktop_spawn_capabilities())}' "
             f"-Workdir '{repository}' -HostPermissionsJson '{json.dumps(host_permissions())}'"
         )
         completed = subprocess.run(

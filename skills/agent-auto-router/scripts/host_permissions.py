@@ -8,8 +8,9 @@ import pathlib
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from protocol_schemas import HOST_PERMISSIONS_SCHEMA
 
-SCHEMA = "agent-auto-router.host-permissions.v1"
+SCHEMA = HOST_PERMISSIONS_SCHEMA
 SANDBOX_ORDER = {
     "read-only": 0,
     "workspace-write": 1,

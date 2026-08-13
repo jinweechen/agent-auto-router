@@ -42,7 +42,7 @@ if ($LASTEXITCODE -ne 0 -or -not $profileRaw) {
     throw "Quick profile validation failed: $Profile"
 }
 $selected = ($profileRaw -join [Environment]::NewLine) | ConvertFrom-Json
-if ($selected.schema -ne 'agent-auto-router.quick-profiles.v1') {
+if ($selected.schema -ne 'agent-auto-router.quick-profiles') {
     throw 'Quick profile helper returned an unsupported schema.'
 }
 $settings = $selected.profile
@@ -54,7 +54,7 @@ $runnerParameters = @{
     Sandbox = [string]$settings.sandbox
     ContextMode = [string]$settings.contextMode
     RepositoryContextMode = [string]$settings.repositoryContextMode
-    OrchestrationPolicy = 'direct'
+    OrchestrationPolicy = 'recommend'
     ModelAffinity = [string]$settings.modelAffinity
     Workdir = (Resolve-Path -LiteralPath $Workdir).Path
 }

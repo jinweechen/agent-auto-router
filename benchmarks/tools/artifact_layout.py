@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from typing import Any
 
 
-SCHEMA = "agent-auto-router.evaluation-run.v1"
+SCHEMA = "agent-auto-router.evaluation-run"
 ARTIFACTS_ENV = "AGENT_AUTO_ROUTER_EVALUATIONS_DIR"
 _SAFE_KIND = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 

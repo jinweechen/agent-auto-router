@@ -14,11 +14,26 @@ from repository_context import (  # noqa: E402
     build_repository_context,
     disabled_repository_inspection,
     inspect_repository,
+    should_inspect_repository,
 )
 from routing_policy import select_model  # noqa: E402
 
 
 class RepositoryContextTests(unittest.TestCase):
+    def test_adaptive_mode_scans_code_tasks_but_skips_plain_answers(self) -> None:
+        self.assertTrue(
+            should_inspect_repository("Fix the failing test in payment_service.py")
+        )
+        self.assertTrue(
+            should_inspect_repository("Inspect the repository code and diagnose the defaults")
+        )
+        self.assertTrue(should_inspect_repository("重构订单服务和测试模块"))
+        self.assertTrue(should_inspect_repository("检查仓库代码并分析路由配置"))
+        self.assertFalse(should_inspect_repository("Reply with exactly OK"))
+        self.assertFalse(should_inspect_repository("Analyze this business proposal"))
+        self.assertTrue(should_inspect_repository("Reply with exactly OK", "auto"))
+        self.assertFalse(should_inspect_repository("Fix app.py", "off"))
+
     def test_context_ranks_task_specific_files_without_storing_task(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)

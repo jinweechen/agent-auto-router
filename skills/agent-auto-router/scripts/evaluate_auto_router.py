@@ -42,12 +42,36 @@ def evaluate(policy: RoutingPolicy | None = None) -> dict[str, object]:
         "prompt": "Implement API and tests for several independent components",
         "acceptance_criteria": ["API", "tests", "docs", "rollback"],
     }
-    checks.append(check("variant:d-reachable", route_case(parallel_case, "balance", policy=policy)["variant"], "D"))
+    default_parallel = route_case(parallel_case, "balance", policy=policy)
+    checks.append(check(
+        "defaults:library-adaptive-recommendation",
+        {
+            "variant": default_parallel["variant"],
+            "orchestration": default_parallel["execution_plan"]["orchestrationPolicy"],
+            "affinity": default_parallel["model_affinity"]["mode"],
+        },
+        {"variant": "E", "orchestration": "recommend", "affinity": "session"},
+    ))
+    checks.append(check(
+        "variant:d-reachable",
+        route_case(
+            parallel_case,
+            "balance",
+            policy=policy,
+            orchestration_policy="auto",
+        )["variant"],
+        "D",
+    ))
     marginal_parallel_case = {
         "prompt": "Handle independent components in parallel. " + ("detail " * 140),
         "acceptance_criteria": [],
     }
-    marginal_result = route_case(marginal_parallel_case, "balance", policy=policy)
+    marginal_result = route_case(
+        marginal_parallel_case,
+        "balance",
+        policy=policy,
+        orchestration_policy="auto",
+    )
     checks.append(check(
         "variant:marginal-utility-stays-direct",
         {
@@ -63,7 +87,12 @@ def evaluate(policy: RoutingPolicy | None = None) -> dict[str, object]:
     }
     checks.append(check(
         "variant:chinese-parallel-signals",
-        route_case(chinese_parallel_case, "balance", policy=policy)["variant"],
+        route_case(
+            chinese_parallel_case,
+            "balance",
+            policy=policy,
+            orchestration_policy="auto",
+        )["variant"],
         "D",
     ))
     checks.append(check("incidental-security", select_model("Rename the security label", "balance", policy=policy).target_tier, "fast"))

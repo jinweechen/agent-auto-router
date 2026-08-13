@@ -70,6 +70,12 @@ def parse_args() -> argparse.Namespace:
         help="Select a deterministic routing policy",
     )
     parser.add_argument(
+        "--orchestration-policy",
+        choices=("direct", "recommend", "auto"),
+        default="direct",
+        help="Explicitly enable orchestration recommendation or Auto topology selection",
+    )
+    parser.add_argument(
         "--shadow-auto",
         action="store_true",
         help="Record the Auto recommendation without changing selected variants",
@@ -114,6 +120,8 @@ def manifest_payload(
         "cases": str(args.cases.expanduser().resolve()),
         "workdir": str(args.workdir.expanduser().resolve()),
         "routingMode": args.routing_mode,
+        "orchestrationPolicy": args.orchestration_policy,
+        "modelAffinity": "off",
         "routeOnly": args.route_only,
     }
 
@@ -143,7 +151,13 @@ def main() -> int:
         )
         route_results = []
         for case in cases[: args.limit]:
-            decision = route_case(case, route_mode, routing_effort)
+            decision = route_case(
+                case,
+                route_mode,
+                routing_effort,
+                orchestration_policy=args.orchestration_policy,
+                model_affinity_mode="off",
+            )
             route_results.append({"case_id": case["id"], "routing": decision})
             if args.explain_route:
                 print(
@@ -159,6 +173,8 @@ def main() -> int:
                     "created_at": timestamp,
                     "router_version": route_results[0]["routing"]["router_version"],
                     "mode": route_mode,
+                    "orchestration_policy": args.orchestration_policy,
+                    "model_affinity": "off",
                     "model_calls": 0,
                     "results": route_results,
                 },
@@ -232,7 +248,15 @@ def main() -> int:
             "balance" if args.shadow_auto and args.routing_mode == "off" else args.routing_mode
         )
         route_decision = (
-            route_case(case, route_mode, routing_effort) if route_mode != "off" else None
+            route_case(
+                case,
+                route_mode,
+                routing_effort,
+                orchestration_policy=args.orchestration_policy,
+                model_affinity_mode="off",
+            )
+            if route_mode != "off"
+            else None
         )
         case_variants = variants
         if route_decision and not args.shadow_auto:

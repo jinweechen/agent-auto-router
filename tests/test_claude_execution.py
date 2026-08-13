@@ -30,7 +30,7 @@ class ClaudeExecutionTests(unittest.TestCase):
         adapter.allowed_tools = ("Read", "Edit", "Write", "Bash")
         adapter.policy = ExecutionPolicy(True, "workspace-write")
         adapter.host_permissions = parse_host_permissions({
-            "schema": "agent-auto-router.host-permissions.v1",
+            "schema": "agent-auto-router.host-permissions",
             "source": "test-claude-turn",
             "sandbox": "workspace-write",
             "approvalPolicy": "never",
@@ -51,7 +51,7 @@ class ClaudeExecutionTests(unittest.TestCase):
         adapter.allowed_tools = ("Read", "Edit", "Write", "Bash")
         adapter.policy = ExecutionPolicy(True, "danger-full-access")
         adapter.host_permissions = parse_host_permissions({
-            "schema": "agent-auto-router.host-permissions.v1",
+            "schema": "agent-auto-router.host-permissions",
             "source": "test-claude-turn",
             "sandbox": "danger-full-access",
             "approvalPolicy": "never",
@@ -69,7 +69,7 @@ class ClaudeExecutionTests(unittest.TestCase):
         adapter.allowed_tools = ("Read", "Edit", "Write", "Bash")
         adapter.policy = ExecutionPolicy(True, "workspace-write")
         adapter.host_permissions = parse_host_permissions({
-            "schema": "agent-auto-router.host-permissions.v1",
+            "schema": "agent-auto-router.host-permissions",
             "source": "test-claude-turn",
             "sandbox": "workspace-write",
             "approvalPolicy": "on-request",

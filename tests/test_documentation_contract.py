@@ -124,7 +124,7 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertNotIn("configure --mode manual", self.chinese_readme)
         self.assertNotIn("configure --mode guarded-auto", self.chinese_readme)
 
-    def test_standard_route_documents_zero_overhead_defaults(self) -> None:
+    def test_standard_route_documents_zero_state_adaptive_defaults(self) -> None:
         skill = (ROOT / "skills" / "agent-auto-router" / "SKILL.md").read_text(
             encoding="utf-8"
         )
@@ -133,9 +133,9 @@ class DocumentationContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         combined = "\n".join((skill, contract, self.readme, self.chinese_readme))
         for required in (
-            "RepositoryContextMode=off",
-            "OrchestrationPolicy=direct",
-            "ModelAffinity=off",
+            "RepositoryContextMode=adaptive",
+            "OrchestrationPolicy=recommend",
+            "ModelAffinity=session",
             "-EnableLearningPolicy",
             "-EnableFeedback",
         ):
@@ -146,6 +146,7 @@ class DocumentationContractTests(unittest.TestCase):
             ROOT / "skills" / "agent-auto-router" / "references" / "router-contract.md"
         ).read_text(encoding="utf-8")
         for readme in (self.readme, self.chinese_readme):
+            self.assertIn("-ModelAffinity session", readme)
             self.assertIn("-ModelAffinity auto", readme)
             self.assertIn("-ModelAffinity off", readme)
             self.assertIn(ROLE_MODEL_POLICY_AFFINITY, readme)

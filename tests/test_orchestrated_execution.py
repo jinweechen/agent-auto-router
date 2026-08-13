@@ -80,7 +80,7 @@ class OrchestratedExecutionPolicyTests(unittest.TestCase):
             "Refactor multiple modules in parallel with independent API and tests workstreams",
             "balance",
             acceptance_criteria=["api", "tests", "docs"],
-        ))
+        ), orchestration_policy="auto")
         self.assertEqual(parallel["topology"], "orchestrated")
 
     def test_explicit_effort_overrides_execution_plan_recommendation(self) -> None:
@@ -433,7 +433,7 @@ class OrchestratedExecutionPolicyTests(unittest.TestCase):
             workspace.mkdir()
             reports_root.mkdir()
             permissions = {
-                "schema": "agent-auto-router.host-permissions.v1",
+                "schema": "agent-auto-router.host-permissions",
                 "source": "test-host",
                 "sandbox": "workspace-write",
                 "approvalPolicy": "never",
@@ -780,7 +780,7 @@ class OrchestratedExecutionPolicyTests(unittest.TestCase):
     def test_single_runner_accepts_precomputed_context_over_stdin(self) -> None:
         task, context, metadata = parse_runner_input(
             json.dumps({
-                "schema": "agent-auto-router.runner-input.v1",
+                "schema": "agent-auto-router.runner-input",
                 "task": "Implement the change",
                 "repositoryContext": "files=10",
                 "repositoryMetadata": {"context_useful": True},
@@ -802,7 +802,8 @@ class OrchestratedExecutionPolicyTests(unittest.TestCase):
         self.assertIn("'--repository-context', $RepositoryContextMode", script)
         self.assertIn("'--input-format', 'route-envelope'", script)
         self.assertNotIn("gpt-5.6-sol', 'gpt-5.6-terra", script)
-        self.assertIn("agent-auto-router.route-decision.v2", script)
+        self.assertIn("agent-auto-router.route-decision", script)
+        self.assertNotIn("agent-auto-router.route-decision.v", script)
         self.assertIn("[string]$routeDecision.executionPlan.effort", script)
         for legacy_decision_access in (
             "$route.decision", "$route.executionPlan", "$route.policy",

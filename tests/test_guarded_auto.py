@@ -188,6 +188,26 @@ class GuardedAutoTests(unittest.TestCase):
                 str(learning_boundary_issue(state_dir, None, permissions)),
             )
 
+    def test_session_affinity_needs_no_protected_persistent_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            state_dir = pathlib.Path(temp) / "state"
+            permissions = HostPermissions(
+                source="unit-test",
+                sandbox="danger-full-access",
+                approval_policy="never",
+                network_access=True,
+                writable_roots=(),
+                can_request_permissions=False,
+            )
+            self.assertIsNone(
+                learning_boundary_issue(
+                    state_dir,
+                    None,
+                    permissions,
+                    model_affinity_mode="session",
+                )
+            )
+
     def test_guarded_state_outside_workspace_write_root_is_protected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
@@ -610,7 +630,7 @@ class GuardedAutoTests(unittest.TestCase):
 
             result = policy_shadow(state_dir, feedback)
 
-            self.assertEqual(result["schema"], "agent-auto-router.policy-shadow.v1")
+            self.assertEqual(result["schema"], "agent-auto-router.policy-shadow")
             self.assertFalse(result["activationAuthorized"])
             self.assertFalse(result["dataset"]["storesRouteIds"])
             self.assertFalse(result["dataset"]["storesTaskText"])

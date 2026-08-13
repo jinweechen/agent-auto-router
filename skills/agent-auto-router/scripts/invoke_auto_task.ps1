@@ -12,17 +12,18 @@ param(
     [string]$Sandbox = 'inherit',
     [ValidateSet('lean', 'full')]
     [string]$ContextMode = 'lean',
-    [ValidateSet('auto', 'off')]
-    [string]$RepositoryContextMode = 'off',
+    [ValidateSet('adaptive', 'auto', 'off')]
+    [string]$RepositoryContextMode = 'adaptive',
     [ValidateSet('direct', 'recommend', 'auto')]
-    [string]$OrchestrationPolicy = 'direct',
-    [ValidateSet('auto', 'off')]
-    [string]$ModelAffinity = 'off',
+    [string]$OrchestrationPolicy = 'recommend',
+    [ValidateSet('session', 'auto', 'off')]
+    [string]$ModelAffinity = 'session',
     [switch]$ConfirmHighRiskOrchestration,
     [ValidateSet('cli', 'desktop')]
     [string]$ExecutionBackend = 'cli',
     [string[]]$DesktopAvailableModels = @(),
     [int]$DesktopMaxParallelChildren = 0,
+    [string]$DesktopSpawnCapabilitiesJson = '',
     [string]$HostPermissionsJson = '',
     [string]$Workdir = (Get-Location).Path,
     [string]$StateDir = $(if ($env:CODEX_AUTO_ROUTER_STATE_DIR) { $env:CODEX_AUTO_ROUTER_STATE_DIR } else { Join-Path $HOME '.codex\auto-router' }),
@@ -59,13 +60,13 @@ if ($ExecutionBackend -eq 'desktop' -and ($DesktopMaxParallelChildren -lt 1 -or 
     throw 'ExecutionBackend=desktop requires -DesktopMaxParallelChildren between 1 and 32 from the current Desktop runtime.'
 }
 if ($ExecutionBackend -eq 'desktop' -and ($EscalateOnValidationFailure -or $ValidationCommand.Count -gt 0)) {
-    throw 'Desktop v3 emits a bounded staged-agent plan and does not support validation-driven escalation.'
+    throw 'The Desktop protocol emits a bounded staged-agent plan and does not support validation-driven escalation.'
 }
 if ($ExecutionBackend -eq 'desktop' -and $ContextMode -ne 'lean') {
-    throw 'Desktop v3 does not consume CLI ContextMode; use the default lean value.'
+    throw 'The Desktop protocol does not consume CLI ContextMode; use the default lean value.'
 }
 if ($ExecutionBackend -eq 'desktop' -and $FeedbackFile) {
-    throw 'Desktop v3 cannot write execution feedback; -FeedbackFile is CLI-only.'
+    throw 'The Desktop protocol cannot write execution feedback; -FeedbackFile is CLI-only.'
 }
 if ($EnableFeedback -and $NoFeedback) {
     throw '-EnableFeedback and -NoFeedback cannot be used together.'
@@ -108,13 +109,13 @@ if ($ExecutionBackend -eq 'desktop' -and -not $HostPermissionsJson) {
 # Both built-in execution backends are Codex-only. Desktop availability comes
 # from the current runtime metadata and must never be inferred from CLI PATH.
 $selectorArguments += @('--available-backends', 'codex')
-$usesProtectedRouterState = $EnableLearningPolicy -or $feedbackEnabled -or $ModelAffinity -ne 'off'
+$usesProtectedRouterState = $EnableLearningPolicy -or $feedbackEnabled -or $ModelAffinity -eq 'auto'
 if (-not $DryRun -and $ExecutionBackend -eq 'cli' -and $usesProtectedRouterState) {
     $boundaryPermissionsJson = $HostPermissionsJson
     if (-not $boundaryPermissionsJson) {
         $explicitRoots = if ($Sandbox -eq 'workspace-write') { @($resolvedWorkdir) } else { @() }
         $boundaryPermissionsJson = [ordered]@{
-            schema = 'agent-auto-router.host-permissions.v1'
+            schema = 'agent-auto-router.host-permissions'
             source = 'router-explicit-sandbox'
             sandbox = $Sandbox
             approvalPolicy = 'on-request'
@@ -146,7 +147,7 @@ if ($routeExitCode -ne 0) { throw 'Auto model selection failed.' }
 
 $route = $routeRaw | ConvertFrom-Json
 $routeDecision = $route.routeDecision
-if (-not $routeDecision -or $routeDecision.schema -ne 'agent-auto-router.route-decision.v2') {
+if (-not $routeDecision -or $routeDecision.schema -ne 'agent-auto-router.route-decision') {
     throw 'Auto model selection returned an unsupported route-decision schema.'
 }
 $routeId = [string]$routeDecision.routeId
@@ -198,6 +199,9 @@ if ($ExecutionBackend -eq 'desktop') {
     )
     foreach ($availableModel in $DesktopAvailableModels) {
         $desktopArguments += @('--available-model', $availableModel)
+    }
+    if ($DesktopSpawnCapabilitiesJson) {
+        $desktopArguments += @('--spawn-capabilities-json', $DesktopSpawnCapabilitiesJson)
     }
     if ($DryRun) { $desktopArguments += '--dry-run' }
     if (-not $feedbackEnabled) { $desktopArguments += '--no-feedback' }
@@ -268,7 +272,7 @@ if ($Json) { $runnerArguments += '--emit-json' }
 function New-RunnerInputEnvelope {
     param([string]$TaskText)
     return [ordered]@{
-        schema = 'agent-auto-router.runner-input.v1'
+        schema = 'agent-auto-router.runner-input'
         task = $TaskText
         repositoryContext = [string]$route.repositoryContext.text
         repositoryMetadata = $route.repositoryContext.metadata

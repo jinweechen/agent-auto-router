@@ -22,7 +22,7 @@ class DoctorTests(unittest.TestCase):
             "doctor.codex_cli_available", return_value=False
         ) as codex_available:
             result = doctor.build_diagnostic()
-        self.assertEqual(result["schema"], "agent-auto-router.doctor.v1")
+        self.assertEqual(result["schema"], "agent-auto-router.doctor")
         self.assertTrue(result["readyForLocalRouting"])
         self.assertTrue(result["readyForCliExecution"])
         self.assertEqual(result["modelCalls"], 0)
@@ -96,7 +96,7 @@ class DoctorTests(unittest.TestCase):
 
     def test_json_cli_preserves_machine_readable_output(self) -> None:
         diagnostic = {
-            "schema": "agent-auto-router.doctor.v1",
+            "schema": "agent-auto-router.doctor",
             "readyForLocalRouting": True,
             "readyForCliExecution": False,
             "commands": {},

@@ -19,6 +19,7 @@ from host_permissions import (
 )
 from model_affinity import workspace_identity
 from model_registry import load_model_registry
+from protocol_schemas import HOST_PLAN_SCHEMA
 from route_contract import (
     EXECUTION_ENVELOPE_SCHEMA,
     HOST_REQUEST_SCHEMA,
@@ -26,7 +27,7 @@ from route_contract import (
 )
 
 
-SCHEMA = "agent-auto-router.host-plan.v3"
+SCHEMA = HOST_PLAN_SCHEMA
 DIRECT_VARIANTS = frozenset({"A", "E", "F"})
 ORCHESTRATED_VARIANTS = frozenset({"B", "C", "D"})
 

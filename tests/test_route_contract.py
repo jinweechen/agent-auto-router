@@ -20,11 +20,11 @@ class RouteDecisionContractTests(unittest.TestCase):
     @staticmethod
     def execution_envelope(route: dict, task: str) -> str:
         return json.dumps({
-            "schema": "agent-auto-router.execution-envelope.v1",
+            "schema": "agent-auto-router.execution-envelope",
             "task": task,
             "routeDecision": route,
             "hostPermissions": {
-                "schema": "agent-auto-router.host-permissions.v1",
+                "schema": "agent-auto-router.host-permissions",
                 "source": "test-host-turn",
                 "sandbox": "read-only",
                 "approvalPolicy": "never",
@@ -49,7 +49,7 @@ class RouteDecisionContractTests(unittest.TestCase):
         )
         return json.loads(completed.stdout)
 
-    def test_all_python_entrypoints_share_route_decision_v1_keys(self) -> None:
+    def test_all_python_entrypoints_share_route_decision_keys(self) -> None:
         library_route = route_case({"id": "case-1", "prompt": "Reply with OK"})
         cli_route = self.select("--text", "Reply with OK")
         self.assertEqual(library_route["schema"], ROUTE_DECISION_SCHEMA)
@@ -68,7 +68,7 @@ class RouteDecisionContractTests(unittest.TestCase):
         )
         self.assertNotIn("Reply with OK", json.dumps(cli_route["routeDecision"]))
 
-    def test_selector_defaults_to_stateless_direct_routing_without_repo_scan(self) -> None:
+    def test_selector_defaults_to_adaptive_recommendation_without_state_reads(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             feedback = root / "feedback.jsonl"
@@ -77,7 +77,7 @@ class RouteDecisionContractTests(unittest.TestCase):
                 [
                     sys.executable,
                     str(SCRIPTS / "select_auto_model.py"),
-                    "--text", "Implement a routine change",
+                    "--text", "Reply with exactly OK",
                     "--workdir", str(root),
                     "--feedback-file", str(feedback),
                 ],
@@ -88,12 +88,24 @@ class RouteDecisionContractTests(unittest.TestCase):
             )
             route = json.loads(completed.stdout)["routeDecision"]
         self.assertEqual(route["policy"]["source"], "builtin")
-        self.assertEqual(route["repository"]["mode"], "off")
+        self.assertEqual(route["repository"]["mode"], "adaptive")
         self.assertTrue(route["repository"]["metadata"]["inspection_disabled"])
         self.assertEqual(route["repository"]["metadata"]["scan_duration_ms"], 0)
-        self.assertEqual(route["modelAffinity"]["mode"], "off")
-        self.assertEqual(route["executionPlan"]["orchestrationPolicy"], "direct")
+        self.assertEqual(route["modelAffinity"]["mode"], "session")
+        self.assertEqual(route["modelAffinity"]["evidence"]["samples"], 0)
+        self.assertEqual(route["executionPlan"]["orchestrationPolicy"], "recommend")
         self.assertEqual(route["executionPlan"]["topology"], "direct")
+
+    def test_selector_adaptive_default_scans_code_task_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            (root / "app.py").write_text("print('ok')\n", encoding="utf-8")
+            route = self.select(
+                "--text", "Fix the bug in app.py", "--workdir", str(root)
+            )["routeDecision"]
+        self.assertEqual(route["repository"]["mode"], "adaptive")
+        self.assertFalse(route["repository"]["metadata"]["inspection_disabled"])
+        self.assertGreaterEqual(route["repository"]["metadata"]["repo_files"], 1)
 
     def test_explicit_override_preserves_selector_and_selected_identity(self) -> None:
         route = self.select(

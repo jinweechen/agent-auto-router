@@ -1,5 +1,5 @@
 {
-  "schema": "agent-auto-router.quick-profiles.v1",
+  "schema": "agent-auto-router.quick-profiles",
   "defaultProfile": "standard",
   "profiles": {
     "safe": {
@@ -12,12 +12,12 @@
       "noFeedback": true
     },
     "standard": {
-      "description": "Normal implementation limited to the selected workspace",
+      "description": "Adaptive implementation planning limited to the selected workspace",
       "strategy": "balance",
       "sandbox": "workspace-write",
       "contextMode": "lean",
-      "repositoryContextMode": "off",
-      "modelAffinity": "off",
+      "repositoryContextMode": "adaptive",
+      "modelAffinity": "session",
       "noFeedback": true
     }
   }
