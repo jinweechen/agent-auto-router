@@ -74,10 +74,23 @@ def main() -> int:
         choices=MODEL_AFFINITY_MODES,
         default="session",
     )
+    parser.add_argument("--conversation-key-hash")
+    parser.add_argument("--pinned-model")
     route_input = parser.add_mutually_exclusive_group(required=True)
     route_input.add_argument("--text")
     route_input.add_argument("--stdin", action="store_true")
     args = parser.parse_args()
+    if args.model_affinity == "sticky":
+        if args.model_choice != "auto":
+            parser.error(
+                "sticky model affinity cannot be combined with an explicit model choice"
+            )
+        if not args.conversation_key_hash or not args.pinned_model:
+            parser.error(
+                "sticky model affinity requires --conversation-key-hash and --pinned-model"
+            )
+    elif args.conversation_key_hash is not None or args.pinned_model is not None:
+        parser.error("conversation pin arguments require --model-affinity sticky")
     prompt = sys.stdin.read() if args.stdin else args.text
     route_id = str(uuid.uuid4())
     try:
@@ -196,6 +209,8 @@ def main() -> int:
                 available_backends=available_backends,
                 required_capabilities=decision.required_capabilities,
                 mode=args.model_affinity,
+                conversation_key_hash=args.conversation_key_hash,
+                pinned_model=args.pinned_model,
             )
             if affinity_error is not None:
                 affinity["reason"] = "feedback-evidence-unavailable"

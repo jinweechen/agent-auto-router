@@ -185,7 +185,7 @@ def learning_boundary_issue(
 ) -> str | None:
     """Return why routing evidence is writable by the child, or None when protected."""
     if model_affinity_mode not in MODEL_AFFINITY_MODES:
-        raise ValueError("model affinity mode must be session, auto, or off")
+        raise ValueError("model affinity mode must be session, sticky, auto, or off")
     learning = load_config(state_dir)["mode"]
     if learning != "guarded" and model_affinity_mode != "auto":
         return None

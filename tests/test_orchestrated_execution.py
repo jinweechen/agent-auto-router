@@ -805,6 +805,9 @@ class OrchestratedExecutionPolicyTests(unittest.TestCase):
         self.assertIn("agent-auto-router.route-decision", script)
         self.assertNotIn("agent-auto-router.route-decision.v", script)
         self.assertIn("[string]$routeDecision.executionPlan.effort", script)
+        self.assertIn("[ValidateSet('session', 'sticky', 'auto', 'off')]", script)
+        self.assertIn("'--conversation-key-hash', $ConversationKeyHash", script)
+        self.assertIn("'--pinned-model', $PinnedModel", script)
         for legacy_decision_access in (
             "$route.decision", "$route.executionPlan", "$route.policy",
             "$route.registry", "$route.repository.",

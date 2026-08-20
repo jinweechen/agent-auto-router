@@ -31,6 +31,8 @@ def route_case(
     confirm_high_risk_orchestration: bool = False,
     affinity_events: Iterable[dict[str, Any]] = (),
     model_affinity_mode: str = DEFAULT_MODEL_AFFINITY_MODE,
+    conversation_key_hash: str | None = None,
+    pinned_model: str | None = None,
     explicit_variant: str | None = None,
 ) -> dict[str, Any]:
     if mode not in VALID_MODES:
@@ -66,6 +68,8 @@ def route_case(
         available_backends=backends or active_registry.backends,
         required_capabilities=decision.required_capabilities,
         mode=model_affinity_mode,
+        conversation_key_hash=conversation_key_hash,
+        pinned_model=pinned_model,
     )
     selected_model = str(affinity.get("selectedModel") or decision.model)
     selected_spec = active_registry.get(selected_model, role="direct")

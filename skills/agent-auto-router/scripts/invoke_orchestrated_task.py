@@ -617,6 +617,8 @@ def parse_args() -> argparse.Namespace:
         # Calling this dedicated advanced entrypoint is the explicit opt-in.
         default="auto",
     )
+    parser.add_argument("--conversation-key-hash")
+    parser.add_argument("--pinned-model")
     parser.add_argument("--effort", choices=EFFORTS, default=None)
     parser.add_argument("--max-workers", type=positive_int, default=2)
     parser.add_argument("--timeout", type=positive_int, default=600)
@@ -710,6 +712,13 @@ def main() -> int:
             if locked_mode not in MODEL_AFFINITY_MODES:
                 raise ValueError("locked route has an invalid model-affinity mode")
             args.model_affinity = str(locked_mode)
+    elif args.model_affinity == "sticky":
+        if not args.conversation_key_hash or not args.pinned_model:
+            raise ValueError(
+                "sticky model affinity requires --conversation-key-hash and --pinned-model"
+            )
+    elif args.conversation_key_hash is not None or args.pinned_model is not None:
+        raise ValueError("conversation pin arguments require --model-affinity sticky")
     if args.include_output_in_report and args.results_dir is None:
         print(
             json.dumps(
@@ -971,6 +980,8 @@ def main() -> int:
                 confirm_high_risk_orchestration=args.confirm_high_risk_orchestration,
                 affinity_events=affinity_events,
                 model_affinity_mode=args.model_affinity,
+                conversation_key_hash=args.conversation_key_hash,
+                pinned_model=args.pinned_model,
                 explicit_variant=None if args.variant == "auto" else args.variant,
             )
         except ValueError as exc:

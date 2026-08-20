@@ -17,8 +17,8 @@ from host_execution_plan import SCHEMA as HOST_PLAN_SCHEMA  # noqa: E402
 from host_permissions import SCHEMA as HOST_PERMISSIONS_SCHEMA  # noqa: E402
 from model_affinity import (  # noqa: E402
     AFFINITY_TTL_SECONDS,
-    MINIMUM_STRONGER_TIER_CACHE_SIGNAL,
-    PROFILE_PREFERRED_MAXIMUM_CACHE_SIGNAL,
+    MINIMUM_STRONGER_TIER_CACHE_READ_RATIO,
+    PROFILE_PREFERRED_MAXIMUM_CACHE_READ_RATIO,
     PROFILE_PREFERRED_MINIMUM_SAMPLES,
     ROLE_MODEL_POLICY_AFFINITY,
 )
@@ -146,14 +146,15 @@ class DocumentationContractTests(unittest.TestCase):
             ROOT / "skills" / "agent-auto-router" / "references" / "router-contract.md"
         ).read_text(encoding="utf-8")
         for readme in (self.readme, self.chinese_readme):
-            self.assertIn("-ModelAffinity session", readme)
-            self.assertIn("-ModelAffinity auto", readme)
-            self.assertIn("-ModelAffinity off", readme)
+            self.assertIn("-ModelAffinity session|sticky|auto|off", readme)
+            self.assertIn("-ConversationKeyHash", readme)
+            self.assertIn("-PinnedModel", readme)
             self.assertIn(ROLE_MODEL_POLICY_AFFINITY, readme)
         self.assertIn(str(AFFINITY_TTL_SECONDS // 60), contract)
-        self.assertIn(f"`{MINIMUM_STRONGER_TIER_CACHE_SIGNAL}`", contract)
-        self.assertIn(f"`{PROFILE_PREFERRED_MAXIMUM_CACHE_SIGNAL}`", contract)
+        self.assertIn(f"`{MINIMUM_STRONGER_TIER_CACHE_READ_RATIO}`", contract)
+        self.assertIn(f"`{PROFILE_PREFERRED_MAXIMUM_CACHE_READ_RATIO}`", contract)
         self.assertIn(str(PROFILE_PREFERRED_MINIMUM_SAMPLES), contract)
+        self.assertIn("Cache writes remain separately observable rebuild cost", contract)
         self.assertIn("never stores the path itself", contract)
         self.assertIn("not a quality label or billing estimate", contract)
 

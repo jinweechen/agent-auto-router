@@ -16,8 +16,10 @@ param(
     [string]$RepositoryContextMode = 'adaptive',
     [ValidateSet('direct', 'recommend', 'auto')]
     [string]$OrchestrationPolicy = 'recommend',
-    [ValidateSet('session', 'auto', 'off')]
+    [ValidateSet('session', 'sticky', 'auto', 'off')]
     [string]$ModelAffinity = 'session',
+    [string]$ConversationKeyHash = '',
+    [string]$PinnedModel = '',
     [switch]$ConfirmHighRiskOrchestration,
     [ValidateSet('cli', 'desktop')]
     [string]$ExecutionBackend = 'cli',
@@ -84,12 +86,22 @@ if ($EscalateOnValidationFailure -and $ValidationCommand.Count -eq 0) {
 }
 
 $routeEffort = if ($Effort) { $Effort } else { 'auto' }
+if ($ModelAffinity -eq 'sticky') {
+    if ($ConversationKeyHash -notmatch '^[0-9a-f]{64}$' -or -not $PinnedModel) {
+        throw '-ModelAffinity sticky requires a lowercase HMAC-SHA256 -ConversationKeyHash and -PinnedModel.'
+    }
+} elseif ($ConversationKeyHash -or $PinnedModel) {
+    throw '-ConversationKeyHash and -PinnedModel require -ModelAffinity sticky.'
+}
 $selectorArguments = @(
     $selectorPath, '--strategy', $Strategy, '--stdin', '--effort', $routeEffort,
     '--state-dir', $StateDir, '--model-choice', $ModelChoice,
     '--workdir', $resolvedWorkdir, '--repository-context', $RepositoryContextMode,
     '--orchestration-policy', $OrchestrationPolicy, '--model-affinity', $ModelAffinity
 )
+if ($ModelAffinity -eq 'sticky') {
+    $selectorArguments += @('--conversation-key-hash', $ConversationKeyHash, '--pinned-model', $PinnedModel)
+}
 if ($FeedbackFile) { $selectorArguments += @('--feedback-file', $FeedbackFile) }
 if ($ValidationCommand.Count -gt 0) {
     $selectorArguments += '--validation-configured'

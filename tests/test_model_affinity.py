@@ -110,7 +110,83 @@ class ModelAffinityTests(unittest.TestCase):
         self.assertTrue(result["retainedStrongerTier"])
         self.assertEqual(result["roleModelPolicy"], ROLE_MODEL_POLICY_AFFINITY)
         self.assertFalse(result["storesWorkspacePath"])
+        self.assertFalse(result["storesConversationKey"])
         self.assertEqual(result["modelCalls"], 0)
+
+    def test_cache_write_alone_never_supports_stronger_affinity(self) -> None:
+        result = self.resolve(
+            [
+                event(
+                    workspace_key=self.workspace_key,
+                    model="codex:gpt-5.6-sol",
+                    recorded_at=self.now - timedelta(minutes=2),
+                    cached=0,
+                    cache_write=80,
+                )
+            ],
+            "codex:gpt-5.6-terra",
+            "balanced",
+        )
+        self.assertFalse(result["applied"])
+        self.assertEqual(result["reason"], "stronger-model-cache-signal-insufficient")
+        self.assertEqual(result["evidence"]["cacheSignalRatio"], 0.0)
+        self.assertEqual(result["evidence"]["cacheWriteRatio"], 0.8)
+
+    def test_sticky_mode_retains_a_trusted_conversation_model(self) -> None:
+        result = resolve_model_affinity(
+            (),
+            workspace_key=self.workspace_key,
+            strategy="balance",
+            selector_model="codex:gpt-5.6-luna",
+            target_tier="fast",
+            registry=self.registry,
+            available_backends=("codex",),
+            mode="sticky",
+            conversation_key_hash="a" * 64,
+            pinned_model="codex:gpt-5.6-sol",
+            now=self.now,
+        )
+        self.assertTrue(result["applied"])
+        self.assertEqual(result["selectedModel"], "codex:gpt-5.6-sol")
+        self.assertEqual(result["reason"], "conversation-sticky-affinity")
+        self.assertEqual(result["conversationKeyHash"], "a" * 64)
+        self.assertFalse(result["storesConversationKey"])
+        self.assertFalse(result["pinUpdateRequired"])
+
+    def test_sticky_mode_requires_privacy_safe_host_pin(self) -> None:
+        with self.assertRaisesRegex(ValueError, "HMAC-SHA256"):
+            resolve_model_affinity(
+                (),
+                workspace_key=self.workspace_key,
+                strategy="balance",
+                selector_model="codex:gpt-5.6-terra",
+                target_tier="balanced",
+                registry=self.registry,
+                available_backends=("codex",),
+                mode="sticky",
+                conversation_key_hash="raw-conversation-id",
+                pinned_model="codex:gpt-5.6-terra",
+                now=self.now,
+            )
+
+    def test_sticky_mode_upgrades_when_pin_is_weaker_than_requirement(self) -> None:
+        result = resolve_model_affinity(
+            (),
+            workspace_key=self.workspace_key,
+            strategy="intelligence",
+            selector_model="codex:gpt-5.6-sol",
+            target_tier="frontier",
+            registry=self.registry,
+            available_backends=("codex",),
+            mode="sticky",
+            conversation_key_hash="b" * 64,
+            pinned_model="codex:gpt-5.6-luna",
+            now=self.now,
+        )
+        self.assertFalse(result["applied"])
+        self.assertEqual(result["selectedModel"], "codex:gpt-5.6-sol")
+        self.assertEqual(result["reason"], "pinned-model-weaker-than-current-requirement")
+        self.assertTrue(result["pinUpdateRequired"])
 
     def test_stronger_tier_is_rejected_without_cache_evidence(self) -> None:
         result = self.resolve(

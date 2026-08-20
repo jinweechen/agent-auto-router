@@ -17,7 +17,7 @@ STRATEGIES = frozenset({"intelligence", "balance", "cost"})
 SANDBOXES = frozenset({"read-only", "workspace-write"})
 CONTEXT_MODES = frozenset({"lean", "full"})
 REPOSITORY_CONTEXT_MODES = frozenset({"adaptive", "auto", "off"})
-MODEL_AFFINITY_MODES = frozenset({"session", "auto", "off"})
+MODEL_AFFINITY_MODES = frozenset({"session", "sticky", "auto", "off"})
 PROFILE_KEYS = frozenset({
     "description", "strategy", "sandbox", "contextMode",
     "repositoryContextMode", "modelAffinity", "noFeedback",

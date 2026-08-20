@@ -113,6 +113,20 @@ Use `scripts/invoke_auto_task.ps1 -ExecutionBackend cli` for expert controls. It
 
 Use `-DryRun` for a route explanation without a model call and `-Json` for JSONL execution output. The explanation includes selector and final model, role-model policy, effort, topology, context budget, bounded escalation eligibility, and the exact packaged rule terms that matched. It never repeats the full task or workspace path. Task text travels over UTF-8 stdin. The standard route uses `-RepositoryContextMode adaptive`, `-OrchestrationPolicy recommend`, and `-ModelAffinity session`: plain-answer tasks skip scanning, execution remains direct, and no feedback is read or written. Use `auto` explicitly for forced scanning, cross-run affinity, or multi-agent execution. Active-policy loading and feedback persistence still require `-EnableLearningPolicy` and `-EnableFeedback`.
 
+For a long conversation, a trusted host can carry an explicit model pin without exposing or persisting the raw conversation ID:
+
+```powershell
+& "$HOME/.codex/skills/agent-auto-router/scripts/invoke_auto_task.ps1" `
+  -Task "Continue the current implementation" `
+  -ModelAffinity sticky `
+  -ConversationKeyHash $trustedConversationHmacSha256 `
+  -PinnedModel "codex:gpt-5.6-terra" `
+  -HostPermissionsJson $currentHostPermissionsJson `
+  -Workdir "C:/path/to/repo"
+```
+
+`-ConversationKeyHash` must be a lowercase HMAC-SHA256 digest produced by the trusted host, not a plain hash of an enumerable conversation ID. `sticky` reads no feedback and stores no pin database. It retains the pinned model only while it remains trusted, available on the same backend, capability-compatible, and no weaker than the current task requirement. A stronger task selects the required model and emits `pinUpdateRequired=true`; the host decides whether to update its pin. Supplying either pin parameter outside `sticky` fails closed.
+
 Repository inspection injects aggregate statistics and deterministically ranked candidate paths, not file bodies. A complete relative path explicitly present in the task is pinned ahead of generic term matches, including hidden paths such as `.codex-plugin/plugin.json`. The model must still use its permitted read tools to inspect file contents. A successful CLI exit does not prove exact-output acceptance; use a deterministic validation command when formatting or content must be enforced, and opt into escalation separately if desired.
 
 No execution outcome is recorded by default. Add `-EnableFeedback` to allow the configured `observe` or `guarded` mode to write a privacy-minimized outcome to `~/.codex/auto-router/feedback.jsonl`; `-FeedbackFile` requires that opt-in. The outcome omits raw workspace paths, task text, and execution output. Add `-EnableLearningPolicy` separately to route with the active learned policy, or `-ModelAffinity auto` to read bounded same-workspace evidence. Whenever any protected router state is enabled, state and feedback must remain outside child-writable roots. `-NoFeedback` remains accepted as a compatibility no-op for scripts that previously disabled recording.
@@ -149,7 +163,7 @@ Use `scripts/invoke_orchestrated_task.ps1` for a real multi-model task:
   -Explain
 ```
 
-Auto selects A-F. With default `-ModelAffinity auto`, each role first attempts to reuse the selected model without weakening its profile requirement; `-ModelAffinity off` executes the exact A-F profile. For example, forced variant C in profile mode uses Sol planning, Terra dispatch, Luna analysis workers, and Sol implementation/review. Non-final roles always use `read-only`; only `direct` or `reviewer` can inherit a write-capable sandbox. One orchestration run uses one backend. An explicit `-Backend` only constrains Auto to that backend and never authorizes its explicit-trial models; those require an explicit user model choice. Use `-DryRun` to route without launching models.
+Auto selects A-F. With default `-ModelAffinity auto`, each role first attempts to reuse the selected model without weakening its profile requirement; `sticky` accepts the same trusted-host conversation pin parameters as the single-task entrypoint; `off` executes the exact A-F profile. For example, forced variant C in profile mode uses Sol planning, Terra dispatch, Luna analysis workers, and Sol implementation/review. Non-final roles always use `read-only`; only `direct` or `reviewer` can inherit a write-capable sandbox. One orchestration run uses one backend. An explicit `-Backend` only constrains Auto to that backend and never authorizes its explicit-trial models; those require an explicit user model choice. Use `-DryRun` to route without launching models.
 
 Use `-TotalTimeout`, `-MaxModelCalls`, and role-specific effort parameters to bound long runs. Git status has a five-second timeout and an explicit `clean / dirty / non_git / unknown` result; write-capable execution blocks on `unknown` before constructing an adapter. `-ResultsDir` must remain outside every child-writable root and cannot be used with `danger-full-access`. It creates a UUID-suffixed, non-overwriting, privacy-minimized report, requests owner-only POSIX permissions, and strips task, prompt, output, rationale, error, tool-content, workspace-path, and response-ID fields. `-IncludeOutputInReport` explicitly opts into a content-bearing report and is invalid without `-ResultsDir`; Windows verifies a protected current-user/System/Administrators DACL before content is written. Progress events are JSON lines on stderr; `-Quiet` suppresses them.
 

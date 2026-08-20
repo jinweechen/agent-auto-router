@@ -78,7 +78,8 @@ AFFINITY_FIELDS = frozenset({
     "selectedModel", "targetTier", "selectedTier", "applied", "reason",
     "retainedStrongerTier", "previousModel", "previousModelAgeSeconds",
     "roleModelPolicy", "evidence", "previousModelEvidence", "errorType",
-    "modelCalls",
+    "conversationKeyHash", "storesConversationKey", "pinnedModel",
+    "pinUpdateRequired", "modelCalls",
 })
 AFFINITY_EVIDENCE_FIELDS = frozenset({
     "samples", "inputTokens", "cachedInputTokens", "cacheWriteInputTokens",
@@ -210,6 +211,16 @@ def _validate_affinity_evidence(evidence: Mapping[str, Any], owner: str) -> dict
 def _validate_model_affinity(affinity: Mapping[str, Any]) -> dict[str, Any]:
     value = copy.deepcopy(dict(affinity))
     _reject_unknown_fields(value, AFFINITY_FIELDS, "modelAffinity")
+    required_pin_fields = {
+        "conversationKeyHash", "storesConversationKey", "pinnedModel",
+        "pinUpdateRequired",
+    }
+    missing_pin_fields = sorted(required_pin_fields - set(value))
+    if missing_pin_fields:
+        raise ValueError(
+            "route modelAffinity is missing conversation-pin fields: "
+            + ", ".join(missing_pin_fields)
+        )
     if "evidence" not in value or not isinstance(value["evidence"], dict):
         raise ValueError("route modelAffinity evidence must be an object")
     value["evidence"] = _validate_affinity_evidence(
@@ -223,6 +234,18 @@ def _validate_model_affinity(affinity: Mapping[str, Any]) -> dict[str, Any]:
         )
     if "errorType" in value and not SAFE_ID_PATTERN.fullmatch(str(value["errorType"])):
         raise ValueError("route modelAffinity errorType must be a safe identifier")
+    conversation_key_hash = value.get("conversationKeyHash")
+    if conversation_key_hash is not None and not WORKSPACE_KEY_PATTERN.fullmatch(
+        str(conversation_key_hash)
+    ):
+        raise ValueError("route modelAffinity conversationKeyHash must be a SHA-256 digest")
+    if value.get("storesConversationKey") is not False:
+        raise ValueError("route modelAffinity must declare storesConversationKey=false")
+    pinned_model = value.get("pinnedModel")
+    if pinned_model is not None and not SAFE_ID_PATTERN.fullmatch(str(pinned_model)):
+        raise ValueError("route modelAffinity pinnedModel must be a safe identifier")
+    if not isinstance(value.get("pinUpdateRequired"), bool):
+        raise ValueError("route modelAffinity pinUpdateRequired must be boolean")
     return value
 
 
@@ -498,7 +521,7 @@ def validate_route_decision(
     if affinity:
         if affinity.get("schema") != MODEL_AFFINITY_SCHEMA:
             raise ValueError("route affinity schema is invalid")
-        if affinity.get("mode") not in {"session", "auto", "off"}:
+        if affinity.get("mode") not in {"session", "sticky", "auto", "off"}:
             raise ValueError("route affinity mode is invalid")
         if affinity.get("modelCalls") != 0:
             raise ValueError("route affinity must declare zero model calls")
@@ -510,6 +533,21 @@ def validate_route_decision(
             raise ValueError("route affinity selectorModel does not match the route")
         if affinity.get("storesWorkspacePath") is not False:
             raise ValueError("route affinity must declare storesWorkspacePath=false")
+        if affinity.get("storesConversationKey") is not False:
+            raise ValueError("route affinity must declare storesConversationKey=false")
+        if affinity.get("mode") == "sticky":
+            if (
+                affinity.get("conversationKeyHash") is None
+                or affinity.get("pinnedModel") is None
+            ):
+                raise ValueError(
+                    "route sticky affinity requires a conversation key hash and pinned model"
+                )
+        elif (
+            affinity.get("conversationKeyHash") is not None
+            or affinity.get("pinnedModel") is not None
+        ):
+            raise ValueError("route non-sticky affinity may not carry a conversation pin")
         if affinity.get("targetTier") != value["targetTier"]:
             raise ValueError("route affinity targetTier does not match the route")
         if affinity.get("selectedTier") != value["selectedTier"]:

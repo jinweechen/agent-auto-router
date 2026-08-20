@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -12,14 +13,15 @@ from model_registry import TIER_RANK, ModelRegistry
 from protocol_schemas import MODEL_AFFINITY_SCHEMA
 
 
-MODEL_AFFINITY_MODES = ("session", "auto", "off")
+MODEL_AFFINITY_MODES = ("session", "sticky", "auto", "off")
 DEFAULT_MODEL_AFFINITY_MODE = "session"
 ROLE_MODEL_POLICY_AFFINITY = "selected-model-preferred"
 ROLE_MODEL_POLICY_PROFILE = "profile"
 AFFINITY_TTL_SECONDS = 30 * 60
-MINIMUM_STRONGER_TIER_CACHE_SIGNAL = 0.15
-PROFILE_PREFERRED_MAXIMUM_CACHE_SIGNAL = 0.05
+MINIMUM_STRONGER_TIER_CACHE_READ_RATIO = 0.15
+PROFILE_PREFERRED_MAXIMUM_CACHE_READ_RATIO = 0.05
 PROFILE_PREFERRED_MINIMUM_SAMPLES = 3
+CONVERSATION_KEY_HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 def workspace_identity(workdir: Path | str | None) -> str | None:
@@ -75,10 +77,9 @@ def _cache_summary(
         input_tokens += current_input
         cached_input += current_cached
         cache_write += current_write
-    cache_signal = (
-        min(1.0, (cached_input + cache_write) / input_tokens)
-        if input_tokens else None
-    )
+    # Cache reads are reuse evidence. Cache writes are a rebuild cost and must
+    # never make retention of a more expensive model look more attractive.
+    cache_signal = (cached_input / input_tokens) if input_tokens else None
     return {
         "samples": samples,
         "inputTokens": input_tokens,
@@ -102,17 +103,39 @@ def resolve_model_affinity(
     available_backends: Iterable[str],
     required_capabilities: Iterable[str] = (),
     mode: str = DEFAULT_MODEL_AFFINITY_MODE,
+    conversation_key_hash: str | None = None,
+    pinned_model: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Choose an affinity model without ever retaining a weaker capability tier."""
     if mode not in MODEL_AFFINITY_MODES:
-        raise ValueError("model affinity mode must be session, auto, or off")
+        raise ValueError("model affinity mode must be session, sticky, auto, or off")
+    if mode == "sticky":
+        valid_conversation_key = (
+            isinstance(conversation_key_hash, str)
+            and CONVERSATION_KEY_HASH_PATTERN.fullmatch(conversation_key_hash)
+        )
+        if not valid_conversation_key:
+            raise ValueError(
+                "sticky model affinity requires a lowercase HMAC-SHA256 "
+                "conversation key hash"
+            )
+        if not isinstance(pinned_model, str) or not pinned_model.strip():
+            raise ValueError("sticky model affinity requires a pinned model")
+    elif conversation_key_hash is not None or pinned_model is not None:
+        raise ValueError(
+            "conversation key hash and pinned model require sticky model affinity"
+        )
     current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     result: dict[str, Any] = {
         "schema": MODEL_AFFINITY_SCHEMA,
         "mode": mode,
         "workspaceKey": workspace_key,
         "storesWorkspacePath": False,
+        "conversationKeyHash": conversation_key_hash,
+        "storesConversationKey": False,
+        "pinnedModel": pinned_model,
+        "pinUpdateRequired": False,
         "selectorModel": selector_model,
         "selectedModel": selector_model,
         "targetTier": target_tier,
@@ -121,6 +144,7 @@ def resolve_model_affinity(
         "reason": (
             "disabled" if mode == "off"
             else "session-role-reuse" if mode == "session"
+            else "conversation-pin-unresolved" if mode == "sticky"
             else "no-recent-workspace-evidence"
         ),
         "retainedStrongerTier": False,
@@ -133,7 +157,50 @@ def resolve_model_affinity(
         "evidence": _cache_summary(()),
         "modelCalls": 0,
     }
-    if mode in {"off", "session"} or workspace_key is None:
+    if mode in {"off", "session"}:
+        return result
+
+    if mode == "sticky":
+        allowed_backends = frozenset(available_backends)
+        required = frozenset(required_capabilities)
+        try:
+            pinned = registry.get(str(pinned_model), role="direct")
+            selector = registry.get(selector_model, role="direct")
+        except ValueError:
+            result["reason"] = "pinned-model-no-longer-trusted"
+            result["pinUpdateRequired"] = True
+            return result
+        result["pinnedModel"] = pinned.model_id
+        result["previousModel"] = pinned.model_id
+        if (
+            not pinned.auto_eligible
+            or pinned.backend not in allowed_backends
+            or pinned.backend != selector.backend
+            or not required.issubset(pinned.capabilities)
+        ):
+            result["reason"] = "pinned-model-not-eligible"
+            result["pinUpdateRequired"] = True
+            return result
+        rank_delta = TIER_RANK[pinned.tier] - TIER_RANK[target_tier]
+        if rank_delta < 0:
+            result["reason"] = "pinned-model-weaker-than-current-requirement"
+            result["pinUpdateRequired"] = True
+            return result
+        result["selectedTier"] = pinned.tier
+        result["retainedStrongerTier"] = rank_delta > 0
+        if pinned.model_id == selector.model_id:
+            result["reason"] = "conversation-pin-already-selected"
+            return result
+        result.update(
+            {
+                "selectedModel": pinned.model_id,
+                "applied": True,
+                "reason": "conversation-sticky-affinity",
+            }
+        )
+        return result
+
+    if workspace_key is None:
         return result
 
     recent: list[tuple[datetime, dict[str, Any]]] = []
@@ -160,7 +227,7 @@ def resolve_model_affinity(
     if (
         evidence["samples"] >= PROFILE_PREFERRED_MINIMUM_SAMPLES
         and evidence["cacheSignalRatio"] is not None
-        and evidence["cacheSignalRatio"] < PROFILE_PREFERRED_MAXIMUM_CACHE_SIGNAL
+        and evidence["cacheSignalRatio"] < PROFILE_PREFERRED_MAXIMUM_CACHE_READ_RATIO
     ):
         result["roleModelPolicy"] = ROLE_MODEL_POLICY_PROFILE
 
@@ -206,7 +273,7 @@ def resolve_model_affinity(
     )
     if rank_delta == 1 and (
         previous_evidence["cacheSignalRatio"] is None
-        or previous_evidence["cacheSignalRatio"] < MINIMUM_STRONGER_TIER_CACHE_SIGNAL
+        or previous_evidence["cacheSignalRatio"] < MINIMUM_STRONGER_TIER_CACHE_READ_RATIO
     ):
         result["reason"] = "stronger-model-cache-signal-insufficient"
         return result

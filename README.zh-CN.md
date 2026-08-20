@@ -6,7 +6,7 @@
 
 它在执行前根据任务复杂度、风险、约束程度和 reasoning effort 选择受信模型，并生成有界执行计划。标准路由会安全启用自适应仓库检查、编排建议和本次计划内模型复用，但不读取历史状态，也不启动额外智能体。跨任务黏性、学习策略、反馈写入和多角色执行仍需显式开启。路由过程本身不调用模型，不修改 Codex 全局配置，也不读取或转发登录凭据。
 
-当前项目版本：`0.15.0+codex.20260813124518`。
+当前项目版本：`0.15.0+codex.20260820102505`。
 
 ## 先看结论
 
@@ -213,7 +213,7 @@ ASCII 关键词按词法边界匹配，避免 `tokenizer`/`token`、`information
 
 A/E/F 是直接执行。标准入口和可复用 Python API 默认使用 `recommend`：评估并展示 B/C/D 建议，但仍直接执行且不增加模型调用；只有显式选择 `auto` 才启动多智能体。Python 模型黏性默认 `session`，未指定 effort 时使用所选层级的推荐值，而不是被视为显式 `medium`。`auto` 仍要求低风险任务具有明确并行信号、足够规模，并且扣除模型调用与层切换开销后收益为正。高风险任务还必须显式传入 `-ConfirmHighRiskOrchestration`。
 
-默认 `-ModelAffinity session` 只在当前计划的兼容角色间复用所选模型，不读取历史状态，并使用 `selected-model-preferred` 角色策略。显式 `-ModelAffinity auto` 才会在同一工作区摘要、同一策略下复用最近 30 分钟内成功使用的模型，并继续受既有 tier 与缓存信号边界约束；`-ModelAffinity off` 使用精确角色预设。这些比例只用于路由，不是供应商账单估算。
+默认 `-ModelAffinity session` 只在当前计划的兼容角色间复用所选模型，不读取历史状态，并使用 `selected-model-preferred` 角色策略。显式 `sticky` 接受可信宿主生成的 HMAC-SHA256 会话摘要和已固定的受信模型；只要后端、能力和 tier 下限仍满足，就保持该模型，并且不保存原始会话 ID 或 pin 数据库。显式 `auto` 才会读取最近 30 分钟的同工作区、同策略证据。只有缓存读取算正向复用证据；缓存写入作为重建成本单独报告，不再帮助保留更强模型。`off` 使用精确角色预设。这些比例只用于路由，不是供应商账单估算。
 
 角色默认值来自 [orchestration_profiles.json](skills/agent-auto-router/scripts/orchestration_profiles.json)。
 
@@ -268,7 +268,7 @@ Desktop 当前只支持 Codex 后端。默认 `selected-model-preferred` 角色�
   -Explain
 ```
 
-CLI 任务正文通过 UTF-8 stdin 传入，不出现在子进程命令行参数中。`-Model sol`、`-Model terra` 或完整受信 Codex ID 可以显式覆盖本次选择，但不会修改全局配置。默认使用 `-ModelAffinity session`、`-RepositoryContextMode adaptive` 和 `-OrchestrationPolicy recommend`：不读反馈、不加载活动策略、不写状态、不启动额外智能体。自适应模式对普通回答保持 `scan_duration_ms=0`，只对代码、路径或调试任务执行一次有界扫描。跨任务黏性、强制扫描、多智能体执行、活动策略和反馈仍分别需要 `auto` 或显式开关。
+CLI 任务正文通过 UTF-8 stdin 传入，不出现在子进程命令行参数中。`-Model sol`、`-Model terra` 或完整受信 Codex ID 可以显式覆盖本次选择，但不会修改全局配置。默认使用 `-ModelAffinity session`、`-RepositoryContextMode adaptive` 和 `-OrchestrationPolicy recommend`：不读反馈、不加载活动策略、不写状态、不启动额外智能体。自适应模式对普通回答保持 `scan_duration_ms=0`，只对代码、路径或调试任务执行一次有界扫描。长对话可显式使用 `-ModelAffinity sticky -ConversationKeyHash <可信HMAC> -PinnedModel <受信模型>`；工作区证据黏性、强制扫描和多智能体执行分别使用 `-ModelAffinity auto`、`-RepositoryContextMode auto` 和 `-OrchestrationPolicy auto`。活动策略和反馈仍需显式开关。
 
 只做零模型调用的本地 DryRun：
 
@@ -304,7 +304,8 @@ CLI 任务正文通过 UTF-8 stdin 传入，不出现在子进程命令行参数
 | `-DryRun` | 只输出路由，不调用模型 |
 | `-Sandbox read-only` | 禁止最终角色写入 |
 | `-RepositoryContextMode adaptive|auto|off` | 仅为代码/路径/调试任务扫描、强制有界单次扫描或关闭检查 |
-| `-ModelAffinity session|auto|off` | 本次计划内复用、读取有界同工作区证据或使用精确角色预设 |
+| `-ModelAffinity session|sticky|auto|off` | 本次计划内复用、使用可信宿主会话 pin、读取有界同工作区证据或使用精确角色预设 |
+| `-ConversationKeyHash` / `-PinnedModel` | 为 `sticky` 提供必需的 HMAC 摘要和受信模型；拒绝原始会话 ID |
 | `-AllowDirty` | 明确接受在非干净 Git 工作区执行的风险 |
 | `-AllowNoChanges` | 允许写任务成功但 Git 状态无变化 |
 | `-MaxTotalTokens` | 对 CLI 可观测 Token 设置软预算 |

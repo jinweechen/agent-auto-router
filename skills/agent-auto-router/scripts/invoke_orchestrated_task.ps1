@@ -8,8 +8,10 @@ param(
     [string]$Variant = 'auto',
     [ValidateSet('direct', 'recommend', 'auto')]
     [string]$OrchestrationPolicy = 'auto',
-    [ValidateSet('session', 'auto', 'off')]
+    [ValidateSet('session', 'sticky', 'auto', 'off')]
     [string]$ModelAffinity = 'auto',
+    [string]$ConversationKeyHash = '',
+    [string]$PinnedModel = '',
     [switch]$ConfirmHighRiskOrchestration,
     [ValidateSet('', 'none', 'low', 'medium', 'high', 'xhigh', 'max')]
     [string]$Effort = '',
@@ -75,6 +77,13 @@ if (-not $DryRun -and -not $HostPermissionsJson -and $Sandbox -eq 'inherit') {
 if ($IncludeOutputInReport -and -not $ResultsDir) {
     throw '-IncludeOutputInReport requires -ResultsDir.'
 }
+if ($ModelAffinity -eq 'sticky') {
+    if ($ConversationKeyHash -notmatch '^[0-9a-f]{64}$' -or -not $PinnedModel) {
+        throw '-ModelAffinity sticky requires a lowercase HMAC-SHA256 -ConversationKeyHash and -PinnedModel.'
+    }
+} elseif ($ConversationKeyHash -or $PinnedModel) {
+    throw '-ConversationKeyHash and -PinnedModel require -ModelAffinity sticky.'
+}
 
 $arguments = @(
     $runner, '--stdin', '--strategy', $Strategy, '--variant', $Variant,
@@ -94,6 +103,9 @@ if ($MaxTotalTokens -gt 0) { $arguments += @('--max-total-tokens', $MaxTotalToke
 if ($ResultsDir) { $arguments += @('--results-dir', $ResultsDir) }
 if ($IncludeOutputInReport) { $arguments += '--include-output-in-report' }
 if ($FeedbackFile) { $arguments += @('--feedback-file', $FeedbackFile) }
+if ($ModelAffinity -eq 'sticky') {
+    $arguments += @('--conversation-key-hash', $ConversationKeyHash, '--pinned-model', $PinnedModel)
+}
 foreach ($roleEffort in @(
     @('planner', $PlannerEffort), @('dispatcher', $DispatcherEffort),
     @('worker', $WorkerEffort), @('reviewer', $ReviewerEffort),

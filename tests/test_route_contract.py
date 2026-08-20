@@ -120,6 +120,40 @@ class RouteDecisionContractTests(unittest.TestCase):
         self.assertEqual(route["executionPlan"]["selectedTier"], "frontier")
         self.assertEqual(route["reasonCode"], "explicit_model")
 
+    def test_selector_accepts_a_privacy_safe_sticky_conversation_pin(self) -> None:
+        route = self.select(
+            "--text", "Implement a routine change",
+            "--model-affinity", "sticky",
+            "--conversation-key-hash", "c" * 64,
+            "--pinned-model", "codex:gpt-5.6-sol",
+        )["routeDecision"]
+        affinity = route["modelAffinity"]
+        self.assertEqual(route["selectorModel"], "codex:gpt-5.6-terra")
+        self.assertEqual(route["selectedModel"], "codex:gpt-5.6-sol")
+        self.assertEqual(affinity["mode"], "sticky")
+        self.assertEqual(affinity["conversationKeyHash"], "c" * 64)
+        self.assertEqual(affinity["pinnedModel"], "codex:gpt-5.6-sol")
+        self.assertFalse(affinity["storesConversationKey"])
+        self.assertFalse(affinity["pinUpdateRequired"])
+        self.assertNotIn("raw-conversation-id", json.dumps(route))
+
+    def test_selector_rejects_raw_conversation_identity(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS / "select_auto_model.py"),
+                "--text", "Implement a routine change",
+                "--model-affinity", "sticky",
+                "--conversation-key-hash", "raw-conversation-id",
+                "--pinned-model", "codex:gpt-5.6-sol",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("HMAC-SHA256", completed.stderr)
+
     def test_route_contract_rejects_raw_workspace_and_repository_paths(self) -> None:
         with self.assertRaisesRegex(ValueError, "SHA-256"):
             route_case({"prompt": "Reply OK", "workspace_key": r"C:\\private\\repo"})
