@@ -20,6 +20,14 @@ param(
     [string]$ModelAffinity = 'session',
     [string]$ConversationKeyHash = '',
     [string]$PinnedModel = '',
+    [ValidateSet('', 'none', 'low', 'medium', 'high', 'xhigh', 'max')]
+    [string]$PinnedEffort = '',
+    [ValidateRange(-1, 2147483647)]
+    [int]$PinTurns = -1,
+    [ValidateRange(-1, 2147483647)]
+    [int]$LastSwitchAgeSeconds = -1,
+    [switch]$CheckpointReached,
+    [switch]$ConfirmPinDowngrade,
     [switch]$ConfirmHighRiskOrchestration,
     [ValidateSet('cli', 'desktop')]
     [string]$ExecutionBackend = 'cli',
@@ -90,8 +98,8 @@ if ($ModelAffinity -eq 'sticky') {
     if ($ConversationKeyHash -notmatch '^[0-9a-f]{64}$' -or -not $PinnedModel) {
         throw '-ModelAffinity sticky requires a lowercase HMAC-SHA256 -ConversationKeyHash and -PinnedModel.'
     }
-} elseif ($ConversationKeyHash -or $PinnedModel) {
-    throw '-ConversationKeyHash and -PinnedModel require -ModelAffinity sticky.'
+} elseif ($ConversationKeyHash -or $PinnedModel -or $PinnedEffort -or $PinTurns -ge 0 -or $LastSwitchAgeSeconds -ge 0 -or $CheckpointReached -or $ConfirmPinDowngrade) {
+    throw 'Conversation pin state requires -ModelAffinity sticky.'
 }
 $selectorArguments = @(
     $selectorPath, '--strategy', $Strategy, '--stdin', '--effort', $routeEffort,
@@ -101,6 +109,16 @@ $selectorArguments = @(
 )
 if ($ModelAffinity -eq 'sticky') {
     $selectorArguments += @('--conversation-key-hash', $ConversationKeyHash, '--pinned-model', $PinnedModel)
+    if ($PinnedEffort) { $selectorArguments += @('--pinned-effort', $PinnedEffort) }
+    if ($PinTurns -ge 0) { $selectorArguments += @('--pin-turns', $PinTurns) }
+    if ($LastSwitchAgeSeconds -ge 0) { $selectorArguments += @('--last-switch-age-seconds', $LastSwitchAgeSeconds) }
+    if ($CheckpointReached) { $selectorArguments += '--checkpoint-reached' }
+    if ($ConfirmPinDowngrade) { $selectorArguments += '--confirm-pin-downgrade' }
+}
+if ($ExecutionBackend -eq 'desktop') {
+    foreach ($availableModel in $DesktopAvailableModels) {
+        $selectorArguments += @('--available-model', $availableModel)
+    }
 }
 if ($FeedbackFile) { $selectorArguments += @('--feedback-file', $FeedbackFile) }
 if ($ValidationCommand.Count -gt 0) {

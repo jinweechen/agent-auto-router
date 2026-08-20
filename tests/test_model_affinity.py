@@ -169,6 +169,24 @@ class ModelAffinityTests(unittest.TestCase):
                 now=self.now,
             )
 
+    def test_sticky_mode_rejects_ambiguous_host_state_types(self) -> None:
+        common = {
+            "workspace_key": self.workspace_key,
+            "strategy": "balance",
+            "selector_model": "codex:gpt-5.6-terra",
+            "target_tier": "balanced",
+            "registry": self.registry,
+            "available_backends": ("codex",),
+            "mode": "sticky",
+            "conversation_key_hash": "9" * 64,
+            "pinned_model": "codex:gpt-5.6-sol",
+            "now": self.now,
+        }
+        with self.assertRaisesRegex(ValueError, "checkpoint reached must be boolean"):
+            resolve_model_affinity((), checkpoint_reached="false", **common)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ValueError, "iterable of model ID strings"):
+            resolve_model_affinity((), available_model_ids="gpt-5.6-sol", **common)
+
     def test_sticky_mode_upgrades_when_pin_is_weaker_than_requirement(self) -> None:
         result = resolve_model_affinity(
             (),
@@ -187,6 +205,117 @@ class ModelAffinityTests(unittest.TestCase):
         self.assertEqual(result["selectedModel"], "codex:gpt-5.6-sol")
         self.assertEqual(result["reason"], "pinned-model-weaker-than-current-requirement")
         self.assertTrue(result["pinUpdateRequired"])
+
+    def test_sticky_mode_never_downgrades_without_explicit_confirmation(self) -> None:
+        result = resolve_model_affinity(
+            (), workspace_key=self.workspace_key, strategy="cost",
+            selector_model="codex:gpt-5.6-luna", target_tier="fast",
+            registry=self.registry, available_backends=("codex",), mode="sticky",
+            conversation_key_hash="c" * 64,
+            pinned_model="codex:gpt-5.6-sol", pin_turns=20,
+            last_switch_age_seconds=3600, checkpoint_reached=True,
+            now=self.now,
+        )
+        self.assertEqual(result["selectedModel"], "codex:gpt-5.6-sol")
+        self.assertEqual(result["switchAction"], "keep")
+        self.assertFalse(result["pinUpdateRequired"])
+
+    def test_confirmed_downgrade_requires_every_hysteresis_gate(self) -> None:
+        blocked = resolve_model_affinity(
+            (), workspace_key=self.workspace_key, strategy="cost",
+            selector_model="codex:gpt-5.6-luna", target_tier="fast",
+            registry=self.registry, available_backends=("codex",), mode="sticky",
+            conversation_key_hash="d" * 64,
+            pinned_model="codex:gpt-5.6-sol", pin_turns=2,
+            last_switch_age_seconds=599, checkpoint_reached=False,
+            confirm_pin_downgrade=True, now=self.now,
+        )
+        self.assertEqual(blocked["selectedModel"], "codex:gpt-5.6-sol")
+        self.assertEqual(
+            blocked["switchBlockedReasons"],
+            [
+                "minimum-residency-not-met",
+                "switch-cooldown-not-met",
+                "checkpoint-required",
+            ],
+        )
+
+        accepted = resolve_model_affinity(
+            (), workspace_key=self.workspace_key, strategy="cost",
+            selector_model="codex:gpt-5.6-luna", target_tier="fast",
+            registry=self.registry, available_backends=("codex",), mode="sticky",
+            conversation_key_hash="d" * 64,
+            pinned_model="codex:gpt-5.6-sol", pin_turns=3,
+            last_switch_age_seconds=600, checkpoint_reached=True,
+            confirm_pin_downgrade=True, now=self.now,
+        )
+        self.assertEqual(accepted["selectedModel"], "codex:gpt-5.6-luna")
+        self.assertEqual(accepted["switchAction"], "downgrade")
+        self.assertTrue(accepted["pinUpdateRequired"])
+        self.assertEqual(accepted["pinUpdateModel"], "codex:gpt-5.6-luna")
+
+    def test_exact_runtime_availability_replaces_an_unavailable_pin(self) -> None:
+        result = resolve_model_affinity(
+            (), workspace_key=self.workspace_key, strategy="balance",
+            selector_model="codex:gpt-5.6-terra", target_tier="balanced",
+            registry=self.registry, available_backends=("codex",), mode="sticky",
+            conversation_key_hash="e" * 64,
+            pinned_model="codex:gpt-5.6-sol", selector_effort="medium",
+            available_model_ids=("gpt-5.6-terra",), now=self.now,
+        )
+        self.assertEqual(result["selectedModel"], "codex:gpt-5.6-terra")
+        self.assertEqual(result["switchAction"], "replace-unavailable")
+        self.assertEqual(result["pinUpdateModel"], "codex:gpt-5.6-terra")
+        self.assertTrue(result["availabilityChecked"])
+
+    def test_unavailable_downgrade_target_keeps_an_available_pin(self) -> None:
+        result = resolve_model_affinity(
+            (), workspace_key=self.workspace_key, strategy="cost",
+            selector_model="codex:gpt-5.6-luna", target_tier="fast",
+            registry=self.registry, available_backends=("codex",), mode="sticky",
+            conversation_key_hash="f" * 64,
+            pinned_model="codex:gpt-5.6-sol", pin_turns=3,
+            last_switch_age_seconds=600, checkpoint_reached=True,
+            confirm_pin_downgrade=True,
+            available_model_ids=("codex:gpt-5.6-sol",), now=self.now,
+        )
+        self.assertEqual(result["selectedModel"], "codex:gpt-5.6-sol")
+        self.assertIn("selector-model-unavailable", result["switchBlockedReasons"])
+
+    def test_exact_runtime_snapshot_fails_when_no_route_model_is_available(self) -> None:
+        with self.assertRaisesRegex(ValueError, "neither pinned nor selector"):
+            resolve_model_affinity(
+                (), workspace_key=self.workspace_key, strategy="balance",
+                selector_model="codex:gpt-5.6-terra", target_tier="balanced",
+                registry=self.registry, available_backends=("codex",), mode="sticky",
+                conversation_key_hash="0" * 64,
+                pinned_model="codex:gpt-5.6-sol",
+                available_model_ids=("codex:unknown-model",), now=self.now,
+            )
+
+    def test_sticky_effort_is_retained_or_upgraded_without_weakening(self) -> None:
+        retained = resolve_model_affinity(
+            (), workspace_key=self.workspace_key, strategy="balance",
+            selector_model="codex:gpt-5.6-terra", target_tier="balanced",
+            registry=self.registry, available_backends=("codex",), mode="sticky",
+            conversation_key_hash="1" * 64,
+            pinned_model="codex:gpt-5.6-terra", selector_effort="medium",
+            pinned_effort="high", now=self.now,
+        )
+        self.assertEqual(retained["selectedEffort"], "high")
+        self.assertTrue(retained["effortApplied"])
+
+        upgraded = resolve_model_affinity(
+            (), workspace_key=self.workspace_key, strategy="balance",
+            selector_model="codex:gpt-5.6-terra", target_tier="balanced",
+            registry=self.registry, available_backends=("codex",), mode="sticky",
+            conversation_key_hash="2" * 64,
+            pinned_model="codex:gpt-5.6-terra", selector_effort="medium",
+            pinned_effort="low", now=self.now,
+        )
+        self.assertEqual(upgraded["selectedEffort"], "medium")
+        self.assertEqual(upgraded["switchAction"], "upgrade-effort")
+        self.assertEqual(upgraded["pinUpdateEffort"], "medium")
 
     def test_stronger_tier_is_rejected_without_cache_evidence(self) -> None:
         result = self.resolve(

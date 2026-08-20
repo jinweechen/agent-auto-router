@@ -184,6 +184,53 @@ def evaluate(policy: RoutingPolicy | None = None) -> dict[str, object]:
         "frontier",
     ))
 
+    sticky_case = {"prompt": "Reply with exactly OK", "workspace_key": "a" * 64}
+    sticky_common = {
+        "policy": policy,
+        "model_affinity_mode": "sticky",
+        "conversation_key_hash": "b" * 64,
+        "pinned_model": "codex:gpt-5.6-sol",
+    }
+    retained_pin = route_case(
+        sticky_case, "balance", pin_turns=20, last_switch_age_seconds=3600,
+        checkpoint_reached=True, **sticky_common,
+    )["model_affinity"]
+    checks.append(check(
+        "sticky:stronger-pin-kept-by-default",
+        (retained_pin["selectedModel"], retained_pin["switchAction"]),
+        ("codex:gpt-5.6-sol", "keep"),
+    ))
+    blocked_downgrade = route_case(
+        sticky_case, "balance", pin_turns=2, last_switch_age_seconds=599,
+        confirm_pin_downgrade=True, **sticky_common,
+    )["model_affinity"]
+    checks.append(check(
+        "sticky:downgrade-blocked-before-all-gates",
+        blocked_downgrade["switchBlockedReasons"],
+        [
+            "minimum-residency-not-met", "switch-cooldown-not-met",
+            "checkpoint-required",
+        ],
+    ))
+    confirmed_downgrade = route_case(
+        sticky_case, "balance", pin_turns=3, last_switch_age_seconds=600,
+        checkpoint_reached=True, confirm_pin_downgrade=True, **sticky_common,
+    )["model_affinity"]
+    checks.append(check(
+        "sticky:downgrade-at-confirmed-checkpoint",
+        (confirmed_downgrade["selectedModel"], confirmed_downgrade["switchAction"]),
+        ("codex:gpt-5.6-luna", "downgrade"),
+    ))
+    unavailable_pin = route_case(
+        sticky_case, "balance", available_model_ids=("gpt-5.6-luna",),
+        **sticky_common,
+    )["model_affinity"]
+    checks.append(check(
+        "sticky:unavailable-pin-replaced-from-runtime-snapshot",
+        (unavailable_pin["selectedModel"], unavailable_pin["switchAction"]),
+        ("codex:gpt-5.6-luna", "replace-unavailable"),
+    ))
+
     passed = sum(1 for item in checks if item["passed"])
     return {
         "schemaVersion": 3,

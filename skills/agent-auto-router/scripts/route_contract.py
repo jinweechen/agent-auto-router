@@ -11,6 +11,11 @@ import re
 import secrets
 from typing import Any, Mapping
 
+from model_affinity import (
+    MINIMUM_PIN_RESIDENCY_TURNS,
+    MINIMUM_SWITCH_COOLDOWN_SECONDS,
+    PIN_SWITCH_ACTIONS,
+)
 from model_registry import ModelRegistry, registry_digest
 from protocol_schemas import (
     EXECUTION_ENVELOPE_SCHEMA,
@@ -79,7 +84,16 @@ AFFINITY_FIELDS = frozenset({
     "retainedStrongerTier", "previousModel", "previousModelAgeSeconds",
     "roleModelPolicy", "evidence", "previousModelEvidence", "errorType",
     "conversationKeyHash", "storesConversationKey", "pinnedModel",
-    "pinUpdateRequired", "modelCalls",
+    "pinnedEffort", "pinUpdateRequired", "pinUpdateModel", "pinUpdateEffort",
+    "pinTurns", "lastSwitchAgeSeconds", "checkpointReached",
+    "downgradeConfirmed", "minimumResidencyTurns",
+    "minimumSwitchCooldownSeconds", "switchAction", "switchReason",
+    "switchBlockedReasons", "availabilityChecked", "selectorEffort",
+    "selectedEffort", "effortApplied", "modelCalls",
+})
+AFFINITY_SWITCH_BLOCK_REASONS = frozenset({
+    "selector-model-unavailable", "minimum-residency-not-met",
+    "switch-cooldown-not-met", "checkpoint-required",
 })
 AFFINITY_EVIDENCE_FIELDS = frozenset({
     "samples", "inputTokens", "cachedInputTokens", "cacheWriteInputTokens",
@@ -213,7 +227,12 @@ def _validate_model_affinity(affinity: Mapping[str, Any]) -> dict[str, Any]:
     _reject_unknown_fields(value, AFFINITY_FIELDS, "modelAffinity")
     required_pin_fields = {
         "conversationKeyHash", "storesConversationKey", "pinnedModel",
-        "pinUpdateRequired",
+        "pinnedEffort", "pinUpdateRequired", "pinUpdateModel", "pinUpdateEffort",
+        "pinTurns", "lastSwitchAgeSeconds", "checkpointReached",
+        "downgradeConfirmed", "minimumResidencyTurns",
+        "minimumSwitchCooldownSeconds", "switchAction", "switchReason",
+        "switchBlockedReasons", "availabilityChecked", "selectorEffort",
+        "selectedEffort", "effortApplied",
     }
     missing_pin_fields = sorted(required_pin_fields - set(value))
     if missing_pin_fields:
@@ -244,8 +263,48 @@ def _validate_model_affinity(affinity: Mapping[str, Any]) -> dict[str, Any]:
     pinned_model = value.get("pinnedModel")
     if pinned_model is not None and not SAFE_ID_PATTERN.fullmatch(str(pinned_model)):
         raise ValueError("route modelAffinity pinnedModel must be a safe identifier")
+    pin_update_model = value.get("pinUpdateModel")
+    if pin_update_model is not None and not SAFE_ID_PATTERN.fullmatch(
+        str(pin_update_model)
+    ):
+        raise ValueError("route modelAffinity pinUpdateModel must be a safe identifier")
+    for key in ("pinnedEffort", "pinUpdateEffort", "selectorEffort", "selectedEffort"):
+        item = value.get(key)
+        if item is not None and item not in EFFORTS:
+            raise ValueError(f"route modelAffinity {key} is invalid")
+    for key in ("pinTurns", "lastSwitchAgeSeconds"):
+        item = value.get(key)
+        if item is not None:
+            _validate_nonnegative_integer(item, f"modelAffinity.{key}")
+    if value.get("minimumResidencyTurns") != MINIMUM_PIN_RESIDENCY_TURNS:
+        raise ValueError("route modelAffinity minimumResidencyTurns is invalid")
+    if value.get("minimumSwitchCooldownSeconds") != MINIMUM_SWITCH_COOLDOWN_SECONDS:
+        raise ValueError("route modelAffinity minimumSwitchCooldownSeconds is invalid")
+    for key in (
+        "checkpointReached", "downgradeConfirmed", "availabilityChecked",
+        "effortApplied",
+    ):
+        if not isinstance(value.get(key), bool):
+            raise ValueError(f"route modelAffinity {key} must be boolean")
+    if value.get("switchAction") not in PIN_SWITCH_ACTIONS:
+        raise ValueError("route modelAffinity switchAction is invalid")
+    switch_reason = value.get("switchReason")
+    if switch_reason is not None and not SAFE_ID_PATTERN.fullmatch(str(switch_reason)):
+        raise ValueError("route modelAffinity switchReason must be a safe identifier")
+    blocked_reasons = value.get("switchBlockedReasons")
+    if not isinstance(blocked_reasons, list) or any(
+        reason not in AFFINITY_SWITCH_BLOCK_REASONS for reason in blocked_reasons
+    ):
+        raise ValueError("route modelAffinity switchBlockedReasons is invalid")
     if not isinstance(value.get("pinUpdateRequired"), bool):
         raise ValueError("route modelAffinity pinUpdateRequired must be boolean")
+    if not value["pinUpdateRequired"] and (
+        value.get("pinUpdateModel") is not None
+        or value.get("pinUpdateEffort") is not None
+    ):
+        raise ValueError("route modelAffinity has an unrequested pin update")
+    if value.get("effortApplied") and value.get("selectedEffort") is None:
+        raise ValueError("route modelAffinity applied effort requires selectedEffort")
     return value
 
 
@@ -253,7 +312,7 @@ def _validate_execution_plan(plan: Mapping[str, Any]) -> dict[str, Any]:
     value = copy.deepcopy(dict(plan))
     _reject_unknown_fields(value, EXECUTION_PLAN_FIELDS, "executionPlan")
     for field, allowed in (
-        ("effortSource", {"auto", "explicit", "registry-default"}),
+        ("effortSource", {"auto", "explicit", "registry-default", "affinity"}),
         ("variantSource", {None, "policy", "explicit"}),
         ("orchestrationPolicy", {"direct", "recommend", "auto"}),
         ("graderPolicy", {"auto", "always", "never"}),
@@ -543,11 +602,25 @@ def validate_route_decision(
                 raise ValueError(
                     "route sticky affinity requires a conversation key hash and pinned model"
                 )
-        elif (
-            affinity.get("conversationKeyHash") is not None
-            or affinity.get("pinnedModel") is not None
+        elif any((
+            affinity.get("conversationKeyHash") is not None,
+            affinity.get("pinnedModel") is not None,
+            affinity.get("pinnedEffort") is not None,
+            affinity.get("pinTurns") is not None,
+            affinity.get("lastSwitchAgeSeconds") is not None,
+            affinity.get("checkpointReached"),
+            affinity.get("downgradeConfirmed"),
+            affinity.get("pinUpdateRequired"),
+        )):
+            raise ValueError("route non-sticky affinity may not carry conversation pin state")
+        if affinity.get("pinUpdateRequired") and affinity.get("switchAction") not in {
+            "upgrade", "upgrade-effort", "downgrade", "replace-unavailable",
+        }:
+            raise ValueError("route affinity pin update requires a switch action")
+        if affinity.get("switchAction") == "keep" and (
+            affinity.get("selectedModel") != affinity.get("pinnedModel")
         ):
-            raise ValueError("route non-sticky affinity may not carry a conversation pin")
+            raise ValueError("route affinity keep action must select the pinned model")
         if affinity.get("targetTier") != value["targetTier"]:
             raise ValueError("route affinity targetTier does not match the route")
         if affinity.get("selectedTier") != value["selectedTier"]:
@@ -565,6 +638,14 @@ def validate_route_decision(
         raise ValueError("route executionPlan requiredTier does not match the route")
     if execution_plan.get("effort") != value["effort"]:
         raise ValueError("route executionPlan effort does not match route effort")
+    if affinity.get("selectedEffort") is not None and (
+        affinity.get("selectedEffort") != value["effort"]
+    ):
+        raise ValueError("route affinity selectedEffort does not match route effort")
+    if bool(affinity.get("effortApplied")) != (
+        execution_plan.get("effortSource") == "affinity"
+    ):
+        raise ValueError("route affinity effort application does not match executionPlan")
     if execution_plan.get("modelAffinity", {}) != affinity:
         raise ValueError("route executionPlan affinity does not match route affinity")
     variant = execution_plan.get("variant")

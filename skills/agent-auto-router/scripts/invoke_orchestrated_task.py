@@ -21,7 +21,7 @@ from typing import Any
 from auto_router import VARIANT_LABELS, route_case
 from benchmark_priors import benchmark_priors_digest, load_benchmark_priors
 from claude_cli_adapter import ClaudeCliAdapter
-from cli_arguments import positive_int
+from cli_arguments import nonnegative_int, positive_int
 from codex_cli_adapter import CodexCliAdapter
 from execution_plan import ORCHESTRATION_POLICIES
 from model_affinity import (
@@ -619,6 +619,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--conversation-key-hash")
     parser.add_argument("--pinned-model")
+    parser.add_argument("--pinned-effort", choices=EFFORTS)
+    parser.add_argument("--pin-turns", type=nonnegative_int)
+    parser.add_argument("--last-switch-age-seconds", type=nonnegative_int)
+    parser.add_argument("--checkpoint-reached", action="store_true")
+    parser.add_argument("--confirm-pin-downgrade", action="store_true")
+    parser.add_argument("--available-model", action="append", default=None)
     parser.add_argument("--effort", choices=EFFORTS, default=None)
     parser.add_argument("--max-workers", type=positive_int, default=2)
     parser.add_argument("--timeout", type=positive_int, default=600)
@@ -717,7 +723,15 @@ def main() -> int:
             raise ValueError(
                 "sticky model affinity requires --conversation-key-hash and --pinned-model"
             )
-    elif args.conversation_key_hash is not None or args.pinned_model is not None:
+    elif any((
+        args.conversation_key_hash is not None,
+        args.pinned_model is not None,
+        args.pinned_effort is not None,
+        args.pin_turns is not None,
+        args.last_switch_age_seconds is not None,
+        args.checkpoint_reached,
+        args.confirm_pin_downgrade,
+    )):
         raise ValueError("conversation pin arguments require --model-affinity sticky")
     if args.include_output_in_report and args.results_dir is None:
         print(
@@ -982,6 +996,12 @@ def main() -> int:
                 model_affinity_mode=args.model_affinity,
                 conversation_key_hash=args.conversation_key_hash,
                 pinned_model=args.pinned_model,
+                pinned_effort=args.pinned_effort,
+                pin_turns=args.pin_turns,
+                last_switch_age_seconds=args.last_switch_age_seconds,
+                checkpoint_reached=args.checkpoint_reached,
+                confirm_pin_downgrade=args.confirm_pin_downgrade,
+                available_model_ids=args.available_model,
                 explicit_variant=None if args.variant == "auto" else args.variant,
             )
         except ValueError as exc:

@@ -12,6 +12,15 @@ param(
     [string]$ModelAffinity = 'auto',
     [string]$ConversationKeyHash = '',
     [string]$PinnedModel = '',
+    [ValidateSet('', 'none', 'low', 'medium', 'high', 'xhigh', 'max')]
+    [string]$PinnedEffort = '',
+    [ValidateRange(-1, 2147483647)]
+    [int]$PinTurns = -1,
+    [ValidateRange(-1, 2147483647)]
+    [int]$LastSwitchAgeSeconds = -1,
+    [switch]$CheckpointReached,
+    [switch]$ConfirmPinDowngrade,
+    [string[]]$AvailableModels = @(),
     [switch]$ConfirmHighRiskOrchestration,
     [ValidateSet('', 'none', 'low', 'medium', 'high', 'xhigh', 'max')]
     [string]$Effort = '',
@@ -81,8 +90,8 @@ if ($ModelAffinity -eq 'sticky') {
     if ($ConversationKeyHash -notmatch '^[0-9a-f]{64}$' -or -not $PinnedModel) {
         throw '-ModelAffinity sticky requires a lowercase HMAC-SHA256 -ConversationKeyHash and -PinnedModel.'
     }
-} elseif ($ConversationKeyHash -or $PinnedModel) {
-    throw '-ConversationKeyHash and -PinnedModel require -ModelAffinity sticky.'
+} elseif ($ConversationKeyHash -or $PinnedModel -or $PinnedEffort -or $PinTurns -ge 0 -or $LastSwitchAgeSeconds -ge 0 -or $CheckpointReached -or $ConfirmPinDowngrade) {
+    throw 'Conversation pin state requires -ModelAffinity sticky.'
 }
 
 $arguments = @(
@@ -105,6 +114,14 @@ if ($IncludeOutputInReport) { $arguments += '--include-output-in-report' }
 if ($FeedbackFile) { $arguments += @('--feedback-file', $FeedbackFile) }
 if ($ModelAffinity -eq 'sticky') {
     $arguments += @('--conversation-key-hash', $ConversationKeyHash, '--pinned-model', $PinnedModel)
+    if ($PinnedEffort) { $arguments += @('--pinned-effort', $PinnedEffort) }
+    if ($PinTurns -ge 0) { $arguments += @('--pin-turns', $PinTurns) }
+    if ($LastSwitchAgeSeconds -ge 0) { $arguments += @('--last-switch-age-seconds', $LastSwitchAgeSeconds) }
+    if ($CheckpointReached) { $arguments += '--checkpoint-reached' }
+    if ($ConfirmPinDowngrade) { $arguments += '--confirm-pin-downgrade' }
+}
+foreach ($availableModel in $AvailableModels) {
+    $arguments += @('--available-model', $availableModel)
 }
 foreach ($roleEffort in @(
     @('planner', $PlannerEffort), @('dispatcher', $DispatcherEffort),

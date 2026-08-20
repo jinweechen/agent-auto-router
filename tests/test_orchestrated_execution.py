@@ -808,6 +808,12 @@ class OrchestratedExecutionPolicyTests(unittest.TestCase):
         self.assertIn("[ValidateSet('session', 'sticky', 'auto', 'off')]", script)
         self.assertIn("'--conversation-key-hash', $ConversationKeyHash", script)
         self.assertIn("'--pinned-model', $PinnedModel", script)
+        self.assertIn("'--pinned-effort', $PinnedEffort", script)
+        self.assertIn("'--pin-turns', $PinTurns", script)
+        self.assertIn("'--last-switch-age-seconds', $LastSwitchAgeSeconds", script)
+        self.assertIn("$selectorArguments += '--checkpoint-reached'", script)
+        self.assertIn("$selectorArguments += '--confirm-pin-downgrade'", script)
+        self.assertIn("'--available-model', $availableModel", script)
         for legacy_decision_access in (
             "$route.decision", "$route.executionPlan", "$route.policy",
             "$route.registry", "$route.repository.",

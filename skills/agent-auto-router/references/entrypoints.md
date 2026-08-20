@@ -121,11 +121,14 @@ For a long conversation, a trusted host can carry an explicit model pin without 
   -ModelAffinity sticky `
   -ConversationKeyHash $trustedConversationHmacSha256 `
   -PinnedModel "codex:gpt-5.6-terra" `
+  -PinnedEffort high `
+  -PinTurns 4 `
+  -LastSwitchAgeSeconds 900 `
   -HostPermissionsJson $currentHostPermissionsJson `
   -Workdir "C:/path/to/repo"
 ```
 
-`-ConversationKeyHash` must be a lowercase HMAC-SHA256 digest produced by the trusted host, not a plain hash of an enumerable conversation ID. `sticky` reads no feedback and stores no pin database. It retains the pinned model only while it remains trusted, available on the same backend, capability-compatible, and no weaker than the current task requirement. A stronger task selects the required model and emits `pinUpdateRequired=true`; the host decides whether to update its pin. Supplying either pin parameter outside `sticky` fails closed.
+`-ConversationKeyHash` must be a lowercase HMAC-SHA256 digest produced by the trusted host, not a plain hash of an enumerable conversation ID. `sticky` reads no feedback and stores no pin database. Omitted residency values preserve backward-compatible keep-only behavior. A stronger model or effort requirement upgrades immediately. An unavailable pin is replaced when the trusted host supplies an exact runtime list through Desktop `-DesktopAvailableModels` or orchestration `-AvailableModels`. A lower selector is used only with `-CheckpointReached -ConfirmPinDowngrade`, at least 3 pin turns, and at least 600 seconds since the previous switch. The route returns `pinUpdateRequired`, `pinUpdateModel`, and `pinUpdateEffort`; the host applies that update atomically and resets its residency counters. Supplying conversation pin state outside `sticky` fails closed. The exact availability list is used for validation but is not copied into feedback.
 
 Repository inspection injects aggregate statistics and deterministically ranked candidate paths, not file bodies. A complete relative path explicitly present in the task is pinned ahead of generic term matches, including hidden paths such as `.codex-plugin/plugin.json`. The model must still use its permitted read tools to inspect file contents. A successful CLI exit does not prove exact-output acceptance; use a deterministic validation command when formatting or content must be enforced, and opt into escalation separately if desired.
 

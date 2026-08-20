@@ -137,6 +137,34 @@ class RouteDecisionContractTests(unittest.TestCase):
         self.assertFalse(affinity["pinUpdateRequired"])
         self.assertNotIn("raw-conversation-id", json.dumps(route))
 
+    def test_selector_emits_host_pin_update_after_confirmed_checkpoint(self) -> None:
+        route = self.select(
+            "--text", "Reply with exactly OK",
+            "--model-affinity", "sticky",
+            "--conversation-key-hash", "d" * 64,
+            "--pinned-model", "codex:gpt-5.6-sol",
+            "--pinned-effort", "high",
+            "--pin-turns", "3",
+            "--last-switch-age-seconds", "600",
+            "--checkpoint-reached",
+            "--confirm-pin-downgrade",
+            "--available-model", "gpt-5.6-sol",
+            "--available-model", "gpt-5.6-luna",
+        )["routeDecision"]
+        affinity = route["modelAffinity"]
+        self.assertEqual(route["selectedModel"], "codex:gpt-5.6-luna")
+        self.assertEqual(affinity["switchAction"], "downgrade")
+        self.assertTrue(affinity["pinUpdateRequired"])
+        self.assertEqual(affinity["pinUpdateModel"], "codex:gpt-5.6-luna")
+        self.assertTrue(affinity["availabilityChecked"])
+
+    def test_route_contract_rejects_an_unknown_pin_switch_action(self) -> None:
+        route = route_case({"prompt": "Reply OK"})["routeDecision"]
+        route["modelAffinity"]["switchAction"] = "oscillate"
+        route["executionPlan"]["modelAffinity"] = route["modelAffinity"]
+        with self.assertRaisesRegex(ValueError, "switchAction"):
+            validate_route_decision(route)
+
     def test_selector_rejects_raw_conversation_identity(self) -> None:
         completed = subprocess.run(
             [

@@ -6,7 +6,7 @@ A local, deterministic model-routing plugin and Skill for Codex, Claude Code, an
 
 Before execution, it selects a trusted model from task complexity, risk, constraint level, and reasoning effort, then produces a bounded execution plan. Standard routing safely enables adaptive repository inspection, orchestration recommendations, and within-plan model reuse without reading historical state or starting extra agents. Cross-run affinity, learned policy, feedback writes, and multi-role execution remain explicit opt-ins. Routing itself makes no model call, does not change global Codex configuration, and never reads or forwards login credentials.
 
-Current project version: `0.15.0+codex.20260820102505`.
+Current project version: `0.15.0+codex.20260820111440`.
 
 ## At a glance
 
@@ -215,7 +215,7 @@ ASCII keywords use lexical-boundary matching to avoid false positives such as `t
 
 A, E, and F are direct variants. The standard entrypoint and reusable Python APIs default to `recommend`: they evaluate B, C, or D and expose a recommendation, but still execute directly with no extra model calls. Expert callers must select `auto` to start multi-agent execution. Python affinity defaults to `session`, and omitted effort uses the selected tier's recommendation rather than acting like an explicit `medium`. Under `auto`, a worker plan requires a low-risk task with explicit parallel signals, enough scale, and a positive deterministic utility score after model-call and model-tier-switch overhead. High-risk tasks remain direct unless an expert caller also passes `-ConfirmHighRiskOrchestration`. The dedicated orchestration entrypoint is itself an explicit advanced workflow.
 
-Default `-ModelAffinity session` reuses the selected model only among compatible roles in the current plan and reads no historical state. Explicit `sticky` accepts a trusted-host HMAC-SHA256 conversation digest plus a pinned trusted model and keeps that model while it still satisfies backend, capability, and tier floors; it stores neither the raw conversation ID nor a pin database. Explicit `auto` may retain the most recent successful model for the same hashed workspace and strategy for up to 30 minutes. Only cached-input reads count as positive reuse evidence; cache writes remain separately reported rebuild cost and never support retaining a stronger model. `off` uses exact profile role assignments. These ratios are routing evidence, not provider billing estimates.
+Default `-ModelAffinity session` reuses the selected model only among compatible roles in the current plan and reads no historical state. Explicit `sticky` accepts a trusted-host HMAC-SHA256 conversation digest plus a pinned trusted model and optional pinned effort; it stores neither the raw conversation ID nor a pin database. Compatible pins are keep-only by default, while upgrades and unavailable-pin replacement are immediate. A downgrade requires an explicit host confirmation at a checkpoint after at least 3 pin turns and 600 seconds since the last switch. Desktop passes its exact runtime model list into this decision, and the returned `pinUpdate*` fields tell the host what state to carry next. Explicit `auto` may retain the most recent successful model for the same hashed workspace and strategy for up to 30 minutes. Only cached-input reads count as positive reuse evidence; cache writes remain separately reported rebuild cost and never support retaining a stronger model. `off` uses exact profile role assignments. These ratios are routing evidence, not provider billing estimates; the router has no provider-billing or subscription-credit input and therefore never claims that a switch saves money.
 
 Role defaults come from [orchestration_profiles.json](skills/agent-auto-router/scripts/orchestration_profiles.json).
 
@@ -308,6 +308,9 @@ Common controls:
 | `-RepositoryContextMode adaptive|auto|off` | Scan only code/path/debugging tasks, force one bounded scan, or disable inspection |
 | `-ModelAffinity session|sticky|auto|off` | Reuse within one plan, honor a trusted-host conversation pin, read bounded same-workspace evidence, or use exact role profiles |
 | `-ConversationKeyHash` / `-PinnedModel` | Supply the required HMAC digest and trusted model for `sticky`; raw conversation IDs are rejected |
+| `-PinnedEffort` | Optionally carry the conversation's trusted effort; weaker effort is upgraded immediately |
+| `-PinTurns` / `-LastSwitchAgeSeconds` | Carry host-observed residency and cooldown state; omitted values preserve the pin |
+| `-CheckpointReached` / `-ConfirmPinDowngrade` | Permit a downgrade only when both are explicit and all hysteresis gates pass |
 | `-AllowDirty` | Explicitly accept the risk of running in a dirty Git worktree |
 | `-AllowNoChanges` | Allow a write task to succeed without a Git status change |
 | `-MaxTotalTokens` | Set a soft budget for CLI-observable tokens |

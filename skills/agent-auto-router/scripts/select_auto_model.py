@@ -13,9 +13,11 @@ from pathlib import Path
 
 from model_registry import load_model_registry, registry_digest
 from benchmark_priors import benchmark_priors_digest, load_benchmark_priors
+from cli_arguments import nonnegative_int
 from execution_plan import (
     ORCHESTRATION_POLICIES,
     build_execution_plan,
+    recommended_effort,
 )
 from model_affinity import (
     MODEL_AFFINITY_MODES,
@@ -76,6 +78,12 @@ def main() -> int:
     )
     parser.add_argument("--conversation-key-hash")
     parser.add_argument("--pinned-model")
+    parser.add_argument("--pinned-effort", choices=EFFORTS)
+    parser.add_argument("--pin-turns", type=nonnegative_int)
+    parser.add_argument("--last-switch-age-seconds", type=nonnegative_int)
+    parser.add_argument("--checkpoint-reached", action="store_true")
+    parser.add_argument("--confirm-pin-downgrade", action="store_true")
+    parser.add_argument("--available-model", action="append", default=None)
     route_input = parser.add_mutually_exclusive_group(required=True)
     route_input.add_argument("--text")
     route_input.add_argument("--stdin", action="store_true")
@@ -89,7 +97,15 @@ def main() -> int:
             parser.error(
                 "sticky model affinity requires --conversation-key-hash and --pinned-model"
             )
-    elif args.conversation_key_hash is not None or args.pinned_model is not None:
+    elif any((
+        args.conversation_key_hash is not None,
+        args.pinned_model is not None,
+        args.pinned_effort is not None,
+        args.pin_turns is not None,
+        args.last_switch_age_seconds is not None,
+        args.checkpoint_reached,
+        args.confirm_pin_downgrade,
+    )):
         parser.error("conversation pin arguments require --model-affinity sticky")
     prompt = sys.stdin.read() if args.stdin else args.text
     route_id = str(uuid.uuid4())
@@ -157,6 +173,15 @@ def main() -> int:
             validation_configured=args.validation_configured,
             benchmark_priors=benchmark_priors,
         )
+        selector_effort = (
+            args.effort
+            if args.effort != "auto"
+            else recommended_effort(
+                decision.target_tier,
+                high_risk=bool(decision.high_risk),
+                validation_configured=bool(decision.validation_configured),
+            )
+        )
         workspace_key = workspace_identity(args.workdir)
         state_dir = args.state_dir or DEFAULT_STATE_DIR
         if args.model_choice != "auto":
@@ -211,6 +236,13 @@ def main() -> int:
                 mode=args.model_affinity,
                 conversation_key_hash=args.conversation_key_hash,
                 pinned_model=args.pinned_model,
+                selector_effort=selector_effort,
+                pinned_effort=args.pinned_effort,
+                pin_turns=args.pin_turns,
+                last_switch_age_seconds=args.last_switch_age_seconds,
+                checkpoint_reached=args.checkpoint_reached,
+                confirm_pin_downgrade=args.confirm_pin_downgrade,
+                available_model_ids=args.available_model,
             )
             if affinity_error is not None:
                 affinity["reason"] = "feedback-evidence-unavailable"
@@ -241,15 +273,22 @@ def main() -> int:
         )
         execution_plan["escalation"]["eligible"] = False
     else:
+        affinity_plan_effort = None
+        if args.effort == "auto" and affinity.get("effortApplied"):
+            affinity_plan_effort = str(
+                affinity.get("selectedEffort") or selector_effort
+            )
         execution_plan = build_execution_plan(
             plan_decision,
-            None if args.effort == "auto" else args.effort,
+            affinity_plan_effort if args.effort == "auto" else args.effort,
             orchestration_policy=args.orchestration_policy,
             confirm_high_risk_orchestration=args.confirm_high_risk_orchestration,
             model_affinity=affinity,
             selected_tier=selected.tier,
             required_tier=decision.target_tier,
         )
+        if affinity_plan_effort is not None:
+            execution_plan["effortSource"] = "affinity"
         if selected.tier != decision.target_tier:
             execution_plan["escalation"].update(
                 {

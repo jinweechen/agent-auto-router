@@ -5,7 +5,11 @@ from typing import Any, Iterable, Sequence
 
 from model_affinity import DEFAULT_MODEL_AFFINITY_MODE, resolve_model_affinity
 from model_registry import ModelRegistry, load_model_registry
-from execution_plan import DEFAULT_ORCHESTRATION_POLICY, build_execution_plan
+from execution_plan import (
+    DEFAULT_ORCHESTRATION_POLICY,
+    build_execution_plan,
+    recommended_effort,
+)
 from route_contract import ROUTE_DECISION_SCHEMA, build_route_decision
 from routing_policy import STRATEGIES, RoutingPolicy, matched_signal_terms, select_model
 
@@ -33,6 +37,12 @@ def route_case(
     model_affinity_mode: str = DEFAULT_MODEL_AFFINITY_MODE,
     conversation_key_hash: str | None = None,
     pinned_model: str | None = None,
+    pinned_effort: str | None = None,
+    pin_turns: int | None = None,
+    last_switch_age_seconds: int | None = None,
+    checkpoint_reached: bool = False,
+    confirm_pin_downgrade: bool = False,
+    available_model_ids: Iterable[str] | None = None,
     explicit_variant: str | None = None,
 ) -> dict[str, Any]:
     if mode not in VALID_MODES:
@@ -56,6 +66,11 @@ def route_case(
     )
 
     active_registry = registry or load_model_registry()
+    selector_effort = effort or recommended_effort(
+        decision.target_tier,
+        high_risk=bool(decision.high_risk),
+        validation_configured=bool(decision.validation_configured),
+    )
     affinity = resolve_model_affinity(
         affinity_events,
         workspace_key=(
@@ -70,13 +85,23 @@ def route_case(
         mode=model_affinity_mode,
         conversation_key_hash=conversation_key_hash,
         pinned_model=pinned_model,
+        selector_effort=selector_effort,
+        pinned_effort=pinned_effort,
+        pin_turns=pin_turns,
+        last_switch_age_seconds=last_switch_age_seconds,
+        checkpoint_reached=checkpoint_reached,
+        confirm_pin_downgrade=confirm_pin_downgrade,
+        available_model_ids=available_model_ids,
     )
     selected_model = str(affinity.get("selectedModel") or decision.model)
     selected_spec = active_registry.get(selected_model, role="direct")
     plan_decision = replace(decision, model=selected_spec.model_id)
+    plan_effort = effort
+    if effort is None and affinity.get("effortApplied"):
+        plan_effort = str(affinity.get("selectedEffort") or selector_effort)
     execution_plan = build_execution_plan(
         plan_decision,
-        effort,
+        plan_effort,
         orchestration_policy=orchestration_policy,
         confirm_high_risk_orchestration=confirm_high_risk_orchestration,
         model_affinity=affinity,
@@ -84,6 +109,8 @@ def route_case(
         required_tier=decision.target_tier,
         explicit_variant=explicit_variant,
     )
+    if effort is None and affinity.get("effortApplied"):
+        execution_plan["effortSource"] = "affinity"
     if selected_spec.tier != decision.target_tier:
         execution_plan["escalation"].update(
             {
