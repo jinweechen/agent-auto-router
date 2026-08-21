@@ -63,12 +63,21 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertIn("[English](README.md)", self.chinese_readme)
 
     def test_documented_schemas_match_source_constants(self) -> None:
-        for readme in (self.readme, self.chinese_readme):
-            self.assertIn(f"`{DESKTOP_PLAN_SCHEMA}`", readme)
-            self.assertIn(f"`{HOST_PLAN_SCHEMA}`", readme)
-            self.assertIn(f"`{HOST_PERMISSIONS_SCHEMA}`", readme)
-        self.assertIn(f"Current v{FEATURE_SCHEMA_VERSION} records", self.readme)
-        self.assertIn(f"当前 v{FEATURE_SCHEMA_VERSION} 数据", self.chinese_readme)
+        skill = (ROOT / "skills" / "agent-auto-router" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        references = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (
+                ROOT / "skills" / "agent-auto-router" / "references" / "entrypoints.md",
+                ROOT / "skills" / "agent-auto-router" / "references" / "router-contract.md",
+                ROOT / "skills" / "agent-auto-router" / "references" / "guarded-auto-learning.md",
+            )
+        )
+        documented = "\n".join((skill, references))
+        for schema in (DESKTOP_PLAN_SCHEMA, HOST_PLAN_SCHEMA, HOST_PERMISSIONS_SCHEMA):
+            self.assertIn(schema, documented)
+        self.assertIn(f"featureSchemaVersion={FEATURE_SCHEMA_VERSION}", documented)
 
     def test_documented_project_version_matches_pyproject(self) -> None:
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -109,7 +118,7 @@ class DocumentationContractTests(unittest.TestCase):
             self.assertIn("aar.ps1", readme)
             self.assertIn("-Profile safe", readme)
             self.assertIn("doctor.py --json", readme)
-            self.assertLess(readme.index("aar.ps1"), readme.index("invoke_auto_task.ps1"))
+            self.assertLess(readme.index("aar.ps1"), readme.index("entrypoints.md"))
 
     def test_learning_and_orchestration_defaults_are_explicit(self) -> None:
         for readme in (self.readme, self.chinese_readme):
@@ -117,8 +126,11 @@ class DocumentationContractTests(unittest.TestCase):
                 self.assertIn(mode, readme)
             for policy in ("`direct`", "`recommend`", "`auto`"):
                 self.assertIn(policy, readme)
-            self.assertIn("12", readme)
-            self.assertIn("20%", readme)
+        guarded = (
+            ROOT / "skills" / "agent-auto-router" / "references" / "guarded-auto-learning.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("12 strong signals", guarded)
+        self.assertIn("20%", guarded)
         self.assertNotIn("configure --mode manual", self.readme)
         self.assertNotIn("configure --mode guarded-auto", self.readme)
         self.assertNotIn("configure --mode manual", self.chinese_readme)
@@ -145,11 +157,13 @@ class DocumentationContractTests(unittest.TestCase):
         contract = (
             ROOT / "skills" / "agent-auto-router" / "references" / "router-contract.md"
         ).read_text(encoding="utf-8")
-        for readme in (self.readme, self.chinese_readme):
-            self.assertIn("-ModelAffinity session|sticky|auto|off", readme)
-            self.assertIn("-ConversationKeyHash", readme)
-            self.assertIn("-PinnedModel", readme)
-            self.assertIn(ROLE_MODEL_POLICY_AFFINITY, readme)
+        entrypoints = (
+            ROOT / "skills" / "agent-auto-router" / "references" / "entrypoints.md"
+        ).read_text(encoding="utf-8")
+        documented = "\n".join((contract, entrypoints))
+        self.assertIn("-ConversationKeyHash", documented)
+        self.assertIn("-PinnedModel", documented)
+        self.assertIn(ROLE_MODEL_POLICY_AFFINITY, documented)
         self.assertIn(str(AFFINITY_TTL_SECONDS // 60), contract)
         self.assertIn(f"`{MINIMUM_STRONGER_TIER_CACHE_READ_RATIO}`", contract)
         self.assertIn(f"`{PROFILE_PREFERRED_MAXIMUM_CACHE_READ_RATIO}`", contract)
@@ -260,8 +274,11 @@ class DocumentationContractTests(unittest.TestCase):
     def test_backend_qualified_model_ids_are_registered(self) -> None:
         registry = json.loads(MODEL_REGISTRY.read_text(encoding="utf-8"))
         registered = {model["id"] for model in registry["models"]}
-        documented = set(re.findall(r"\b(?:codex|claude):[A-Za-z0-9._-]+", self.readme))
-        self.assertTrue(documented, "README should document at least one qualified model ID")
+        contract = (
+            ROOT / "skills" / "agent-auto-router" / "references" / "router-contract.md"
+        ).read_text(encoding="utf-8")
+        documented = set(re.findall(r"\b(?:codex|claude):[A-Za-z0-9._-]+", contract))
+        self.assertTrue(documented, "router contract should document qualified model IDs")
         self.assertEqual(documented - registered, set())
 
     def test_documented_powershell_entrypoint_flags_exist(self) -> None:
@@ -270,7 +287,10 @@ class DocumentationContractTests(unittest.TestCase):
             SCRIPT_DIR / "invoke_orchestrated_task.ps1",
         )
         supported = set().union(*(powershell_parameters(script) for script in scripts))
-        blocks = re.findall(r"```powershell\s*(.*?)```", self.readme, re.DOTALL)
+        entrypoints = (
+            ROOT / "skills" / "agent-auto-router" / "references" / "entrypoints.md"
+        ).read_text(encoding="utf-8")
+        blocks = re.findall(r"```powershell\s*(.*?)```", entrypoints, re.DOTALL)
         entrypoint_blocks = [
             block
             for block in blocks

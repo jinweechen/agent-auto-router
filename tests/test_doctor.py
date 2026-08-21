@@ -26,12 +26,13 @@ class DoctorTests(unittest.TestCase):
         self.assertTrue(result["readyForLocalRouting"])
         self.assertTrue(result["readyForCliExecution"])
         self.assertEqual(result["modelCalls"], 0)
-        self.assertEqual(result["defaults"]["learningMode"], "off")
+        self.assertEqual(result["defaults"]["quickProfile"], "standard")
+        self.assertEqual(result["defaults"]["learningMode"], "configured")
         self.assertEqual(result["defaults"]["configuredLearningMode"], "observe")
-        self.assertEqual(result["defaults"]["feedback"], "off")
-        self.assertEqual(result["defaults"]["repositoryContext"], "off")
-        self.assertEqual(result["defaults"]["modelAffinity"], "off")
-        self.assertEqual(result["defaults"]["orchestrationPolicy"], "direct")
+        self.assertEqual(result["defaults"]["feedback"], "on")
+        self.assertEqual(result["defaults"]["repositoryContext"], "adaptive")
+        self.assertEqual(result["defaults"]["modelAffinity"], "session")
+        self.assertEqual(result["defaults"]["orchestrationPolicy"], "recommend")
         self.assertEqual(result["defaults"]["quickExecutionTopology"], "direct")
         self.assertNotIn("environment", result)
         self.assertFalse(result["privacy"]["pathsIncluded"])
@@ -80,8 +81,9 @@ class DoctorTests(unittest.TestCase):
                 },
                 "issues": [],
                 "defaults": {
-                    "learningMode": "off",
-                    "orchestrationPolicy": "direct",
+                    "learningMode": "configured",
+                    "feedback": "on",
+                    "orchestrationPolicy": "recommend",
                     "quickExecutionTopology": "direct",
                 },
                 "modelCalls": 0,
@@ -91,7 +93,10 @@ class DoctorTests(unittest.TestCase):
         summary = output.getvalue()
         self.assertIn("Agent Auto Router doctor: READY", summary)
         self.assertIn("Quick profiles: safe, standard", summary)
-        self.assertIn("Defaults: learning=off, orchestration=direct, quick=direct", summary)
+        self.assertIn(
+            "Defaults: learning=configured, feedback=on, orchestration=recommend, quick=direct",
+            summary,
+        )
         self.assertNotIn('"schema"', summary)
 
     def test_json_cli_preserves_machine_readable_output(self) -> None:

@@ -61,7 +61,13 @@ $runnerParameters = @{
 if ($DryRun) { $runnerParameters.DryRun = $true }
 if ($Explain) { $runnerParameters.Explain = $true }
 if ($Json) { $runnerParameters.Json = $true }
-if ($NoFeedback -or [bool]$settings.noFeedback) {
+if ([bool]$settings.enableLearningPolicy) {
+    $runnerParameters.EnableLearningPolicy = $true
+}
+$feedbackEnabled = [bool]$settings.enableFeedback -and -not $NoFeedback
+if ($feedbackEnabled) {
+    $runnerParameters.EnableFeedback = $true
+} else {
     $runnerParameters.NoFeedback = $true
 }
 
@@ -71,7 +77,8 @@ if ($DryRun) {
     $result | Add-Member -NotePropertyName quickProfile -NotePropertyValue $Profile
     $result | Add-Member -NotePropertyName effectiveSandbox -NotePropertyValue $settings.sandbox
     $result | Add-Member -NotePropertyName effectiveModelAffinity -NotePropertyValue $settings.modelAffinity
-    $result | Add-Member -NotePropertyName feedbackOnExecution -NotePropertyValue (-not ($NoFeedback -or [bool]$settings.noFeedback))
+    $result | Add-Member -NotePropertyName learningPolicyOnExecution -NotePropertyValue ([bool]$settings.enableLearningPolicy)
+    $result | Add-Member -NotePropertyName feedbackOnExecution -NotePropertyValue $feedbackEnabled
     if ($Json) {
         $result | ConvertTo-Json -Depth 12
     } else {

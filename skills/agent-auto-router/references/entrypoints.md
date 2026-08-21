@@ -26,7 +26,7 @@ For a human-started task using an already signed-in CLI, use the fixed presets i
   "Implement the requested change" -Workdir "C:/path/to/repo"
 ```
 
-`standard` is the default and grants the child only `workspace-write` for the selected workdir. It uses adaptive repository inspection, recommendation-only orchestration, session-only model reuse, the built-in policy, and no feedback. `-Profile safe` is read-only with repository inspection and affinity off. The wrapper never accepts arbitrary model, sandbox, writable-root, learning, report, or orchestration configuration; use the expert entrypoints below when those controls are genuinely required. A host must not use this wrapper to bypass trusted runtime permission metadata.
+`standard` is the default and grants the child only `workspace-write` for the selected workdir. It uses adaptive repository inspection, recommendation-only orchestration, session-only model reuse, the configured learning policy, and privacy-minimized feedback. `-NoFeedback` disables persistence for one run while leaving policy loading enabled. `-Profile safe` is read-only with repository inspection, learning, feedback, and affinity off. The wrapper never accepts arbitrary model, sandbox, writable-root, learning destination, report, or orchestration configuration; use the expert entrypoints below when those controls are genuinely required. A host must not use this wrapper to bypass trusted runtime permission metadata.
 
 ## Codex Desktop workflow
 

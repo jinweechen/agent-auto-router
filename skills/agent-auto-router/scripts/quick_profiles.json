@@ -9,16 +9,18 @@
       "contextMode": "lean",
       "repositoryContextMode": "off",
       "modelAffinity": "off",
-      "noFeedback": true
+      "enableLearningPolicy": false,
+      "enableFeedback": false
     },
     "standard": {
-      "description": "Adaptive implementation planning limited to the selected workspace",
+      "description": "Adaptive implementation with guarded learning and privacy-minimized feedback",
       "strategy": "balance",
       "sandbox": "workspace-write",
       "contextMode": "lean",
       "repositoryContextMode": "adaptive",
       "modelAffinity": "session",
-      "noFeedback": true
+      "enableLearningPolicy": true,
+      "enableFeedback": true
     }
   }
 }

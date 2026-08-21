@@ -20,7 +20,8 @@ REPOSITORY_CONTEXT_MODES = frozenset({"adaptive", "auto", "off"})
 MODEL_AFFINITY_MODES = frozenset({"session", "sticky", "auto", "off"})
 PROFILE_KEYS = frozenset({
     "description", "strategy", "sandbox", "contextMode",
-    "repositoryContextMode", "modelAffinity", "noFeedback",
+    "repositoryContextMode", "modelAffinity", "enableLearningPolicy",
+    "enableFeedback",
 })
 
 
@@ -33,7 +34,8 @@ class QuickProfile:
     contextMode: str
     repositoryContextMode: str
     modelAffinity: str
-    noFeedback: bool
+    enableLearningPolicy: bool
+    enableFeedback: bool
 
 
 @dataclass(frozen=True)
@@ -74,7 +76,8 @@ def load_quick_profiles(path: pathlib.Path | None = None) -> QuickProfiles:
         model_affinity = _non_empty_string(
             payload.get("modelAffinity"), f"{name}.modelAffinity"
         )
-        no_feedback = payload.get("noFeedback")
+        enable_learning_policy = payload.get("enableLearningPolicy")
+        enable_feedback = payload.get("enableFeedback")
         if strategy not in STRATEGIES:
             raise ValueError(f"unsupported strategy in quick profile {name}")
         if sandbox not in SANDBOXES:
@@ -85,8 +88,10 @@ def load_quick_profiles(path: pathlib.Path | None = None) -> QuickProfiles:
             raise ValueError(f"unsupported repository mode in quick profile {name}")
         if model_affinity not in MODEL_AFFINITY_MODES:
             raise ValueError(f"unsupported model affinity in quick profile {name}")
-        if not isinstance(no_feedback, bool):
-            raise ValueError(f"{name}.noFeedback must be boolean")
+        if not isinstance(enable_learning_policy, bool):
+            raise ValueError(f"{name}.enableLearningPolicy must be boolean")
+        if not isinstance(enable_feedback, bool):
+            raise ValueError(f"{name}.enableFeedback must be boolean")
         profiles[name] = QuickProfile(
             name=name,
             description=_non_empty_string(
@@ -97,7 +102,8 @@ def load_quick_profiles(path: pathlib.Path | None = None) -> QuickProfiles:
             contextMode=context_mode,
             repositoryContextMode=repository_mode,
             modelAffinity=model_affinity,
-            noFeedback=no_feedback,
+            enableLearningPolicy=enable_learning_policy,
+            enableFeedback=enable_feedback,
         )
     default_profile = _non_empty_string(
         raw.get("defaultProfile"), "defaultProfile"
@@ -109,24 +115,26 @@ def load_quick_profiles(path: pathlib.Path | None = None) -> QuickProfiles:
     if (
         safe is None
         or safe.sandbox != "read-only"
-        or not safe.noFeedback
+        or safe.enableLearningPolicy
+        or safe.enableFeedback
         or safe.modelAffinity != "off"
         or safe.repositoryContextMode != "off"
     ):
         raise ValueError(
-            "safe profile must be read-only with repository inspection, feedback, "
-            "and model affinity disabled"
+            "safe profile must be read-only with repository inspection, learning, "
+            "feedback, and model affinity disabled"
         )
     if (
         standard is None
         or standard.sandbox != "workspace-write"
-        or not standard.noFeedback
+        or not standard.enableLearningPolicy
+        or not standard.enableFeedback
         or standard.modelAffinity != "session"
         or standard.repositoryContextMode != "adaptive"
     ):
         raise ValueError(
             "standard profile must be workspace-write with adaptive repository inspection, "
-            "session-only affinity, and feedback disabled"
+            "session-only affinity, guarded policy loading, and feedback enabled"
         )
     return QuickProfiles(default_profile, profiles, str(source))
 

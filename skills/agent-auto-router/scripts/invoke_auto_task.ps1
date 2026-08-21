@@ -143,14 +143,17 @@ $usesProtectedRouterState = $EnableLearningPolicy -or $feedbackEnabled -or $Mode
 if (-not $DryRun -and $ExecutionBackend -eq 'cli' -and $usesProtectedRouterState) {
     $boundaryPermissionsJson = $HostPermissionsJson
     if (-not $boundaryPermissionsJson) {
-        $explicitRoots = if ($Sandbox -eq 'workspace-write') { @($resolvedWorkdir) } else { @() }
+        [string[]]$explicitRoots = @()
+        if ($Sandbox -eq 'workspace-write') {
+            $explicitRoots = @($resolvedWorkdir)
+        }
         $boundaryPermissionsJson = [ordered]@{
             schema = 'agent-auto-router.host-permissions'
             source = 'router-explicit-sandbox'
             sandbox = $Sandbox
             approvalPolicy = 'on-request'
             networkAccess = $null
-            writableRoots = $explicitRoots
+            writableRoots = [object[]]$explicitRoots
             canRequestPermissions = $true
         } | ConvertTo-Json -Compress
     }

@@ -68,6 +68,7 @@ def build_diagnostic(
             "available": sorted(quick_profiles.profiles),
             "source": quick_profiles.source,
         }
+        default_quick_profile = quick_profiles.profiles[quick_profiles.default_profile]
         registry_valid = True
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         validation: dict[str, Any] = {
@@ -76,6 +77,7 @@ def build_diagnostic(
             "error": str(exc) if verbose_paths else "local_asset_validation_failed",
         }
         registry_valid = False
+        default_quick_profile = None
         issues.append("registry_or_profile_invalid")
     if not python_supported:
         issues.append("python_3_10_required")
@@ -118,12 +120,29 @@ def build_diagnostic(
             "commandDiscoveryUsesPath": True,
         },
         "defaults": {
-            "learningMode": "off",
+            "quickProfile": (
+                default_quick_profile.name if default_quick_profile else None
+            ),
+            "learningMode": (
+                "configured"
+                if default_quick_profile and default_quick_profile.enableLearningPolicy
+                else "off"
+            ),
             "configuredLearningMode": DEFAULT_CONFIG["mode"],
-            "feedback": "off",
-            "repositoryContext": "off",
-            "modelAffinity": "off",
-            "orchestrationPolicy": "direct",
+            "feedback": (
+                "on"
+                if default_quick_profile and default_quick_profile.enableFeedback
+                else "off"
+            ),
+            "repositoryContext": (
+                default_quick_profile.repositoryContextMode
+                if default_quick_profile else "off"
+            ),
+            "modelAffinity": (
+                default_quick_profile.modelAffinity
+                if default_quick_profile else "off"
+            ),
+            "orchestrationPolicy": "recommend",
             "quickExecutionTopology": "direct",
         },
         "modelCalls": 0,
@@ -169,6 +188,8 @@ def format_summary(result: dict[str, Any]) -> str:
         (
             "Defaults: learning="
             f"{result.get('defaults', {}).get('learningMode', 'n/a')}, "
+            "feedback="
+            f"{result.get('defaults', {}).get('feedback', 'n/a')}, "
             "orchestration="
             f"{result.get('defaults', {}).get('orchestrationPolicy', 'n/a')}, "
             "quick=direct"
